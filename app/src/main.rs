@@ -7,7 +7,11 @@ use windows_reactor::*;
 enum Message {
     Scan,
     Scanned(ScanReport),
-    Launch(usize),
+    /// Launches a game: its default action, or the alternative at `option` in `alt_launches`.
+    Launch {
+        game: usize,
+        option: Option<usize>,
+    },
     DismissError,
 }
 
@@ -46,9 +50,16 @@ impl Component for GameManager {
                 self.games = report.games;
                 self.error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
             }
-            Message::Launch(index) => {
-                if let Some(game) = self.games.get(index) {
-                    self.error = gm_core::launch(&game.launch).err();
+            Message::Launch { game, option } => {
+                let Some(game) = self.games.get(game) else {
+                    return;
+                };
+                let launch = match option {
+                    None => Some(&game.launch),
+                    Some(i) => game.alt_launches.get(i).map(|alt| &alt.launch),
+                };
+                if let Some(launch) = launch {
+                    self.error = gm_core::launch(launch).err();
                 }
             }
             Message::DismissError => self.error = None,
@@ -97,20 +108,36 @@ impl Component for GameManager {
             .grid_row(1);
 
         let items = self.games.iter().enumerate().map(|(index, game)| {
+            let play = Button::new()
+                .style(ButtonStyle::Accent)
+                .on_click(context.message(Message::Launch {
+                    game: index,
+                    option: None,
+                }))
+                .content("Play");
+            let alternatives = game.alt_launches.iter().enumerate().map(|(i, alt)| {
+                let button = Button::new()
+                    .on_click(context.message(Message::Launch {
+                        game: index,
+                        option: Some(i),
+                    }))
+                    .content(alt.label.clone());
+                KeyedView::new(format!("alt-{i}"), button)
+            });
+            let details = StackPanel::new().children((
+                TextBlock::new().text(game.name.clone()).font_size(16.0),
+                TextBlock::new().text(game.store.name()).opacity(0.6),
+            ));
+
             let row = StackPanel::new()
                 .orientation(Orientation::Horizontal)
                 .spacing(16.0)
                 .margin(Thickness::xy(0.0, 6.0))
-                .children((
-                    Button::new()
-                        .style(ButtonStyle::Accent)
-                        .on_click(context.message(Message::Launch(index)))
-                        .content("Play"),
-                    StackPanel::new().children((
-                        TextBlock::new().text(game.name.clone()).font_size(16.0),
-                        TextBlock::new().text(game.store.name()).opacity(0.6),
-                    )),
-                ));
+                .keyed_children(
+                    std::iter::once(KeyedView::new("play", play))
+                        .chain(alternatives)
+                        .chain(std::iter::once(KeyedView::new("details", details))),
+                );
             KeyedView::new(
                 game.id.clone(),
                 ListViewItem::new().tag(game.id.clone()).content(row),

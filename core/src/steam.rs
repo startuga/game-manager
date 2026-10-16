@@ -88,6 +88,7 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
         store: Store::Steam,
         install_dir,
         launch: Launch::Uri(format!("steam://rungameid/{app_id}")),
+        alt_launches: Vec::new(),
     })
 }
 

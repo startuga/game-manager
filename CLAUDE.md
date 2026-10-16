@@ -5,7 +5,8 @@ Native Windows 11 game launcher/library written in Rust.
 ## Layout
 - `app/` – WinUI 3 UI built with `windows-reactor` (preview, 0.100). Component/message/view model, Elm style.
 - `core/` (crate `gm-core`) – game discovery, launching, data model. **No UI code here**, so the UI layer can be swapped.
-  - `vdf.rs` – Valve KeyValues parser; `steam.rs` – Steam scanner; `epic.rs` – Epic scanner (current launcher: `%LOCALAPPDATA%\com.epicgames.eglv2\installations.jsonl` log + `cache\prod\catalog-cache.json` for titles; legacy: `%ProgramData%` `*.item` manifests); `launcher.rs` – `ShellExecuteW`.
+  - `vdf.rs` – Valve KeyValues parser; `steam.rs` – Steam scanner; `epic.rs` – Epic scanner (current launcher: `%LOCALAPPDATA%\com.epicgames.eglv2\installations.jsonl` log + `cache\prod\catalog-cache.json` for titles; legacy: `%ProgramData%` `*.item` manifests); `gog.rs` – GOG scanner (`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` + each game's `goggame-<id>.info` primary play task); `launcher.rs` – `ShellExecuteW`.
+  - `Game::launch` is the default Play action; `Game::alt_launches` are optional extra actions (e.g. GOG "Play via Galaxy"). `Launch::Exe` without a `working_dir` starts in the program's own folder.
   - New stores: add a module with `pub fn scan() -> Result<Vec<Game>, String>`, a `Store` variant, and an entry in `SCANNERS` in `lib.rs`.
   - `examples/scan.rs` – prints detected games (headless check of the scanners).
 
@@ -16,7 +17,7 @@ Native Windows 11 game launcher/library written in Rust.
 ## Commands
 - Build: `cargo build`
 - Run UI: `cargo run -p app`
-- Scanner check: `cargo run -p gm-core --example scan`
+- Scanner check: `cargo run -p gm-core --example scan` (add `-- -v` to print launch commands)
 - Before finishing a change: `cargo fmt`, `cargo clippy --all-targets` (no warnings), `cargo test`.
 
 ## Conventions
