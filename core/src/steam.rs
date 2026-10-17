@@ -1,6 +1,6 @@
 //! Finds games installed through Steam.
 
-use crate::{Game, Launch, Store, vdf};
+use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, vdf};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -89,6 +89,17 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
         install_dir,
         launch: Launch::Uri(format!("steam://rungameid/{app_id}")),
         alt_launches: Vec::new(),
+        icon: icon(app_id),
+    })
+}
+
+/// The icon Steam uses for the game's shortcuts, from its `Steam App <id>` uninstall entry.
+fn icon(app_id: &str) -> Option<IconRef> {
+    UNINSTALL_KEYS.iter().find_map(|base| {
+        let key = windows_registry::LOCAL_MACHINE
+            .open(format!(r"{base}\Steam App {app_id}"))
+            .ok()?;
+        IconRef::parse(&key.get_string("DisplayIcon").ok()?)
     })
 }
 

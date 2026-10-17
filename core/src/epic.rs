@@ -10,7 +10,7 @@
 //! Both identify a game by the same app name (`artifactId` / `AppName`), so a game migrated
 //! from the legacy launcher is only listed once.
 
-use crate::{Game, Launch, Store};
+use crate::{Game, IconRef, Launch, Store};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -136,6 +136,7 @@ fn parse_installations(text: &str, titles: &HashMap<String, String>) -> Vec<Game
                 id: format!("epic:{}", r.artifact_id),
                 name,
                 store: Store::Epic,
+                icon: program_icon(&dir, &r.launch_executable),
                 install_dir: Some(dir),
                 launch: launch_uri(&r.namespace, &r.item_id, &r.artifact_id),
                 alt_launches: Vec::new(),
@@ -196,6 +197,14 @@ struct Manifest {
     app_categories: Vec<String>,
     #[serde(default, rename = "bIsIncompleteInstall")]
     is_incomplete_install: bool,
+    #[serde(default)]
+    launch_executable: String,
+}
+
+/// The game's own program, whose icon Epic also uses. Paths in Epic's files use `/`.
+fn program_icon(dir: &Path, launch_executable: &str) -> Option<IconRef> {
+    let exe = launch_executable.trim().replace('/', "\\");
+    (!exe.is_empty()).then(|| IconRef::file(dir.join(exe.trim_start_matches('\\'))))
 }
 
 /// Locates the legacy launcher's manifest folder.
@@ -230,12 +239,16 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
         return None;
     }
 
+    let install_dir =
+        (!manifest.install_location.is_empty()).then(|| PathBuf::from(&manifest.install_location));
     Some(Game {
         id: format!("epic:{}", manifest.app_name),
         name: manifest.display_name,
         store: Store::Epic,
-        install_dir: (!manifest.install_location.is_empty())
-            .then(|| PathBuf::from(manifest.install_location)),
+        icon: install_dir
+            .as_deref()
+            .and_then(|dir| program_icon(dir, &manifest.launch_executable)),
+        install_dir,
         launch: launch_uri(
             &manifest.catalog_namespace,
             &manifest.catalog_item_id,
@@ -282,6 +295,13 @@ mod tests {
         let brothers = &games[1];
         assert_eq!(brothers.id, "epic:Tamarind");
         assert_eq!(brothers.name, "BrothersATOTS");
+        // launchExecutable uses forward slashes.
+        assert_eq!(
+            brothers.icon,
+            Some(IconRef::file(
+                r"C:\Users\me\Epic Games\BrothersATOTS\Binaries\Win32\brothers.exe"
+            ))
+        );
     }
 
     #[test]

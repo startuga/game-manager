@@ -7,7 +7,7 @@
 //! The default Play action starts the game directly (GOG games are DRM-free). When GOG Galaxy is
 //! installed, "Play via Galaxy" is offered as an extra action for playtime tracking and cloud saves.
 
-use crate::{Game, Launch, LaunchOption, Store};
+use crate::{Game, IconRef, Launch, LaunchOption, Store};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,7 +85,11 @@ pub fn scan() -> Result<Vec<Game>, String> {
         let info = fs::read_to_string(dir.join(format!("goggame-{}.info", entry.game_id)))
             .ok()
             .and_then(|text| parse_info(&text));
-        if let Some(game) = build_game(&entry, info.as_ref(), galaxy.as_deref()) {
+        if let Some(mut game) = build_game(&entry, info.as_ref(), galaxy.as_deref()) {
+            let ico = dir.join(format!("goggame-{}.ico", entry.game_id));
+            if ico.is_file() {
+                game.icon = Some(IconRef::file(ico));
+            }
             games.push(game);
         }
     }
@@ -152,6 +156,7 @@ fn build_game(entry: &RegistryEntry, info: Option<&Info>, galaxy: Option<&Path>)
         install_dir: Some(dir),
         launch,
         alt_launches,
+        icon: None,
     })
 }
 

@@ -3,6 +3,7 @@
 pub mod ea;
 pub mod epic;
 pub mod gog;
+pub mod icon;
 mod launcher;
 pub mod steam;
 pub mod vdf;
@@ -53,6 +54,38 @@ pub struct LaunchOption {
     pub launch: Launch,
 }
 
+/// Where a game's icon lives: an `.ico` file, or an `.exe`/`.dll` and the index of the icon in it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IconRef {
+    pub path: PathBuf,
+    pub index: i32,
+}
+
+impl IconRef {
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            index: 0,
+        }
+    }
+
+    /// Parses a registry icon location such as `"C:\Game\game.exe",0` or `C:\Game\game.ico`.
+    pub fn parse(location: &str) -> Option<Self> {
+        let location = location.trim();
+        let (path, index) = match location.rsplit_once(',') {
+            Some((path, index)) if index.trim().parse::<i32>().is_ok() => {
+                (path, index.trim().parse().unwrap_or(0))
+            }
+            _ => (location, 0),
+        };
+        let path = path.trim().trim_matches('"').trim();
+        (!path.is_empty()).then(|| Self {
+            path: PathBuf::from(path),
+            index,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Game {
     /// Stable id of the form `<store>:<store id>`.
@@ -65,6 +98,9 @@ pub struct Game {
     /// Extra launch actions, e.g. starting a GOG game through GOG Galaxy.
     #[serde(default)]
     pub alt_launches: Vec<LaunchOption>,
+    /// The game's icon. When a scanner finds none, the program started by Play is used.
+    #[serde(default)]
+    pub icon: Option<IconRef>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -96,8 +132,20 @@ pub fn scan_all() -> ScanReport {
         }
     }
     dedupe_install_dirs(&mut report.games);
+    for game in &mut report.games {
+        default_icon_to_program(game);
+    }
     report.games.sort_by_key(|game| game.name.to_lowercase());
     report
+}
+
+/// A game started through a program shows that program's icon unless the scanner found a better one.
+fn default_icon_to_program(game: &mut Game) {
+    if game.icon.is_none()
+        && let Launch::Exe { path, .. } = &game.launch
+    {
+        game.icon = Some(IconRef::file(path));
+    }
 }
 
 /// Keeps only the first game for each install folder.
@@ -108,6 +156,12 @@ fn dedupe_install_dirs(games: &mut Vec<Game>) {
         None => true,
     });
 }
+
+/// Windows uninstall entries, 64-bit and 32-bit views (under `HKEY_LOCAL_MACHINE`).
+pub(crate) const UNINSTALL_KEYS: [&str; 2] = [
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+    r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+];
 
 /// Case-insensitive comparison key for a folder path.
 pub(crate) fn folder_key(dir: &Path) -> String {
@@ -129,7 +183,62 @@ mod tests {
             install_dir: dir.map(PathBuf::from),
             launch: Launch::Uri(String::new()),
             alt_launches: Vec::new(),
+            icon: None,
         }
+    }
+
+    #[test]
+    fn parses_registry_icon_locations() {
+        // Real DisplayIcon values from EA uninstall entries.
+        assert_eq!(
+            IconRef::parse(r#""C:\Program Files\EA Games\Bejeweled 3\Bejeweled3.exe""#),
+            Some(IconRef::file(
+                r"C:\Program Files\EA Games\Bejeweled 3\Bejeweled3.exe"
+            ))
+        );
+        assert_eq!(
+            IconRef::parse(r"C:\Program Files\EA Games\Theme Hospital\game.ico"),
+            Some(IconRef::file(
+                r"C:\Program Files\EA Games\Theme Hospital\game.ico"
+            ))
+        );
+        assert_eq!(
+            IconRef::parse(r#""C:\Games\X\x.exe",-101"#),
+            Some(IconRef {
+                path: PathBuf::from(r"C:\Games\X\x.exe"),
+                index: -101,
+            })
+        );
+        // A comma that is part of the path, not an index.
+        assert_eq!(
+            IconRef::parse(r"C:\Games\Hello, World\a.ico"),
+            Some(IconRef::file(r"C:\Games\Hello, World\a.ico"))
+        );
+        assert_eq!(IconRef::parse("  "), None);
+    }
+
+    #[test]
+    fn icon_defaults_to_the_program_started_by_play() {
+        let mut exe_game = game("gog:1", Store::Gog, None);
+        exe_game.launch = Launch::Exe {
+            path: PathBuf::from(r"C:\GOG Games\X\x.exe"),
+            args: String::new(),
+            working_dir: None,
+        };
+        default_icon_to_program(&mut exe_game);
+        assert_eq!(exe_game.icon, Some(IconRef::file(r"C:\GOG Games\X\x.exe")));
+
+        let mut uri_game = game("steam:1", Store::Steam, None);
+        default_icon_to_program(&mut uri_game);
+        assert_eq!(uri_game.icon, None);
+
+        let mut with_icon = exe_game.clone();
+        with_icon.icon = Some(IconRef::file(r"C:\GOG Games\X\goggame-1.ico"));
+        default_icon_to_program(&mut with_icon);
+        assert_eq!(
+            with_icon.icon,
+            Some(IconRef::file(r"C:\GOG Games\X\goggame-1.ico"))
+        );
     }
 
     #[test]

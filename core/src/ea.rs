@@ -13,7 +13,7 @@
 //! other installers carry it too. A game is listed only when the EA app knows it, i.e. it has an
 //! `Origin Games\<contentID>` key or an uninstall entry that runs EA's installer cleanup.
 
-use crate::{Game, Launch, Store, folder_key};
+use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, folder_key};
 use std::fs;
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::FreeLibrary;
@@ -23,10 +23,6 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::core::{HSTRING, w};
 
-const UNINSTALL_KEYS: [&str; 2] = [
-    r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-    r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-];
 const PUBLISHER_KEYS: [&str; 4] = [
     r"SOFTWARE\Electronic Arts",
     r"SOFTWARE\WOW6432Node\Electronic Arts",
@@ -44,6 +40,8 @@ struct Candidate {
     product_guid: String,
     /// The folder's uninstall entry runs EA's installer cleanup (`EAInstaller\...\Cleanup.exe`).
     ea_uninstaller: bool,
+    /// The uninstall entry's `DisplayIcon`: `game.ico` or the game's program.
+    icon: Option<IconRef>,
 }
 
 /// Scans the registry for EA-installed game folders.
@@ -95,6 +93,10 @@ pub fn scan() -> Result<Vec<Game>, String> {
             id: game_id(&data, &candidate),
             name: names.choose(&candidate.dir),
             store: Store::Ea,
+            icon: candidate.icon.or_else(|| {
+                let ico = candidate.dir.join("game.ico");
+                ico.is_file().then(|| IconRef::file(ico))
+            }),
             install_dir: Some(candidate.dir),
             launch,
             alt_launches: Vec::new(),
@@ -122,6 +124,9 @@ fn add_candidate(list: &mut Vec<Candidate>, candidate: Candidate) {
                 existing.product_guid = candidate.product_guid;
             }
             existing.ea_uninstaller |= candidate.ea_uninstaller;
+            if existing.icon.is_none() {
+                existing.icon = candidate.icon;
+            }
         }
         None => list.push(candidate),
     }
@@ -152,6 +157,10 @@ fn uninstall_candidates() -> impl Iterator<Item = Candidate> {
                     ea_uninstaller: is_ea_uninstaller(
                         &key.get_string("UninstallString").unwrap_or_default(),
                     ),
+                    icon: key
+                        .get_string("DisplayIcon")
+                        .ok()
+                        .and_then(|location| IconRef::parse(&location)),
                 })
             })
             .collect::<Vec<_>>()
@@ -169,6 +178,7 @@ fn publisher_candidates() -> impl Iterator<Item = Candidate> {
                     display_name: key.get_string("DisplayName").unwrap_or_default(),
                     product_guid: key.get_string("Product GUID").unwrap_or_default(),
                     ea_uninstaller: false,
+                    icon: None,
                 })
             })
             .collect::<Vec<_>>()

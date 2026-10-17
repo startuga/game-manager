@@ -6,6 +6,7 @@ Native Windows 11 game launcher/library written in Rust.
 - `app/` – WinUI 3 UI built with `windows-reactor` (preview, 0.100). Component/message/view model, Elm style.
 - `core/` (crate `gm-core`) – game discovery, launching, data model. **No UI code here**, so the UI layer can be swapped.
   - `vdf.rs` – Valve KeyValues parser; `steam.rs` – Steam scanner; `epic.rs` – Epic scanner (current launcher: `%LOCALAPPDATA%\com.epicgames.eglv2\installations.jsonl` log + `cache\prod\catalog-cache.json` for titles; legacy: `%ProgramData%` `*.item` manifests); `gog.rs` – GOG scanner (`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` + each game's `goggame-<id>.info` primary play task); `ea.rs` – EA scanner (folders with `__Installer\installerdata.xml`, found via uninstall entries and `Electronic Arts`/`EA Games` `Install Dir` keys, listed only if the EA app knows them: an `Origin Games\<contentID>` key or an `EAInstaller\...\Cleanup.exe` uninstaller; names from `Origin Games\<contentID>`; program from installerdata `<runtime><launcher>` or the GDF XML resource in `GDFBinary_<locale>.dll`. The EA app's own data is encrypted, so there is no EA-app launch link); `launcher.rs` – `ShellExecuteW`.
+  - `icon.rs` – game icons as PNG via native APIs (`SHDefExtractIconW` + WIC). `Game::icon` is an `IconRef` (file + index): Steam `Steam App <id>` uninstall `DisplayIcon`, GOG `goggame-<id>.ico`, EA uninstall `DisplayIcon`/`game.ico`, Epic `launchExecutable`; otherwise `scan_all` falls back to the Play program. The app loads icons in a second background task after the list is shown.
   - `Game::launch` is the default Play action; `Game::alt_launches` are optional extra actions (e.g. GOG "Play via Galaxy"). `Launch::Exe` without a `working_dir` starts in the program's own folder.
   - New stores: add a module with `pub fn scan() -> Result<Vec<Game>, String>`, a `Store` variant, and an entry in `SCANNERS` in `lib.rs`. `SCANNERS` order is priority: when two stores report the same install folder, the earlier store keeps the game.
   - `examples/scan.rs` – prints detected games (headless check of the scanners).
@@ -17,7 +18,8 @@ Native Windows 11 game launcher/library written in Rust.
 ## Commands
 - Build: `cargo build`
 - Run UI: `cargo run -p app`
-- Scanner check: `cargo run -p gm-core --example scan` (add `-- -v` to print launch commands)
+- Scanner check: `cargo run -p gm-core --example scan` (add `-- -v` to print launch commands and icon sources, `-- --icons <dir>` to save every icon as PNG)
+- UI check: screen capture does not work from the agent session; inspect the running window with UI Automation (`System.Windows.Automation` in PowerShell) instead.
 - Before finishing a change: `cargo fmt`, `cargo clippy --all-targets` (no warnings), `cargo test`.
 
 ## Conventions

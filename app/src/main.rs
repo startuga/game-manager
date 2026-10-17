@@ -1,12 +1,23 @@
 #![windows_subsystem = "windows"]
 
 use gm_core::{Game, ScanReport};
+use std::collections::HashMap;
+use std::sync::Arc;
 use windows_reactor::*;
+
+/// Icons are shown at 40×40 (80 px at 200% scaling); extracting at 128 px keeps them sharp up to
+/// 320% scaling.
+const ICON_SIZE: f64 = 40.0;
+const ICON_PIXELS: u32 = 128;
+/// "Game" glyph from Segoe Fluent Icons, shown while an icon loads or when a game has none.
+const GAME_GLYPH: &str = "\u{E7FC}";
 
 #[derive(Clone)]
 enum Message {
     Scan,
     Scanned(ScanReport),
+    /// PNG icons keyed by game id.
+    IconsLoaded(Vec<(String, Arc<[u8]>)>),
     /// Launches a game: its default action, or the alternative at `option` in `alt_launches`.
     Launch {
         game: usize,
@@ -17,6 +28,7 @@ enum Message {
 
 struct GameManager {
     games: Vec<Game>,
+    icons: HashMap<String, EncodedImage>,
     scanning: bool,
     error: Option<String>,
 }
@@ -25,6 +37,39 @@ impl GameManager {
     fn start_scan(&mut self, context: &ComponentContext<Self>) {
         self.scanning = true;
         context.spawn_background(|_cancel| Message::Scanned(gm_core::scan_all()));
+    }
+
+    /// Extracts icons after the list is shown, so a large library appears without waiting.
+    fn load_icons(&self, context: &ComponentContext<Self>) {
+        let games = self.games.clone();
+        context.spawn_background(move |_cancel| {
+            let icons = gm_core::icon::extract_all(&games, ICON_PIXELS);
+            Message::IconsLoaded(
+                icons
+                    .into_iter()
+                    .map(|(id, png)| (id, png.into()))
+                    .collect(),
+            )
+        });
+    }
+
+    fn icon_view(&self, game: &Game) -> View {
+        match self.icons.get(&game.id) {
+            Some(png) => Image::new()
+                .source_data(png.clone())
+                .stretch(Stretch::Uniform)
+                .width(ICON_SIZE)
+                .height(ICON_SIZE)
+                .vertical_alignment(VerticalAlignment::Center)
+                .into(),
+            None => FontIcon::new()
+                .glyph(GAME_GLYPH)
+                .width(ICON_SIZE)
+                .height(ICON_SIZE)
+                .opacity(0.5)
+                .vertical_alignment(VerticalAlignment::Center)
+                .into(),
+        }
     }
 }
 
@@ -35,6 +80,7 @@ impl Component for GameManager {
     fn create(_input: &(), context: &ComponentContext<Self>) -> Self {
         let mut this = Self {
             games: Vec::new(),
+            icons: HashMap::new(),
             scanning: false,
             error: None,
         };
@@ -49,6 +95,13 @@ impl Component for GameManager {
                 self.scanning = false;
                 self.games = report.games;
                 self.error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
+                self.load_icons(context);
+            }
+            Message::IconsLoaded(icons) => {
+                self.icons = icons
+                    .into_iter()
+                    .map(|(id, png)| (id, EncodedImage::new(png)))
+                    .collect();
             }
             Message::Launch { game, option } => {
                 let Some(game) = self.games.get(game) else {
@@ -134,9 +187,13 @@ impl Component for GameManager {
                 .spacing(16.0)
                 .margin(Thickness::xy(0.0, 6.0))
                 .keyed_children(
-                    std::iter::once(KeyedView::new("play", play))
-                        .chain(alternatives)
-                        .chain(std::iter::once(KeyedView::new("details", details))),
+                    [
+                        KeyedView::new("icon", self.icon_view(game)),
+                        KeyedView::new("play", play),
+                    ]
+                    .into_iter()
+                    .chain(alternatives)
+                    .chain(std::iter::once(KeyedView::new("details", details))),
                 );
             KeyedView::new(
                 game.id.clone(),
