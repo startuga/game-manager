@@ -5,9 +5,9 @@ Native Windows 11 game launcher/library written in Rust.
 ## Layout
 - `app/` – WinUI 3 UI built with `windows-reactor` (preview, 0.100). Component/message/view model, Elm style.
 - `core/` (crate `gm-core`) – game discovery, launching, data model. **No UI code here**, so the UI layer can be swapped.
-  - `vdf.rs` – Valve KeyValues parser; `steam.rs` – Steam scanner; `epic.rs` – Epic scanner (current launcher: `%LOCALAPPDATA%\com.epicgames.eglv2\installations.jsonl` log + `cache\prod\catalog-cache.json` for titles; legacy: `%ProgramData%` `*.item` manifests); `gog.rs` – GOG scanner (`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` + each game's `goggame-<id>.info` primary play task); `launcher.rs` – `ShellExecuteW`.
+  - `vdf.rs` – Valve KeyValues parser; `steam.rs` – Steam scanner; `epic.rs` – Epic scanner (current launcher: `%LOCALAPPDATA%\com.epicgames.eglv2\installations.jsonl` log + `cache\prod\catalog-cache.json` for titles; legacy: `%ProgramData%` `*.item` manifests); `gog.rs` – GOG scanner (`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` + each game's `goggame-<id>.info` primary play task); `ea.rs` – EA scanner (folders with `__Installer\installerdata.xml`, found via uninstall entries and `Electronic Arts`/`EA Games` `Install Dir` keys; names from `Origin Games\<contentID>`; program from installerdata `<runtime><launcher>` or the GDF XML resource in `GDFBinary_<locale>.dll`. The EA app's own data is encrypted, so there is no EA-app launch link); `launcher.rs` – `ShellExecuteW`.
   - `Game::launch` is the default Play action; `Game::alt_launches` are optional extra actions (e.g. GOG "Play via Galaxy"). `Launch::Exe` without a `working_dir` starts in the program's own folder.
-  - New stores: add a module with `pub fn scan() -> Result<Vec<Game>, String>`, a `Store` variant, and an entry in `SCANNERS` in `lib.rs`.
+  - New stores: add a module with `pub fn scan() -> Result<Vec<Game>, String>`, a `Store` variant, and an entry in `SCANNERS` in `lib.rs`. `SCANNERS` order is priority: when two stores report the same install folder, the earlier store keeps the game.
   - `examples/scan.rs` – prints detected games (headless check of the scanners).
 
 ## Toolchain
