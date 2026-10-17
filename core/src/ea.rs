@@ -55,7 +55,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
 
     let mut games = Vec::new();
     for candidate in candidates {
-        let Ok(text) = fs::read_to_string(installer_data_path(&candidate.dir)) else {
+        let Some(text) = read_text(&installer_data_path(&candidate.dir)) else {
             continue;
         };
         let data = parse_installer_data(&text).unwrap_or_default();
@@ -261,7 +261,7 @@ impl InstallerData {
 /// Parses both manifest generations: `<game manifestVersion="3.0">` (titles in
 /// `<localeInfo><title>`) and `<DiPManifest>` (titles in `<gameTitles><gameTitle>`).
 fn parse_installer_data(text: &str) -> Option<InstallerData> {
-    let doc = roxmltree::Document::parse(strip_bom(text)).ok()?;
+    let doc = roxmltree::Document::parse(xml_body(text)).ok()?;
     let mut data = InstallerData::default();
 
     for node in doc.descendants().filter(|n| n.is_element()) {
@@ -310,6 +310,21 @@ fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Option<&'a str> 
 fn push_text(list: &mut Vec<String>, node: roxmltree::Node) {
     if let Some(text) = node.text().map(str::trim).filter(|t| !t.is_empty()) {
         list.push(text.to_owned());
+    }
+}
+
+/// Reads a text file that may be UTF-8 or UTF-16 (older installerdata.xml files are UTF-16).
+fn read_text(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| decode_text(&bytes))
+}
+
+/// The document without BOM or XML declaration. Text reaching roxmltree is already decoded to
+/// UTF-8, but the declaration may still claim `encoding="utf-16"`.
+fn xml_body(text: &str) -> &str {
+    let text = strip_bom(text).trim_start();
+    match text.strip_prefix("<?xml") {
+        Some(rest) => rest.split_once("?>").map_or(text, |(_, body)| body),
+        None => text,
     }
 }
 
@@ -422,13 +437,7 @@ fn decode_text(bytes: &[u8]) -> String {
 }
 
 fn parse_gdf(text: &str) -> Option<Gdf> {
-    // roxmltree only reads UTF-8 text; drop the declaration, which may claim utf-16.
-    let text = strip_bom(text).trim_start();
-    let text = match text.strip_prefix("<?xml") {
-        Some(rest) => rest.split_once("?>").map_or(text, |(_, body)| body),
-        None => text,
-    };
-    let doc = roxmltree::Document::parse(text).ok()?;
+    let doc = roxmltree::Document::parse(xml_body(text)).ok()?;
     let element = |name: &str| {
         doc.descendants()
             .find(|n| n.is_element() && n.tag_name().name() == name)
@@ -681,6 +690,58 @@ mod tests {
         assert_eq!(parse_gdf(&text).unwrap().name, "Theme Hospital");
 
         assert_eq!(decode_text(b"<a/>"), "<a/>");
+    }
+
+    // Real installerdata.xml of Bejeweled 3 (manifestVersion 2.1, trimmed). On disk it is UTF-16 LE
+    // with a BOM, unlike the UTF-8 files of newer manifests.
+    const BEJEWELED_DATA: &str = r#"<?xml version="1.0" encoding="utf-16"?>
+<game gameVersion="1.1.13.4753" manifestVersion="2.1">
+  <contentIDs>
+    <contentID>71715</contentID>
+  </contentIDs>
+  <metadata>
+    <os minVersion="5.1"></os>
+    <localeInfo locale="en_US">
+      <title>Bejeweled® 3</title>
+      <exclude>/Bejeweled 3 BP/Bejeweled3.exe</exclude>
+    </localeInfo>
+    <localeInfo locale="pt_BR">
+      <title>Bejeweled® 3</title>
+    </localeInfo>
+  </metadata>
+</game>"#;
+
+    fn utf16_file(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    }
+
+    #[test]
+    fn reads_utf16_installer_data() {
+        let text = decode_text(&utf16_file(BEJEWELED_DATA));
+        let data = parse_installer_data(&text).unwrap();
+        assert_eq!(data.content_ids, ["71715"]);
+        assert_eq!(data.title("pt_BR"), Some("Bejeweled® 3"));
+    }
+
+    #[test]
+    fn reads_installer_data_files_in_both_encodings() {
+        let dir = std::env::temp_dir().join(format!("gm-core-ea-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let utf16 = dir.join("utf16.xml");
+        let utf8 = dir.join("utf8.xml");
+        fs::write(&utf16, utf16_file(BEJEWELED_DATA)).unwrap();
+        fs::write(&utf8, SYNDICATE_DATA).unwrap();
+
+        let ids = |path: &Path| {
+            parse_installer_data(&read_text(path).unwrap())
+                .unwrap()
+                .content_ids
+        };
+        assert_eq!(ids(&utf16), ["71715"]);
+        assert_eq!(ids(&utf8), ["1025174", "1009340"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
