@@ -1,6 +1,6 @@
 //! Finds games installed through Steam.
 
-use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, vdf};
+use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, on_disk_case, vdf};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -80,7 +80,7 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
 
     let install_dir = state
         .get_str("installdir")
-        .map(|dir| steamapps.join("common").join(dir));
+        .map(|dir| on_disk_case(&steamapps.join("common").join(dir)));
 
     Some(Game {
         id: format!("steam:{app_id}"),

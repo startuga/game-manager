@@ -26,6 +26,15 @@ pub enum Store {
 }
 
 impl Store {
+    /// Every store, in display order.
+    pub const ALL: [Store; 5] = [
+        Store::Steam,
+        Store::Epic,
+        Store::Gog,
+        Store::Ea,
+        Store::Xbox,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Store::Steam => "Steam",
@@ -168,6 +177,23 @@ pub(crate) const UNINSTALL_KEYS: [&str; 2] = [
     r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
 ];
 
+/// The path with the letter case it has on disk (Steam stores its own folder in lowercase).
+/// Paths that cannot be resolved are returned unchanged.
+pub(crate) fn on_disk_case(path: &Path) -> PathBuf {
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return path.to_path_buf();
+    };
+    // canonicalize returns verbatim paths (`\\?\C:\...`); show them the usual way.
+    let text = canonical.to_string_lossy();
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{share}"))
+    } else if let Some(local) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(local)
+    } else {
+        canonical
+    }
+}
+
 /// Case-insensitive comparison key for a folder path.
 pub(crate) fn folder_key(dir: &Path) -> String {
     dir.to_string_lossy()
@@ -190,6 +216,20 @@ mod tests {
             alt_launches: Vec::new(),
             icon: None,
         }
+    }
+
+    #[test]
+    fn restores_on_disk_letter_case() {
+        let dir = std::env::temp_dir().join(format!("GM-Case-Test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lowercase = PathBuf::from(dir.to_string_lossy().to_lowercase());
+        let restored = on_disk_case(&lowercase);
+        assert!(restored.ends_with(dir.file_name().unwrap()), "{restored:?}");
+        assert!(!restored.to_string_lossy().starts_with(r"\\?\"));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let missing = PathBuf::from(r"c:\does\not\exist");
+        assert_eq!(on_disk_case(&missing), missing);
     }
 
     #[test]

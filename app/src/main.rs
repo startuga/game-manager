@@ -1,14 +1,17 @@
 #![windows_subsystem = "windows"]
 
-use gm_core::{Game, ScanReport};
+mod library;
+
+use gm_core::{Game, ScanReport, Store};
 use std::collections::HashMap;
 use std::sync::Arc;
 use windows_reactor::*;
 
-/// Icons are shown at 40×40 (80 px at 200% scaling); extracting at 128 px keeps them sharp up to
-/// 320% scaling.
-const ICON_SIZE: f64 = 40.0;
+/// Icons are extracted at 128 px so they stay sharp up to 96 DIPs at 133% or 40 DIPs at 320%.
 const ICON_PIXELS: u32 = 128;
+const LIST_ICON_SIZE: f64 = 32.0;
+const HEADER_ICON_SIZE: f64 = 96.0;
+const SIDEBAR_WIDTH: f64 = 340.0;
 /// "Game" glyph from Segoe Fluent Icons, shown while an icon loads or when a game has none.
 const GAME_GLYPH: &str = "\u{E7FC}";
 
@@ -18,9 +21,14 @@ enum Message {
     Scanned(ScanReport),
     /// PNG icons keyed by game id.
     IconsLoaded(Vec<(String, Arc<[u8]>)>),
+    Search(String),
+    FilterStore(Option<Store>),
+    /// A game picked in the sidebar. `None` (e.g. the list losing its selection while filtered)
+    /// keeps the current game in the main panel.
+    Select(Option<String>),
     /// Launches a game: its default action, or the alternative at `option` in `alt_launches`.
     Launch {
-        game: usize,
+        id: String,
         option: Option<usize>,
     },
     DismissError,
@@ -29,6 +37,9 @@ enum Message {
 struct GameManager {
     games: Vec<Game>,
     icons: HashMap<String, EncodedImage>,
+    query: String,
+    store_filter: Option<Store>,
+    selected: Option<String>,
     scanning: bool,
     error: Option<String>,
 }
@@ -53,24 +64,266 @@ impl GameManager {
         });
     }
 
-    fn icon_view(&self, game: &Game) -> View {
+    fn selected_game(&self) -> Option<&Game> {
+        let id = self.selected.as_deref()?;
+        self.games.iter().find(|game| game.id == id)
+    }
+
+    fn icon_view(&self, game: &Game, size: f64) -> View {
         match self.icons.get(&game.id) {
             Some(png) => Image::new()
                 .source_data(png.clone())
                 .stretch(Stretch::Uniform)
-                .width(ICON_SIZE)
-                .height(ICON_SIZE)
+                .width(size)
+                .height(size)
                 .vertical_alignment(VerticalAlignment::Center)
                 .into(),
             None => FontIcon::new()
                 .glyph(GAME_GLYPH)
-                .width(ICON_SIZE)
-                .height(ICON_SIZE)
+                .width(size)
+                .height(size)
                 .opacity(0.5)
                 .vertical_alignment(VerticalAlignment::Center)
                 .into(),
         }
     }
+
+    /// Global controls: app title, scan status and Rescan.
+    fn top_bar(&self, context: &ViewContext<Self>) -> View {
+        let status = if self.scanning {
+            "Scanning libraries…".to_owned()
+        } else {
+            format!("{} games", self.games.len())
+        };
+
+        let title = StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(12.0)
+            .grid_column(0)
+            .children((
+                FontIcon::new()
+                    .glyph(GAME_GLYPH)
+                    .vertical_alignment(VerticalAlignment::Center),
+                TextBlock::new()
+                    .text("Game Manager")
+                    .font_size(20.0)
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .vertical_alignment(VerticalAlignment::Center),
+            ));
+        let controls = StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(12.0)
+            .grid_column(2)
+            .children((
+                ProgressRing::new()
+                    .is_active(self.scanning)
+                    .width(20.0)
+                    .height(20.0),
+                TextBlock::new()
+                    .text(status)
+                    .opacity(0.7)
+                    .vertical_alignment(VerticalAlignment::Center),
+                Button::new()
+                    .is_enabled(!self.scanning)
+                    .on_click(context.message(Message::Scan))
+                    .automation_name("Rescan")
+                    .content(icon_label(Symbol::Refresh, "Rescan")),
+            ));
+
+        Border::new()
+            .padding(Thickness::xy(20.0, 10.0))
+            .border_brush(ThemeBrush::CardStroke)
+            .border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0))
+            .grid_row(0)
+            .content(
+                Grid::new()
+                    .columns([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
+                    .children((title, controls)),
+            )
+    }
+
+    /// Game library: search, store filter and the list of detected games.
+    fn sidebar(&self, context: &ViewContext<Self>) -> View {
+        let search = TextBox::new()
+            .placeholder_text("Search games")
+            .automation_name("Search games")
+            .text(self.query.clone())
+            .on_text_changed(context.callback(Message::Search))
+            .grid_row(0);
+
+        let options = library::store_options(&self.games);
+        let stores: Vec<Option<Store>> = options.iter().map(|(store, _)| *store).collect();
+        let store_index = stores.iter().position(|store| *store == self.store_filter);
+        let store_filter = ComboBox::new()
+            .items_source(options.into_iter().map(|(_, label)| label))
+            .selected_index(store_index)
+            .on_selection_changed(context.callback(move |index: Option<usize>| {
+                Message::FilterStore(index.and_then(|i| stores.get(i).copied()).flatten())
+            }))
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .automation_name("Store")
+            .grid_row(1);
+
+        let visible = library::filter(&self.games, &self.query, self.store_filter);
+        let ids: Vec<String> = visible.iter().map(|&i| self.games[i].id.clone()).collect();
+        let selected_index = self
+            .selected
+            .as_ref()
+            .and_then(|selected| ids.iter().position(|id| id == selected));
+
+        let items = visible.iter().map(|&index| {
+            let game = &self.games[index];
+            let row = StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(12.0)
+                .margin(Thickness::xy(0.0, 4.0))
+                .children((
+                    self.icon_view(game, LIST_ICON_SIZE),
+                    StackPanel::new()
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .children((
+                            TextBlock::new()
+                                .text(game.name.clone())
+                                .text_trimming(TextTrimming::CharacterEllipsis)
+                                .max_width(SIDEBAR_WIDTH - 100.0),
+                            TextBlock::new()
+                                .text(game.store.name())
+                                .font_size(12.0)
+                                .opacity(0.6),
+                        )),
+                ));
+            KeyedView::new(
+                game.id.clone(),
+                ListViewItem::new().tag(game.id.clone()).content(row),
+            )
+        });
+        let list: View = if visible.is_empty() && !self.games.is_empty() {
+            TextBlock::new()
+                .text("No games match the search.")
+                .opacity(0.7)
+                .margin(Thickness::uniform(8.0))
+                .grid_row(2)
+                .into()
+        } else {
+            ListView::new()
+                .selection_mode(ListViewSelectionMode::Single)
+                .selected_index(selected_index)
+                .on_selection_changed(context.callback(move |index: Option<usize>| {
+                    Message::Select(index.and_then(|i| ids.get(i).cloned()))
+                }))
+                .grid_row(2)
+                .collection_slot(ListViewSlot::Items, items)
+        };
+
+        Border::new()
+            .width(SIDEBAR_WIDTH)
+            .padding(Thickness::uniform(12.0))
+            .background(ThemeBrush::CardBackground)
+            .border_brush(ThemeBrush::CardStroke)
+            .border_thickness(Thickness::new(0.0, 0.0, 1.0, 0.0))
+            .grid_column(0)
+            .content(
+                Grid::new()
+                    .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
+                    .row_spacing(8.0)
+                    .children((search, store_filter, list)),
+            )
+    }
+
+    /// The selected game: header with title and install path, then the action and metadata bar.
+    fn main_panel(&self, context: &ViewContext<Self>) -> View {
+        let Some(game) = self.selected_game() else {
+            let message = if self.scanning {
+                "Looking for installed games…"
+            } else if self.games.is_empty() {
+                "No installed games were found."
+            } else {
+                "Select a game in the library."
+            };
+            return TextBlock::new()
+                .text(message)
+                .opacity(0.7)
+                .horizontal_alignment(HorizontalAlignment::Center)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(1)
+                .into();
+        };
+
+        let install_path = game.install_dir.as_ref().map_or_else(
+            || "Install folder unknown".to_owned(),
+            |dir| dir.display().to_string(),
+        );
+        let header = StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(20.0)
+            .children((
+                self.icon_view(game, HEADER_ICON_SIZE),
+                StackPanel::new()
+                    .spacing(6.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .children((
+                        TextBlock::new()
+                            .text(game.name.clone())
+                            .font_size(32.0)
+                            .font_weight(FontWeight::SEMI_BOLD)
+                            .text_wrapping(TextWrapping::Wrap),
+                        TextBlock::new()
+                            .text(install_path)
+                            .opacity(0.7)
+                            .is_text_selection_enabled(true)
+                            .text_wrapping(TextWrapping::Wrap),
+                    )),
+            ));
+
+        let play = Button::new()
+            .style(ButtonStyle::Accent)
+            .on_click(context.message(Message::Launch {
+                id: game.id.clone(),
+                option: None,
+            }))
+            .automation_name(format!("Play {}", game.name))
+            .content(icon_label(Symbol::Play, "Play"));
+        let alternatives = game.alt_launches.iter().enumerate().map(|(i, alt)| {
+            let button = Button::new()
+                .on_click(context.message(Message::Launch {
+                    id: game.id.clone(),
+                    option: Some(i),
+                }))
+                .content(alt.label.clone());
+            KeyedView::new(format!("alt-{i}"), button)
+        });
+        let store = TextBlock::new()
+            .text(format!("Store: {}", game.store.name()))
+            .opacity(0.7)
+            .vertical_alignment(VerticalAlignment::Center)
+            .margin(Thickness::new(12.0, 0.0, 0.0, 0.0));
+        let actions = StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(12.0)
+            .keyed_children(
+                std::iter::once(KeyedView::new("play", play))
+                    .chain(alternatives)
+                    .chain(std::iter::once(KeyedView::new("store", store))),
+            );
+
+        ScrollViewer::new().grid_column(1).content(
+            StackPanel::new()
+                .spacing(28.0)
+                .margin(Thickness::uniform(32.0))
+                .children((header, actions)),
+        )
+    }
+}
+
+/// Button content: a symbol followed by a label.
+fn icon_label(symbol: Symbol, label: &str) -> View {
+    StackPanel::new()
+        .orientation(Orientation::Horizontal)
+        .spacing(8.0)
+        .children((
+            SymbolIcon::new().symbol(symbol),
+            TextBlock::new().text(label),
+        ))
 }
 
 impl Component for GameManager {
@@ -81,6 +334,9 @@ impl Component for GameManager {
         let mut this = Self {
             games: Vec::new(),
             icons: HashMap::new(),
+            query: String::new(),
+            store_filter: None,
+            selected: None,
             scanning: false,
             error: None,
         };
@@ -95,6 +351,13 @@ impl Component for GameManager {
                 self.scanning = false;
                 self.games = report.games;
                 self.error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
+                self.selected = library::keep_selection(&self.games, self.selected.as_deref());
+                if self
+                    .store_filter
+                    .is_some_and(|store| !self.games.iter().any(|game| game.store == store))
+                {
+                    self.store_filter = None;
+                }
                 self.load_icons(context);
             }
             Message::IconsLoaded(icons) => {
@@ -103,8 +366,12 @@ impl Component for GameManager {
                     .map(|(id, png)| (id, EncodedImage::new(png)))
                     .collect();
             }
-            Message::Launch { game, option } => {
-                let Some(game) = self.games.get(game) else {
+            Message::Search(query) => self.query = query,
+            Message::FilterStore(store) => self.store_filter = store,
+            Message::Select(Some(id)) => self.selected = Some(id),
+            Message::Select(None) => {}
+            Message::Launch { id, option } => {
+                let Some(game) = self.games.iter().find(|game| game.id == id) else {
                     return;
                 };
                 let launch = match option {
@@ -121,36 +388,16 @@ impl Component for GameManager {
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
         context.window_title("Game Manager");
-        context.window_visuals(WindowVisuals::new().backdrop(WindowBackdrop::Mica));
-
-        let status = if self.scanning {
-            "Scanning libraries…".to_owned()
-        } else {
-            format!("{} games", self.games.len())
-        };
-
-        let header = StackPanel::new()
-            .orientation(Orientation::Horizontal)
-            .spacing(16.0)
-            .grid_row(0)
-            .children((
-                TextBlock::new()
-                    .text("Game Manager")
-                    .font_size(28.0)
-                    .font_weight(FontWeight::SEMI_BOLD),
-                Button::new()
-                    .is_enabled(!self.scanning)
-                    .on_click(context.message(Message::Scan))
-                    .content("Rescan"),
-                ProgressRing::new()
-                    .is_active(self.scanning)
-                    .width(20.0)
-                    .height(20.0),
-                TextBlock::new()
-                    .text(status)
-                    .opacity(0.7)
-                    .vertical_alignment(VerticalAlignment::Center),
-            ));
+        context.window_visuals(
+            WindowVisuals::new()
+                .backdrop(WindowBackdrop::Mica)
+                .client_size(1200.0, 760.0)
+                .constraints(WindowConstraints {
+                    min_width: Some(860.0),
+                    min_height: Some(520.0),
+                    ..WindowConstraints::default()
+                }),
+        );
 
         let error = InfoBar::new()
             .title("Something went wrong")
@@ -158,59 +405,17 @@ impl Component for GameManager {
             .severity(InfoBarSeverity::Error)
             .is_open(self.error.is_some())
             .on_closed(context.message(Message::DismissError))
+            .margin(Thickness::xy(20.0, 8.0))
             .grid_row(1);
 
-        let items = self.games.iter().enumerate().map(|(index, game)| {
-            let play = Button::new()
-                .style(ButtonStyle::Accent)
-                .on_click(context.message(Message::Launch {
-                    game: index,
-                    option: None,
-                }))
-                .content("Play");
-            let alternatives = game.alt_launches.iter().enumerate().map(|(i, alt)| {
-                let button = Button::new()
-                    .on_click(context.message(Message::Launch {
-                        game: index,
-                        option: Some(i),
-                    }))
-                    .content(alt.label.clone());
-                KeyedView::new(format!("alt-{i}"), button)
-            });
-            let details = StackPanel::new().children((
-                TextBlock::new().text(game.name.clone()).font_size(16.0),
-                TextBlock::new().text(game.store.name()).opacity(0.6),
-            ));
-
-            let row = StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(16.0)
-                .margin(Thickness::xy(0.0, 6.0))
-                .keyed_children(
-                    [
-                        KeyedView::new("icon", self.icon_view(game)),
-                        KeyedView::new("play", play),
-                    ]
-                    .into_iter()
-                    .chain(alternatives)
-                    .chain(std::iter::once(KeyedView::new("details", details))),
-                );
-            KeyedView::new(
-                game.id.clone(),
-                ListViewItem::new().tag(game.id.clone()).content(row),
-            )
-        });
-
-        let list = ListView::new()
-            .selection_mode(ListViewSelectionMode::None)
+        let body = Grid::new()
+            .columns([GridLength::Auto, GridLength::Star(1.0)])
             .grid_row(2)
-            .collection_slot(ListViewSlot::Items, items);
+            .children((self.sidebar(context), self.main_panel(context)));
 
         Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
-            .row_spacing(12.0)
-            .margin(Thickness::uniform(24.0))
-            .children((header, error, list))
+            .children((self.top_bar(context), error, body))
     }
 }
 
