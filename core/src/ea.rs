@@ -13,6 +13,7 @@
 //! other installers carry it too. A game is listed only when the EA app knows it, i.e. it has an
 //! `Origin Games\<contentID>` key or an uninstall entry that runs EA's installer cleanup.
 
+use crate::text::{child_text, decode_text, read_text, xml_body};
 use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, folder_key};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -309,37 +310,10 @@ fn parse_installer_data(text: &str) -> Option<InstallerData> {
     Some(data)
 }
 
-fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Option<&'a str> {
-    node.children()
-        .find(|c| c.is_element() && c.tag_name().name() == name)?
-        .text()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-}
-
 fn push_text(list: &mut Vec<String>, node: roxmltree::Node) {
     if let Some(text) = node.text().map(str::trim).filter(|t| !t.is_empty()) {
         list.push(text.to_owned());
     }
-}
-
-/// Reads a text file that may be UTF-8 or UTF-16 (older installerdata.xml files are UTF-16).
-fn read_text(path: &Path) -> Option<String> {
-    fs::read(path).ok().map(|bytes| decode_text(&bytes))
-}
-
-/// The document without BOM or XML declaration. Text reaching roxmltree is already decoded to
-/// UTF-8, but the declaration may still claim `encoding="utf-16"`.
-fn xml_body(text: &str) -> &str {
-    let text = strip_bom(text).trim_start();
-    match text.strip_prefix("<?xml") {
-        Some(rest) => rest.split_once("?>").map_or(text, |(_, body)| body),
-        None => text,
-    }
-}
-
-fn strip_bom(text: &str) -> &str {
-    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 /// Turns a manifest path like `[HKEY_LOCAL_MACHINE\...\Install Dir]bin\game.exe` into a real path.
@@ -429,21 +403,6 @@ fn read_gdf_resource(dll: &Path) -> Option<String> {
         let _ = FreeLibrary(module);
         text
     }
-}
-
-/// Decodes UTF-16 (LE/BE, with or without BOM) or UTF-8 resource text.
-fn decode_text(bytes: &[u8]) -> String {
-    let utf16 = |bytes: &[u8], from: fn([u8; 2]) -> u16| {
-        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|&c| from(c)).collect();
-        String::from_utf16_lossy(&units)
-    };
-    let text = match bytes {
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
-        [_, 0, ..] => utf16(bytes, u16::from_le_bytes),
-        _ => String::from_utf8_lossy(bytes).into_owned(),
-    };
-    strip_bom(text.trim_end_matches('\0')).to_owned()
 }
 
 fn parse_gdf(text: &str) -> Option<Gdf> {

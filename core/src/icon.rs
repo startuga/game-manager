@@ -32,8 +32,12 @@ impl IconExtractor {
         Ok(Self { factory, _com: com })
     }
 
-    /// The icon as a `size`×`size` PNG, or `None` if the file has no usable icon.
+    /// The icon as a `size`×`size` PNG, or `None` if the file has no usable icon. PNG and JPEG
+    /// files (e.g. Xbox package logos) are returned as they are; the UI scales them.
     pub fn png(&self, icon: &IconRef, size: u32) -> Option<Vec<u8>> {
+        if is_image_file(&icon.path) {
+            return std::fs::read(&icon.path).ok();
+        }
         let hicon = extract(icon, size)?;
         let png = self.encode_png(hicon);
         // SAFETY: `hicon` was created by SHDefExtractIconW and is not used after this.
@@ -78,6 +82,16 @@ pub fn extract_all(games: &[crate::Game], size: u32) -> Vec<(String, Vec<u8>)> {
         .iter()
         .filter_map(|game| Some((game.id.clone(), extractor.png(game.icon.as_ref()?, size)?)))
         .collect()
+}
+
+fn is_image_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ["png", "jpg", "jpeg"]
+                .iter()
+                .any(|e| ext.eq_ignore_ascii_case(e))
+        })
 }
 
 /// Extracts the icon at `size` pixels, scaling from the closest size the file contains.
@@ -161,6 +175,17 @@ mod tests {
         // IHDR width and height (big-endian) follow the signature and chunk header.
         assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 64);
         assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 64);
+    }
+
+    #[test]
+    fn image_files_are_used_as_they_are() {
+        let file =
+            std::env::temp_dir().join(format!("gm-core-icon-test-{}.PNG", std::process::id()));
+        let bytes = [PNG_SIGNATURE.as_slice(), b"rest of the file"].concat();
+        std::fs::write(&file, &bytes).unwrap();
+        let extractor = IconExtractor::new().unwrap();
+        assert_eq!(extractor.png(&IconRef::file(&file), 64), Some(bytes));
+        std::fs::remove_file(&file).unwrap();
     }
 
     #[test]

@@ -6,7 +6,9 @@ pub mod gog;
 pub mod icon;
 mod launcher;
 pub mod steam;
+mod text;
 pub mod vdf;
+pub mod xbox;
 
 pub use launcher::launch;
 
@@ -20,6 +22,7 @@ pub enum Store {
     Epic,
     Gog,
     Ea,
+    Xbox,
 }
 
 impl Store {
@@ -29,6 +32,7 @@ impl Store {
             Store::Epic => "Epic Games",
             Store::Gog => "GOG",
             Store::Ea => "EA",
+            Store::Xbox => "Xbox",
         }
     }
 }
@@ -115,11 +119,12 @@ type Scanner = fn() -> Result<Vec<Game>, String>;
 
 /// Scanners in priority order: when two stores report the same install folder, the earlier one
 /// keeps the game (e.g. an EA game bought on Steam also ships EA's `__Installer` folder).
-const SCANNERS: [(Store, Scanner); 4] = [
+const SCANNERS: [(Store, Scanner); 5] = [
     (Store::Steam, steam::scan),
     (Store::Epic, epic::scan),
     (Store::Gog, gog::scan),
     (Store::Ea, ea::scan),
+    (Store::Xbox, xbox::scan),
 ];
 
 /// Scans all supported stores and returns the games sorted by name.
