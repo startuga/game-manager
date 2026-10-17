@@ -8,6 +8,10 @@
 //! - `HKLM\SOFTWARE\WOW6432Node\Origin Games\<contentID>` holds the store title and language.
 //! - Older games list their program only in the Game Definition File (GDF) embedded in
 //!   `GDFBinary_<locale>.dll`, the same source EA uses for its desktop shortcuts.
+//!
+//! An `__Installer` folder alone does not mean the EA app installed the game: copies set up by
+//! other installers carry it too. A game is listed only when the EA app knows it, i.e. it has an
+//! `Origin Games\<contentID>` key or an uninstall entry that runs EA's installer cleanup.
 
 use crate::{Game, Launch, Store, folder_key};
 use std::fs;
@@ -38,6 +42,8 @@ struct Candidate {
     dir: PathBuf,
     display_name: String,
     product_guid: String,
+    /// The folder's uninstall entry runs EA's installer cleanup (`EAInstaller\...\Cleanup.exe`).
+    ea_uninstaller: bool,
 }
 
 /// Scans the registry for EA-installed game folders.
@@ -57,6 +63,9 @@ pub fn scan() -> Result<Vec<Game>, String> {
             .content_ids
             .iter()
             .find_map(|id| origin_games_entry(id));
+        if store.is_none() && !candidate.ea_uninstaller {
+            continue;
+        }
         let locale = store
             .as_ref()
             .map(|s| s.locale.as_str())
@@ -112,9 +121,17 @@ fn add_candidate(list: &mut Vec<Candidate>, candidate: Candidate) {
             if existing.product_guid.is_empty() {
                 existing.product_guid = candidate.product_guid;
             }
+            existing.ea_uninstaller |= candidate.ea_uninstaller;
         }
         None => list.push(candidate),
     }
+}
+
+/// Whether an uninstall command runs EA's installer cleanup, e.g.
+/// `"C:\Program Files (x86)\Common Files\EAInstaller\Syndicate\Cleanup.exe" uninstall_game`.
+fn is_ea_uninstaller(command: &str) -> bool {
+    let command = command.to_ascii_lowercase().replace('/', "\\");
+    command.contains(r"\eainstaller\") && command.contains("cleanup.exe")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -132,6 +149,9 @@ fn uninstall_candidates() -> impl Iterator<Item = Candidate> {
                     dir,
                     display_name: key.get_string("DisplayName").unwrap_or_default(),
                     product_guid: guid,
+                    ea_uninstaller: is_ea_uninstaller(
+                        &key.get_string("UninstallString").unwrap_or_default(),
+                    ),
                 })
             })
             .collect::<Vec<_>>()
@@ -148,6 +168,7 @@ fn publisher_candidates() -> impl Iterator<Item = Candidate> {
                     dir,
                     display_name: key.get_string("DisplayName").unwrap_or_default(),
                     product_guid: key.get_string("Product GUID").unwrap_or_default(),
+                    ea_uninstaller: false,
                 })
             })
             .collect::<Vec<_>>()
@@ -694,6 +715,7 @@ mod tests {
             Candidate {
                 dir: PathBuf::from(r"C:\Program Files\EA Games\Theme Hospital\"),
                 product_guid: "{5118A4C2}".into(),
+                ea_uninstaller: true,
                 ..Default::default()
             },
         );
@@ -708,6 +730,17 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].display_name, "Theme Hospital");
         assert_eq!(list[0].product_guid, "{5118A4C2}");
+        assert!(list[0].ea_uninstaller);
+    }
+
+    #[test]
+    fn recognizes_ea_installer_cleanup() {
+        // Real UninstallString values: Syndicate (EA app) and The Sims 4 (other installer).
+        assert!(is_ea_uninstaller(
+            r#""C:\Program Files (x86)\Common Files\EAInstaller\Syndicate\Cleanup.exe" uninstall_game -autologging"#
+        ));
+        assert!(!is_ea_uninstaller(r#""C:\Games\The Sims 4\unins000.exe""#));
+        assert!(!is_ea_uninstaller(""));
     }
 
     #[test]
