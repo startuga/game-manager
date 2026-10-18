@@ -12,6 +12,9 @@ arguments); those are saved in `%APPDATA%\Game Manager\custom-games.json`.
    workload. Rust needs its MSVC linker and the Windows SDK.
 2. **Rust** via [rustup](https://rustup.rs). The project pins Rust 1.99.1 in
    `rust-toolchain.toml`; rustup installs it automatically on the first build.
+   The windows-rs crates come straight from
+   [microsoft/windows-rs](https://github.com/microsoft/windows-rs) master, so the first build
+   also downloads that repository (about 1.4 GB). `cargo update` moves them to its latest commit.
 3. **Windows App Runtime 2.x** (needed to run WinUI 3 apps). It is usually already installed
    with Windows 11 apps; otherwise install it from Microsoft.
 4. **Git** and, optionally, the **GitHub CLI** (`winget install GitHub.cli`).

@@ -1,13 +1,14 @@
 #![windows_subsystem = "windows"]
 
 mod library;
-mod picker;
 
 use gm_core::custom::CustomGame;
 use gm_core::{Game, ScanReport, Store};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
+use windows_pickers::OpenFilePicker;
 use windows_reactor::*;
 
 /// Icons are extracted at 128 px so they stay sharp up to 96 DIPs at 133% or 40 DIPs at 320%.
@@ -37,8 +38,10 @@ enum Message {
     DismissError,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
-    /// The chosen program and a suggested name; `None` when the dialog was cancelled.
-    ProgramPicked(Result<Option<(PathBuf, String)>, String>),
+    /// The chosen program; `None` when the dialog was cancelled.
+    ProgramPicked(Result<Option<PathBuf>, String>),
+    /// The chosen program and the name suggested by its version information.
+    ProgramNamed(PathBuf, String),
     DraftName(String),
     DraftArgs(String),
     /// The Add game dialog closed: `Primary` is Add.
@@ -185,6 +188,7 @@ impl GameManager {
                     .columns([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
                     .children((title, controls)),
             )
+            .into()
     }
 
     /// Game library: search, store filter and the list of detected games.
@@ -193,7 +197,7 @@ impl GameManager {
             .placeholder_text("Search games")
             .automation_name("Search games")
             .text(self.query.clone())
-            .on_text_changed(context.callback(Message::Search))
+            .on_text_changed(context.callback(|text: Rc<str>| Message::Search(text.to_string())))
             .grid_row(0);
 
         let options = library::store_options(&self.games);
@@ -237,10 +241,7 @@ impl GameManager {
                                 .opacity(0.6),
                         )),
                 ));
-            KeyedView::new(
-                game.id.clone(),
-                ListViewItem::new().tag(game.id.clone()).content(row),
-            )
+            DataItem::new(game.id.clone(), &game.name).content(row)
         });
         let list: View = if visible.is_empty() && !self.games.is_empty() {
             TextBlock::new()
@@ -257,7 +258,8 @@ impl GameManager {
                     Message::Select(index.and_then(|i| ids.get(i).cloned()))
                 }))
                 .grid_row(2)
-                .collection_slot(ListViewSlot::Items, items)
+                .items(items)
+                .into()
         };
 
         Border::new()
@@ -273,6 +275,7 @@ impl GameManager {
                     .row_spacing(8.0)
                     .children((search, store_filter, list)),
             )
+            .into()
     }
 
     /// The selected game: header with title and install path, then the action and metadata bar.
@@ -359,16 +362,19 @@ impl GameManager {
                     .chain(std::iter::once(KeyedView::new("store", store))),
             );
 
-        ScrollViewer::new().grid_column(1).content(
-            StackPanel::new()
-                .spacing(28.0)
-                .margin(Thickness::uniform(32.0))
-                .children((header, actions)),
-        )
+        ScrollViewer::new()
+            .grid_column(1)
+            .content(
+                StackPanel::new()
+                    .spacing(28.0)
+                    .margin(Thickness::uniform(32.0))
+                    .children((header, actions)),
+            )
+            .into()
     }
 
     /// Name and arguments for a custom game whose program was just chosen.
-    fn add_dialog(&self, context: &ViewContext<Self>) -> View {
+    fn add_dialog(&self, context: &ViewContext<Self>) -> ContentDialog {
         let (program, name, args) = self.draft.as_ref().map_or_else(Default::default, |draft| {
             (
                 draft.program.display().to_string(),
@@ -386,6 +392,7 @@ impl GameManager {
             .title("Add a game")
             .primary_button_text("Add")
             .close_button_text("Cancel")
+            .default_button(ContentDialogButton::Primary)
             .is_primary_button_enabled(has_name)
             .is_open(self.draft.is_some())
             .on_closed(context.callback(Message::DraftClosed))
@@ -400,19 +407,23 @@ impl GameManager {
                     TextBox::new()
                         .text(name)
                         .automation_name("Name")
-                        .on_text_changed(context.callback(Message::DraftName)),
+                        .on_text_changed(
+                            context.callback(|text: Rc<str>| Message::DraftName(text.to_string())),
+                        ),
                     label("Command-line arguments (optional)"),
                     TextBox::new()
                         .text(args)
                         .placeholder_text("For example: -windowed")
                         .automation_name("Command-line arguments")
-                        .on_text_changed(context.callback(Message::DraftArgs)),
+                        .on_text_changed(
+                            context.callback(|text: Rc<str>| Message::DraftArgs(text.to_string())),
+                        ),
                 )),
             )
     }
 
     /// Confirms removing a custom game from the library.
-    fn remove_dialog(&self, context: &ViewContext<Self>) -> View {
+    fn remove_dialog(&self, context: &ViewContext<Self>) -> ContentDialog {
         let name = self
             .removing
             .as_deref()
@@ -442,6 +453,7 @@ fn icon_label(symbol: Symbol, label: &str) -> View {
             SymbolIcon::new().symbol(symbol),
             TextBlock::new().text(label),
         ))
+        .into()
 }
 
 impl Component for GameManager {
@@ -501,31 +513,40 @@ impl Component for GameManager {
             }
             Message::DismissError => self.error = None,
             Message::AddGame => {
-                self.picking = true;
-                let owner = picker::Owner::active();
+                // Owned by the app's window, which is disabled while the dialog is open.
+                self.picking =
+                    OpenFilePicker::new()
+                        .title("Choose the game's program")
+                        .filter_extensions("Programs", ["exe", "bat", "cmd"])
+                        .filter_all()
+                        .request(context, |picked| {
+                            Message::ProgramPicked(picked.map_err(|e| {
+                                format!("could not choose a program: {}", e.message())
+                            }))
+                        });
+                if !self.picking {
+                    self.error = Some("The file dialog is not available right now.".to_owned());
+                }
+            }
+            Message::ProgramPicked(Ok(Some(program))) => {
+                // The suggested name comes from the program's version information on disk.
                 context.spawn_background(move |_cancel| {
-                    let picked = picker::pick_program(owner).map(|program| {
-                        program.map(|program| {
-                            let name = gm_core::custom::suggested_name(&program);
-                            (program, name)
-                        })
-                    });
-                    Message::ProgramPicked(picked)
+                    let name = gm_core::custom::suggested_name(&program);
+                    Message::ProgramNamed(program, name)
                 });
             }
-            Message::ProgramPicked(picked) => {
+            Message::ProgramPicked(Ok(None)) => self.picking = false,
+            Message::ProgramPicked(Err(e)) => {
                 self.picking = false;
-                match picked {
-                    Ok(Some((program, name))) => {
-                        self.draft = Some(Draft {
-                            program,
-                            name,
-                            args: String::new(),
-                        });
-                    }
-                    Ok(None) => {}
-                    Err(e) => self.error = Some(e),
-                }
+                self.error = Some(e);
+            }
+            Message::ProgramNamed(program, name) => {
+                self.picking = false;
+                self.draft = Some(Draft {
+                    program,
+                    name,
+                    args: String::new(),
+                });
             }
             Message::DraftName(name) => {
                 if let Some(draft) = &mut self.draft {
@@ -616,12 +637,13 @@ impl Component for GameManager {
         Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
             .children((
-                self.top_bar(context),
+                // Each view can carry one dialog.
+                self.top_bar(context)
+                    .content_dialog(self.add_dialog(context)),
                 error,
-                body,
-                self.add_dialog(context),
-                self.remove_dialog(context),
+                body.content_dialog(self.remove_dialog(context)),
             ))
+            .into()
     }
 }
 

@@ -1,8 +1,7 @@
 //! Starts games through the Windows shell.
 
 use crate::Launch;
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::{SW_SHOWNORMAL, ShellExecuteW};
 use windows::core::{HSTRING, PCWSTR, w};
 
 /// Launches a game. Store URIs (e.g. `steam://`) are handed to their registered client.
@@ -45,12 +44,13 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
     };
 
     // ShellExecuteW reports success with a value greater than 32.
-    if result.0 as usize > 32 {
+    let code = result as usize;
+    if code > 32 {
         Ok(())
     } else {
         Err(format!(
-            "failed to launch {target} (code {})",
-            result.0 as usize
+            "failed to launch {} (code {code})",
+            target.display()
         ))
     }
 }

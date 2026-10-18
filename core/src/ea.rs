@@ -17,10 +17,9 @@ use crate::text::{child_text, decode_text, read_text, xml_body};
 use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, folder_key};
 use std::fs;
 use std::path::{Path, PathBuf};
-use windows::Win32::Foundation::FreeLibrary;
-use windows::Win32::System::LibraryLoader::{
-    FindResourceW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE, LoadLibraryExW,
-    LoadResource, LockResource, SizeofResource,
+use windows::Win32::{
+    FindResourceW, FreeLibrary, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+    LoadLibraryExW, LoadResource, LockResource, SizeofResource,
 };
 use windows::core::{HSTRING, w};
 
@@ -384,16 +383,22 @@ fn read_gdf_resource(dll: &Path) -> Option<String> {
         let module = LoadLibraryExW(
             &path,
             None,
-            LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-        )
-        .ok()?;
+            (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE) as u32,
+        );
+        if module.is_null() {
+            return None;
+        }
         let text = (|| {
             let resource = FindResourceW(Some(module), w!("__GDF_XML"), w!("DATA"));
-            if resource.is_invalid() {
+            if resource.is_null() {
                 return None;
             }
             let size = SizeofResource(Some(module), resource) as usize;
-            let data = LockResource(LoadResource(Some(module), resource).ok()?);
+            let loaded = LoadResource(Some(module), resource);
+            if loaded.is_null() {
+                return None;
+            }
+            let data = LockResource(loaded);
             if data.is_null() || size == 0 {
                 return None;
             }

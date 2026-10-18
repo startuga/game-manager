@@ -6,3 +6,11 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
+
+# windows-rs crates always come from the official repository's master branch, not crates.io.
+# Cargo.lock pins the commit; `cargo update` moves them all to the latest one.
+[workspace.dependencies]
+windows = { git = "https://github.com/microsoft/windows-rs" }
+windows-pickers = { git = "https://github.com/microsoft/windows-rs" }
+windows-reactor = { git = "https://github.com/microsoft/windows-rs" }
+windows-registry = { git = "https://github.com/microsoft/windows-rs" }

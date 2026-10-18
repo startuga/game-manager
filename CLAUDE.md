@@ -4,9 +4,9 @@ Native Windows 11 game launcher/library written in Rust.
 
 ## Layout
 - `app/` – WinUI 3 UI built with `windows-reactor` (preview, 0.100). Component/message/view model, Elm style.
-  - `main.rs` – window layout: `top_bar` (title, scan status, Add game, Rescan), `sidebar` (search, store filter, game list), `main_panel` (selected game: icon, title, install path, ▶ Play + extra launch buttons, Remove for custom games, store), `add_dialog`/`remove_dialog` (`ContentDialog`s driven by `draft`/`removing` state). Selection is kept by game id.
+  - `main.rs` – window layout: `top_bar` (title, scan status, Add game, Rescan), `sidebar` (search, store filter, game list), `main_panel` (selected game: icon, title, install path, ▶ Play + extra launch buttons, Remove for custom games, store), `add_dialog`/`remove_dialog` (`ContentDialog`s driven by `draft`/`removing` state, attached with `.content_dialog()`: one per view, Add on the top bar, Remove on the body). Selection is kept by game id.
+  - Add game: `windows_pickers::OpenFilePicker::request` shows the Open dialog for the app's window (the window is disabled while it is open); the suggested name is then read in a background task.
   - `library.rs` – UI-free search/store-filter/selection rules, unit-tested.
-  - `picker.rs` – Win32 `IFileOpenDialog` for a custom game's program. It runs on its own STA thread inside a background task, owned by the window from `GetActiveWindow` (taken on the UI thread at click time), so the main window is disabled while it is open.
 - `core/` (crate `gm-core`) – game discovery, launching, data model. **No UI code here**, so the UI layer can be swapped.
   - `vdf.rs` – Valve KeyValues parser; `steam.rs` – Steam scanner; `epic.rs` – Epic scanner (current launcher: `%LOCALAPPDATA%\com.epicgames.eglv2\installations.jsonl` log + `cache\prod\catalog-cache.json` for titles; legacy: `%ProgramData%` `*.item` manifests); `gog.rs` – GOG scanner (`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games` + each game's `goggame-<id>.info` primary play task); `ea.rs` – EA scanner (folders with `__Installer\installerdata.xml`, found via uninstall entries and `Electronic Arts`/`EA Games` `Install Dir` keys, listed only if the EA app knows them: an `Origin Games\<contentID>` key or an `EAInstaller\...\Cleanup.exe` uninstaller; names from `Origin Games\<contentID>`; program from installerdata `<runtime><launcher>` or the GDF XML resource in `GDFBinary_<locale>.dll`. The EA app's own data is encrypted, so there is no EA-app launch link); `launcher.rs` – `ShellExecuteW`.
   - `xbox.rs` – Xbox app / Microsoft Store scanner: the current user's packages from WinRT `PackageManager.FindPackagesByUserSecurityId("")`, kept when the install folder has `MicrosoftGame.config`. Play = `shell:AppsFolder\<PackageFamilyName>!<AppId>` (packaged games cannot be started by their `.exe`); "Open in Xbox app" = `msxbox://game/?productId=<StoreId>`; icon = `Square150x150Logo` (or its largest `scale-`/`targetsize-` variant).
@@ -19,13 +19,14 @@ Native Windows 11 game launcher/library written in Rust.
 
 ## Toolchain
 - Rust pinned to 1.99.1 in `rust-toolchain.toml`, edition 2024, MSVC target.
+- windows-rs crates (`windows`, `windows-registry`, `windows-reactor`, `windows-pickers`) always come from the official repository's master branch (https://github.com/microsoft/windows-rs), declared once in the root `[workspace.dependencies]` and used with `workspace = true`. Never switch them back to crates.io. `Cargo.lock` pins the commit; `cargo update` moves to the latest master, then fix whatever its API changes break. The first fetch downloads the whole repository (about 1.4 GB, shallow fetch is nightly-only).
 - WinUI apps are framework-dependent: they need the Windows App Runtime 2.x installed.
 
 ## Commands
 - Build: `cargo build`
 - Run UI: `cargo run -p app`
 - Scanner check: `cargo run -p gm-core --example scan` (add `-- -v` to print launch commands and icon sources, `-- --icons <dir>` to save every icon as PNG)
-- UI check: screen capture does not work from the agent session; inspect the running window with UI Automation (`System.Windows.Automation` in PowerShell) instead. The Open dialog appears under the main window in the UIA tree, and its Win32 controls show as plain panes: set the file name with `WM_SETTEXT` on the `Edit` with id `1148` and press Open with `BM_CLICK` on the `Button` with id `1`. Custom-game checks write to the real `%APPDATA%\Game Manager\custom-games.json`; clean it up afterwards.
+- UI check: screen capture does not work from the agent session; inspect the running window with UI Automation (`System.Windows.Automation` in PowerShell) instead. The Open dialog appears under the main window in the UIA tree (class `#32770`), but its Win32 controls show as plain panes and walking them fails while it loads: take the dialog's `NativeWindowHandle`, find the file name box with `GetDlgItem(dlg, 1148)` → child `ComboBox` → child `Edit` and set it with `WM_SETTEXT`, then `PostMessage` `BM_CLICK` to `GetDlgItem(dlg, 1)` (Open). Custom-game checks write to the real `%APPDATA%\Game Manager\custom-games.json`; clean it up afterwards.
 - Before finishing a change: `cargo fmt`, `cargo clippy --all-targets` (no warnings), `cargo test`.
 
 ## Conventions
@@ -33,5 +34,4 @@ Native Windows 11 game launcher/library written in Rust.
 - A store that fails to scan adds to `ScanReport::errors`; it must not hide other stores' games.
 - Every `unsafe` block gets a `// SAFETY:` comment.
 - Game ids are `<store>:<store id>` and must be stable (used as list keys and, later, for saved data).
-- `windows-reactor` is a preview: when unsure of an API, read its source in `~/.cargo/registry/src/*/windows-reactor-0.100.0/src` rather than guessing.
-- Pending upstream (windows-rs master, not on crates.io as of 2026-10-18): when a `windows-reactor` release has `ComponentContext::run_window` and `windows-pickers` is published past its 0.0.0 placeholder, replace `app/src/picker.rs` with `windows_pickers::OpenFilePicker` (`reactor` feature, `.request(context, …)`, real window handle instead of `GetActiveWindow`), and give the Add game dialog `.default_button(ContentDialogButton::Primary)`.
+- `windows-reactor` is a preview that changes often: when unsure of an API, read the source of the commit in `Cargo.lock` in `~/.cargo/git/checkouts/windows-rs-*/<short rev>/crates/libs/` (`reactor`, `pickers`, and its samples in `crates/samples/`) rather than guessing.

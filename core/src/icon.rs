@@ -4,17 +4,12 @@
 use crate::IconRef;
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_ContainerFormatPng, IWICBitmapFrameEncode, IWICImagingFactory,
-    WICBitmapEncoderNoCache,
+use windows::Win32::{
+    CLSCTX_INPROC_SERVER, CLSID_WICImagingFactory, COINIT_MULTITHREADED, CoCreateInstance,
+    CoInitializeEx, CoUninitialize, DestroyIcon, GUID_ContainerFormatPng, HICON, IPropertyBag2,
+    IStream, IWICBitmapFrameEncode, IWICImagingFactory, LARGE_INTEGER, SHCreateMemStream,
+    SHDefExtractIconW, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET, WICBitmapEncoderNoCache,
 };
-use windows::Win32::System::Com::StructuredStorage::IPropertyBag2;
-use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
-    IStream, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET,
-};
-use windows::Win32::UI::Shell::{SHCreateMemStream, SHDefExtractIconW};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
 use windows::core::{HSTRING, Result};
 
 /// Converts icons to PNG. Create one per thread and reuse it for a batch of icons.
@@ -57,15 +52,15 @@ impl IconExtractor {
             let encoder = self
                 .factory
                 .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())?;
-            encoder.Initialize(&stream, WICBitmapEncoderNoCache)?;
+            encoder.Initialize(&stream, WICBitmapEncoderNoCache).ok()?;
             let mut frame: Option<IWICBitmapFrameEncode> = None;
             let mut options: Option<IPropertyBag2> = None;
-            encoder.CreateNewFrame(&mut frame, &mut options)?;
+            encoder.CreateNewFrame(&mut frame, &mut options).ok()?;
             let frame = frame.ok_or_else(windows::core::Error::empty)?;
-            frame.Initialize(options.as_ref())?;
-            frame.WriteSource(&bitmap, std::ptr::null())?;
-            frame.Commit()?;
-            encoder.Commit()?;
+            frame.Initialize(options.as_ref()).ok()?;
+            frame.WriteSource(&bitmap, std::ptr::null()).ok()?;
+            frame.Commit().ok()?;
+            encoder.Commit().ok()?;
 
             read_all(&stream)
         }
@@ -97,11 +92,11 @@ fn is_image_file(path: &std::path::Path) -> bool {
 /// Extracts the icon at `size` pixels, scaling from the closest size the file contains.
 fn extract(icon: &IconRef, size: u32) -> Option<HICON> {
     let path = HSTRING::from(icon.path.as_os_str());
-    let mut hicon = HICON::default();
+    let mut hicon: HICON = std::ptr::null_mut();
     // SAFETY: `path` is a valid wide string and `hicon` a valid out-pointer. The low word of the
     // last argument is the large icon's size; no small icon is requested.
     let hr = unsafe { SHDefExtractIconW(&path, icon.index, 0, Some(&mut hicon), None, size) };
-    (hr.0 == 0 && !hicon.is_invalid()).then_some(hicon)
+    (hr.0 == 0 && !hicon.is_null()).then_some(hicon)
 }
 
 /// Reads a whole memory stream from the beginning.
@@ -109,9 +104,11 @@ unsafe fn read_all(stream: &IStream) -> Result<Vec<u8>> {
     // SAFETY: the caller passes a live stream; `stat` and `buffer` are valid for the calls.
     unsafe {
         let mut stat = STATSTG::default();
-        stream.Stat(&mut stat, STATFLAG_NONAME)?;
-        stream.Seek(0, STREAM_SEEK_SET, None)?;
-        let mut buffer = vec![0u8; stat.cbSize as usize];
+        stream.Stat(&mut stat, STATFLAG_NONAME as u32).ok()?;
+        stream
+            .Seek(LARGE_INTEGER { QuadPart: 0 }, STREAM_SEEK_SET as u32, None)
+            .ok()?;
+        let mut buffer = vec![0u8; stat.cbSize.QuadPart as usize];
         let mut read = 0u32;
         stream
             .Read(
@@ -136,7 +133,7 @@ impl ComGuard {
     fn new() -> Self {
         // SAFETY: plain COM initialization. If the thread already uses another apartment model
         // (RPC_E_CHANGED_MODE) COM is still usable, but must not be uninitialized by us.
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED as u32) };
         Self {
             initialized: hr.is_ok(),
             _not_send: PhantomData,

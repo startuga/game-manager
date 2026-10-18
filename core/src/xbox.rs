@@ -53,7 +53,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
             .Id()
             .and_then(|id| id.FamilyName())
             .ok()
-            .map(|name| name.to_string())
+            .map(|name| name.to_string_lossy())
         else {
             continue;
         };
@@ -62,7 +62,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
             .unwrap_or_default();
         let display_name = package
             .DisplayName()
-            .map(|name| name.to_string())
+            .map(|name| name.to_string_lossy())
             .unwrap_or_default();
 
         if let Some(mut game) = build_game(&family, &display_name, &dir, &config, &app_ids) {

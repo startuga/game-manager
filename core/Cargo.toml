@@ -7,5 +7,14 @@ edition = "2024"
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-windows = { version = "0.62", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_LibraryLoader", "Win32_Graphics_Imaging", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Storage_FileSystem","Management_Deployment", "ApplicationModel"] }
-windows-registry = "0.100"
+# Win32 features are named after C headers: launcher (shellapi, winuser), icons (wincodec,
+# shlobj_core, shlwapi, combaseapi, objbase, objidlbase, wtypes, wtypesbase, ocidl, windef),
+# EA resources (libloaderapi, minwindef), version info (winver), Xbox packages (WinRT).
+windows = { workspace = true, features = [
+    "shellapi", "winuser",
+    "wincodec", "shlobj_core", "shlwapi", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
+    "libloaderapi", "minwindef",
+    "winver",
+    "Management_Deployment", "ApplicationModel",
+] }
+windows-registry = { workspace = true }

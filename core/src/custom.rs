@@ -9,9 +9,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use windows::Win32::Storage::FileSystem::{
-    GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
-};
+use windows::Win32::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows::core::HSTRING;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,7 +174,9 @@ impl VersionInfo {
         }
         let mut data = vec![0u16; size.div_ceil(2) as usize];
         // SAFETY: `data` holds at least `size` bytes, the size the system asked for.
-        unsafe { GetFileVersionInfoW(&path, None, size, data.as_mut_ptr().cast()) }.ok()?;
+        unsafe { GetFileVersionInfoW(&path, None, size, data.as_mut_ptr().cast()) }
+            .ok()
+            .ok()?;
         Some(Self { data })
     }
 
