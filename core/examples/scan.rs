@@ -1,5 +1,6 @@
 //! Prints every detected game: `cargo run -p gm-core --example scan [-- -v] [-- --icons <dir>]`
-//! `-v` also prints how each game is launched and where its icon comes from.
+//! Each line shows the game's bitness ("?" when unknown). `-v` also prints how each game is
+//! launched, where its icon comes from and which program the bitness was read from.
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 
 use gm_core::icon::IconExtractor;
@@ -16,13 +17,21 @@ fn main() {
 
     let report = gm_core::scan_all();
     for game in &report.games {
-        println!("{:<10} {:<50} {}", game.store.name(), game.name, game.id);
+        let arch = game.arch.map_or("?", |arch| arch.label());
+        println!(
+            "{:<10} {:<50} {:<15} {}",
+            game.store.name(),
+            game.name,
+            arch,
+            game.id
+        );
         if verbose {
             println!("           play: {:?}", game.launch);
             for alt in &game.alt_launches {
                 println!("           {}: {:?}", alt.label, alt.launch);
             }
             println!("           icon: {:?}", game.icon);
+            println!("           program: {:?}", game.program);
         }
     }
     println!("{} games", report.games.len());

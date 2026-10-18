@@ -140,6 +140,8 @@ fn parse_installations(text: &str, titles: &HashMap<String, String>) -> Vec<Game
                 install_dir: Some(dir),
                 launch: launch_uri(&r.namespace, &r.item_id, &r.artifact_id),
                 alt_launches: Vec::new(),
+                program: None,
+                arch: None,
             }
         })
         .collect()
@@ -255,6 +257,8 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
             &manifest.app_name,
         ),
         alt_launches: Vec::new(),
+        program: None,
+        arch: None,
     })
 }
 

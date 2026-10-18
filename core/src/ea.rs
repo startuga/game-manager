@@ -100,6 +100,8 @@ pub fn scan() -> Result<Vec<Game>, String> {
             install_dir: Some(candidate.dir),
             launch,
             alt_launches: Vec::new(),
+            program: None,
+            arch: None,
         });
     }
     Ok(games)

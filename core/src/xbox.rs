@@ -9,10 +9,11 @@
 //! package identity, `shell:AppsFolder\<PackageFamilyName>!<AppId>`, as the Start menu does.
 
 use crate::text::{child_text, read_text, xml_body};
-use crate::{Game, IconRef, Launch, LaunchOption, Store};
+use crate::{Arch, Game, IconRef, Launch, LaunchOption, Store};
 use std::fs;
 use std::path::{Path, PathBuf};
 use windows::Management::Deployment::PackageManager;
+use windows::System::ProcessorArchitecture;
 use windows::core::HSTRING;
 
 /// What the scanner uses from `MicrosoftGame.config`.
@@ -21,6 +22,8 @@ struct GameConfig {
     store_id: String,
     /// `<Executable Id>` values, PC executables first.
     executable_ids: Vec<String>,
+    /// `<Executable Name>` values (paths in the package), in the same order.
+    executable_names: Vec<String>,
     default_display_name: String,
     override_display_name: String,
     /// Logo files from `<ShellVisuals>`, best for an icon first.
@@ -67,6 +70,17 @@ pub fn scan() -> Result<Vec<Game>, String> {
 
         if let Some(mut game) = build_game(&family, &display_name, &dir, &config, &app_ids) {
             game.icon = resolve_logo(&dir, &config.logos);
+            // The package states its architecture; package files may not be readable.
+            game.arch = package
+                .Id()
+                .and_then(|id| id.Architecture())
+                .ok()
+                .and_then(package_arch);
+            game.program = config
+                .executable_names
+                .first()
+                .map(|name| dir.join(name.replace('/', "\\")))
+                .filter(|program| program.is_file());
             games.push(game);
         }
     }
@@ -108,6 +122,11 @@ fn parse_game_config(text: &str) -> Option<GameConfig> {
             .filter_map(|n| n.attribute("Id"))
             .map(str::to_owned)
             .collect(),
+        executable_names: executables
+            .iter()
+            .filter_map(|n| n.attribute("Name"))
+            .map(str::to_owned)
+            .collect(),
         default_display_name: attr(visuals, "DefaultDisplayName"),
         override_display_name: attr(executables.first().copied(), "OverrideDisplayName"),
         logos: ["Square150x150Logo", "Square44x44Logo", "StoreLogo"]
@@ -129,6 +148,18 @@ fn parse_manifest_app_ids(text: &str) -> Vec<String> {
         .filter_map(|n| n.attribute("Id"))
         .map(str::to_owned)
         .collect()
+}
+
+/// A package's architecture. Neutral and emulated packages give `None`, so the program's own
+/// header decides.
+fn package_arch(architecture: ProcessorArchitecture) -> Option<Arch> {
+    match architecture {
+        ProcessorArchitecture::X86 => Some(Arch::X86),
+        ProcessorArchitecture::X64 => Some(Arch::X64),
+        ProcessorArchitecture::Arm64 => Some(Arch::Arm64),
+        ProcessorArchitecture::Arm => Some(Arch::Arm),
+        _ => None,
+    }
 }
 
 /// The package app to start: the one the game config names, else the manifest's first.
@@ -179,6 +210,8 @@ fn build_game(
         launch: Launch::Uri(format!(r"shell:AppsFolder\{family}!{app_id}")),
         alt_launches,
         icon: None,
+        program: None,
+        arch: None,
     })
 }
 
@@ -277,10 +310,23 @@ mod tests {
     }
 
     #[test]
+    fn package_architecture_decides_unless_neutral() {
+        assert_eq!(package_arch(ProcessorArchitecture::X86), Some(Arch::X86));
+        assert_eq!(package_arch(ProcessorArchitecture::X64), Some(Arch::X64));
+        assert_eq!(
+            package_arch(ProcessorArchitecture::Arm64),
+            Some(Arch::Arm64)
+        );
+        assert_eq!(package_arch(ProcessorArchitecture::Neutral), None);
+        assert_eq!(package_arch(ProcessorArchitecture::X86OnArm64), None);
+    }
+
+    #[test]
     fn parses_game_config() {
         let config = parse_game_config(WOLFENSTEIN_CONFIG).unwrap();
         assert_eq!(config.store_id, "9N3PVJ211XZ2");
         assert_eq!(config.executable_ids, ["Game"]);
+        assert_eq!(config.executable_names, ["Launcher.exe"]);
         assert_eq!(config.default_display_name, "Wolfenstein: Enemy Territory");
         assert_eq!(config.override_display_name, "Wolfenstein: Enemy Territory");
         assert_eq!(

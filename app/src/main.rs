@@ -2,7 +2,6 @@
 
 mod library;
 
-use gm_core::custom::CustomGame;
 use gm_core::{Game, ScanReport, Store};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,7 +45,8 @@ enum Message {
     DraftArgs(String),
     /// The Add game dialog closed: `Primary` is Add.
     DraftClosed(ContentDialogResult),
-    CustomGameAdded(Result<CustomGame, String>),
+    /// The custom game that was saved, completed like a scanned game.
+    CustomGameAdded(Result<Box<Game>, String>),
     /// Asks to confirm removing the custom game with this id.
     RemoveGame(String),
     /// The remove confirmation closed: `Primary` is Remove.
@@ -352,6 +352,13 @@ impl GameManager {
             .opacity(0.7)
             .vertical_alignment(VerticalAlignment::Center)
             .margin(Thickness::new(12.0, 0.0, 0.0, 0.0));
+        let arch = game.arch.map(|arch| {
+            let text = TextBlock::new()
+                .text(arch.label())
+                .opacity(0.7)
+                .vertical_alignment(VerticalAlignment::Center);
+            KeyedView::new("arch", text)
+        });
         let actions = StackPanel::new()
             .orientation(Orientation::Horizontal)
             .spacing(12.0)
@@ -359,7 +366,8 @@ impl GameManager {
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
                     .chain(remove)
-                    .chain(std::iter::once(KeyedView::new("store", store))),
+                    .chain(std::iter::once(KeyedView::new("store", store)))
+                    .chain(arch),
             );
 
         ScrollViewer::new()
@@ -563,16 +571,19 @@ impl Component for GameManager {
                     && result == ContentDialogResult::Primary
                 {
                     context.spawn_background(move |_cancel| {
-                        Message::CustomGameAdded(gm_core::custom::add(
-                            &draft.name,
-                            &draft.program,
-                            &draft.args,
-                        ))
+                        let added = gm_core::custom::add(&draft.name, &draft.program, &draft.args)
+                            .map(|custom| {
+                                // As a scan would: program, icon and architecture.
+                                let mut game = custom.to_game();
+                                gm_core::complete_game(&mut game);
+                                Box::new(game)
+                            });
+                        Message::CustomGameAdded(added)
                     });
                 }
             }
-            Message::CustomGameAdded(Ok(custom)) => {
-                let game = custom.to_game();
+            Message::CustomGameAdded(Ok(game)) => {
+                let game = *game;
                 // Show the new game even when the current search or store filter would hide it.
                 if library::filter(std::slice::from_ref(&game), &self.query, self.store_filter)
                     .is_empty()

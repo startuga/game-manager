@@ -9,12 +9,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Win32 features are named after C headers: launcher (shellapi, winuser), icons (wincodec,
 # shlobj_core, shlwapi, combaseapi, objbase, objidlbase, wtypes, wtypesbase, ocidl, windef),
-# EA resources (libloaderapi, minwindef), version info (winver), Xbox packages (WinRT).
+# EA resources (libloaderapi, minwindef), version info (winver), Xbox packages and their
+# architecture (WinRT Management_Deployment, ApplicationModel, System).
 windows = { workspace = true, features = [
     "shellapi", "winuser",
     "wincodec", "shlobj_core", "shlwapi", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
     "libloaderapi", "minwindef",
     "winver",
-    "Management_Deployment", "ApplicationModel",
+    "Management_Deployment", "ApplicationModel", "System",
 ] }
 windows-registry = { workspace = true }

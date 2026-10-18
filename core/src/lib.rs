@@ -6,6 +6,7 @@ pub mod epic;
 pub mod gog;
 pub mod icon;
 mod launcher;
+pub mod pe;
 pub mod steam;
 mod text;
 pub mod vdf;
@@ -14,7 +15,7 @@ pub mod xbox;
 pub use launcher::launch;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +120,44 @@ pub struct Game {
     /// The game's icon. When a scanner finds none, the program started by Play is used.
     #[serde(default)]
     pub icon: Option<IconRef>,
+    /// The game's own executable, when known. Scanners set it when Play does not start the game
+    /// directly (Steam); otherwise `scan_all` takes the icon's `.exe` or the program Play starts.
+    #[serde(default)]
+    pub program: Option<PathBuf>,
+    /// The game's processor architecture: from the package (Xbox) or from `program`'s PE header.
+    #[serde(default)]
+    pub arch: Option<Arch>,
+}
+
+/// The processor architecture a game's program is built for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Arch {
+    X86,
+    X64,
+    Arm64,
+    Arm,
+    /// A .NET program without a fixed architecture: it runs as 64-bit on 64-bit Windows.
+    AnyCpu,
+}
+
+impl Arch {
+    /// 32 or 64, as the program runs on 64-bit Windows.
+    pub fn bits(self) -> u8 {
+        match self {
+            Arch::X86 | Arch::Arm => 32,
+            Arch::X64 | Arch::Arm64 | Arch::AnyCpu => 64,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Arch::X86 => "32-bit (x86)",
+            Arch::X64 => "64-bit (x64)",
+            Arch::Arm64 => "64-bit (ARM64)",
+            Arch::Arm => "32-bit (ARM)",
+            Arch::AnyCpu => "Any CPU (.NET)",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -150,17 +189,51 @@ pub fn scan_all() -> ScanReport {
             Err(e) => report.errors.push(format!("{}: {e}", store.name())),
         }
     }
+    // Programs first, so a duplicate dropped below can still give its program.
+    report.games.iter_mut().for_each(default_program);
     dedupe_install_dirs(&mut report.games);
     // After deduplication: a game added by hand stays even when a store reports its folder too.
     match custom::scan() {
         Ok(games) => report.games.extend(games),
         Err(e) => report.errors.push(format!("{}: {e}", Store::Custom.name())),
     }
-    for game in &mut report.games {
-        default_icon_to_program(game);
-    }
+    report.games.iter_mut().for_each(complete_game);
     sort_games(&mut report.games);
     report
+}
+
+/// Fills what a scanner left out: the game's program, its icon and its architecture. Reads the
+/// program's header, so it is blocking. `scan_all` calls it for every game.
+pub fn complete_game(game: &mut Game) {
+    default_program(game);
+    default_icon_to_program(game);
+    if game.arch.is_none() {
+        game.arch = game.program.as_deref().and_then(pe::architecture);
+    }
+}
+
+/// When the scanner named no program: the icon's `.exe` if it is in the install folder (an EA
+/// game's icon is the game while Play may start a launcher), else the `.exe` that Play starts.
+fn default_program(game: &mut Game) {
+    if game.program.is_some() {
+        return;
+    }
+    let icon_exe = game.icon.as_ref().map(|icon| &icon.path).filter(|path| {
+        is_exe(path)
+            && game
+                .install_dir
+                .as_deref()
+                .is_none_or(|dir| folder_key(path).starts_with(&format!("{}\\", folder_key(dir))))
+    });
+    game.program = icon_exe.cloned().or_else(|| match &game.launch {
+        Launch::Exe { path, .. } if is_exe(path) => Some(path.clone()),
+        _ => None,
+    });
+}
+
+fn is_exe(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
 }
 
 /// Library order: by name, ignoring case.
@@ -177,13 +250,30 @@ fn default_icon_to_program(game: &mut Game) {
     }
 }
 
-/// Keeps only the first game for each install folder.
+/// Keeps only the first game for each install folder. A dropped duplicate still gives its program
+/// when the kept game has none: Steam hands some games to the EA app (`steam2ea://`) while the EA
+/// scanner knows their `.exe`.
 fn dedupe_install_dirs(games: &mut Vec<Game>) {
-    let mut seen = HashSet::new();
-    games.retain(|game| match &game.install_dir {
-        Some(dir) => seen.insert(folder_key(dir)),
-        None => true,
-    });
+    let mut kept_by_folder: HashMap<String, usize> = HashMap::new();
+    let mut kept: Vec<Game> = Vec::with_capacity(games.len());
+    for game in games.drain(..) {
+        let Some(key) = game.install_dir.as_deref().map(folder_key) else {
+            kept.push(game);
+            continue;
+        };
+        match kept_by_folder.get(&key) {
+            Some(&first) => {
+                if kept[first].program.is_none() {
+                    kept[first].program = game.program;
+                }
+            }
+            None => {
+                kept_by_folder.insert(key, kept.len());
+                kept.push(game);
+            }
+        }
+    }
+    *games = kept;
 }
 
 /// Windows uninstall entries, 64-bit and 32-bit views (under `HKEY_LOCAL_MACHINE`).
@@ -230,6 +320,8 @@ mod tests {
             launch: Launch::Uri(String::new()),
             alt_launches: Vec::new(),
             icon: None,
+            program: None,
+            arch: None,
         }
     }
 
@@ -321,5 +413,96 @@ mod tests {
         dedupe_install_dirs(&mut games);
         let ids: Vec<_> = games.iter().map(|g| g.id.as_str()).collect();
         assert_eq!(ids, ["steam:1", "gog:2", "ea:4", "ea:5"]);
+    }
+
+    #[test]
+    fn dropped_duplicate_gives_its_program_to_the_kept_game() {
+        let folder = r"C:\Steam\steamapps\common\BurnoutPR";
+        let steam = game("steam:1238080", Store::Steam, Some(folder));
+        let mut ea = game("ea:1", Store::Ea, Some(folder));
+        ea.program = Some(PathBuf::from(format!(r"{folder}\BurnoutPR.exe")));
+        let mut games = vec![steam.clone(), ea.clone()];
+        dedupe_install_dirs(&mut games);
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].id, "steam:1238080");
+        assert_eq!(games[0].program, ea.program);
+
+        // The kept game's own program wins.
+        let mut steam_with_program = steam;
+        steam_with_program.program = Some(PathBuf::from(format!(r"{folder}\Steam.exe")));
+        let mut games = vec![steam_with_program.clone(), ea];
+        dedupe_install_dirs(&mut games);
+        assert_eq!(games[0].program, steam_with_program.program);
+    }
+
+    fn exe(path: &str) -> Launch {
+        Launch::Exe {
+            path: PathBuf::from(path),
+            args: String::new(),
+            working_dir: None,
+        }
+    }
+
+    #[test]
+    fn program_is_the_icon_exe_in_the_install_folder_or_what_play_starts() {
+        // EA: Play starts a launcher, the icon is the game itself.
+        let mut ea = game("ea:1", Store::Ea, Some(r"C:\EA\Sims"));
+        ea.launch = exe(r"C:\EA\Sims\Bin\TS4_Launcher_x64.exe");
+        ea.icon = Some(IconRef::file(r"C:\EA\Sims\Bin\TS4_x64.exe"));
+        default_program(&mut ea);
+        assert_eq!(
+            ea.program,
+            Some(PathBuf::from(r"C:\EA\Sims\Bin\TS4_x64.exe"))
+        );
+
+        // An `.ico` icon, or an `.exe` icon outside the install folder: what Play starts.
+        let mut gog = game("gog:1", Store::Gog, Some(r"C:\GOG\PoP"));
+        gog.launch = exe(r"C:\GOG\PoP\PrinceOfPersia.exe");
+        gog.icon = Some(IconRef::file(r"C:\GOG\PoP\goggame-1.ico"));
+        default_program(&mut gog);
+        assert_eq!(
+            gog.program,
+            Some(PathBuf::from(r"C:\GOG\PoP\PrinceOfPersia.exe"))
+        );
+        let mut elsewhere = gog.clone();
+        elsewhere.program = None;
+        elsewhere.icon = Some(IconRef::file(r"C:\GOG\PoP Tools\tool.exe"));
+        default_program(&mut elsewhere);
+        assert_eq!(elsewhere.program, gog.program);
+
+        // Store URIs and scripts have no program; a program set by the scanner stays.
+        let mut steam = game("steam:1", Store::Steam, Some(r"C:\Steam\common\X"));
+        default_program(&mut steam);
+        assert_eq!(steam.program, None);
+        let mut script = game("custom:1", Store::Custom, None);
+        script.launch = exe(r"C:\Games\start.bat");
+        default_program(&mut script);
+        assert_eq!(script.program, None);
+        steam.program = Some(PathBuf::from(r"C:\Steam\common\X\x.exe"));
+        default_program(&mut steam);
+        assert_eq!(
+            steam.program,
+            Some(PathBuf::from(r"C:\Steam\common\X\x.exe"))
+        );
+    }
+
+    #[test]
+    fn completed_games_get_their_architecture() {
+        let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let wow64 = windows.join(r"SysWOW64\notepad.exe");
+        if !wow64.is_file() {
+            return;
+        }
+        let mut notepad = game("custom:1", Store::Custom, None);
+        notepad.launch = exe(&wow64.to_string_lossy());
+        complete_game(&mut notepad);
+        assert_eq!(notepad.program, Some(wow64));
+        assert_eq!(notepad.arch, Some(Arch::X86));
+
+        // A value from the scanner (e.g. an Xbox package) is kept.
+        let mut packaged = notepad.clone();
+        packaged.arch = Some(Arch::Arm64);
+        complete_game(&mut packaged);
+        assert_eq!(packaged.arch, Some(Arch::Arm64));
     }
 }

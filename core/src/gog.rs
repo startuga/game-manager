@@ -52,6 +52,9 @@ struct PlayTask {
     arguments: String,
     #[serde(default)]
     working_dir: String,
+    /// `game`, `launcher`, `tool`, `document`, `other`…
+    #[serde(default)]
+    category: String,
 }
 
 /// Scans the GOG registry key for installed games.
@@ -148,6 +151,7 @@ fn build_game(entry: &RegistryEntry, info: Option<&Info>, galaxy: Option<&Path>)
             }]
         })
         .unwrap_or_default();
+    let program = info.and_then(|info| game_program(info, &dir));
 
     Some(Game {
         id: format!("gog:{}", entry.game_id),
@@ -157,7 +161,24 @@ fn build_game(entry: &RegistryEntry, info: Option<&Info>, galaxy: Option<&Path>)
         launch,
         alt_launches,
         icon: None,
+        program,
+        arch: None,
     })
+}
+
+/// The game's own program when Play starts a launcher: the first file task in the `game`
+/// category whose `.exe` exists (Witcher 3's primary task is `REDprelauncher.exe`, a launcher,
+/// while its game tasks start `bin\x64_dx12\witcher3.exe`). `None` lets Play's program count.
+fn game_program(info: &Info, dir: &Path) -> Option<PathBuf> {
+    info.play_tasks
+        .iter()
+        .filter(|task| task.kind == "FileTask" && task.category.eq_ignore_ascii_case("game"))
+        .map(|task| dir.join(task.path.replace('/', "\\")))
+        .find(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+                && path.is_file()
+        })
 }
 
 /// The `.info` file's primary file task, or its first file task if none is marked primary.
@@ -374,5 +395,42 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn program_is_the_first_existing_game_task() {
+        let dir = std::env::temp_dir().join(format!("GM-GOG-Program-{}", std::process::id()));
+        fs::create_dir_all(dir.join(r"bin\x64")).unwrap();
+        for file in ["REDprelauncher.exe", r"bin\x64\witcher3.exe"] {
+            fs::write(dir.join(file), b"MZ").unwrap();
+        }
+        // Shaped like Witcher 3's info: a primary launcher task, then game tasks.
+        let info = parse_info(
+            r#"{ "playTasks": [
+                { "category": "launcher", "isPrimary": true, "type": "FileTask", "path": "REDprelauncher.exe" },
+                { "category": "game", "type": "FileTask", "path": "bin/x64_dx12/witcher3.exe" },
+                { "category": "game", "type": "FileTask", "path": "bin/x64/witcher3.exe" },
+                { "category": "other", "type": "URLTask", "link": "https://support.gog.com" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            primary_task_launch(&info, &dir).map(|launch| match launch {
+                Launch::Exe { path, .. } => path,
+                Launch::Uri(_) => PathBuf::new(),
+            }),
+            Some(dir.join("REDprelauncher.exe"))
+        );
+        assert_eq!(
+            game_program(&info, &dir),
+            Some(dir.join(r"bin\x64\witcher3.exe"))
+        );
+
+        let launcher_only = parse_info(
+            r#"{ "playTasks": [ { "category": "launcher", "isPrimary": true, "type": "FileTask", "path": "REDprelauncher.exe" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(game_program(&launcher_only, &dir), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

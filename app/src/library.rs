@@ -48,6 +48,8 @@ mod tests {
             launch: Launch::Uri(String::new()),
             alt_launches: Vec::new(),
             icon: None,
+            program: None,
+            arch: None,
         }
     }
 
