@@ -1,9 +1,12 @@
 #![windows_subsystem = "windows"]
 
 mod library;
+mod picker;
 
+use gm_core::custom::CustomGame;
 use gm_core::{Game, ScanReport, Store};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use windows_reactor::*;
 
@@ -32,6 +35,28 @@ enum Message {
         option: Option<usize>,
     },
     DismissError,
+    /// Opens the file dialog to choose a custom game's program.
+    AddGame,
+    /// The chosen program and a suggested name; `None` when the dialog was cancelled.
+    ProgramPicked(Result<Option<(PathBuf, String)>, String>),
+    DraftName(String),
+    DraftArgs(String),
+    /// The Add game dialog closed: `Primary` is Add.
+    DraftClosed(ContentDialogResult),
+    CustomGameAdded(Result<CustomGame, String>),
+    /// Asks to confirm removing the custom game with this id.
+    RemoveGame(String),
+    /// The remove confirmation closed: `Primary` is Remove.
+    RemoveClosed(ContentDialogResult),
+    /// The id of the custom game that was removed.
+    CustomGameRemoved(Result<String, String>),
+}
+
+/// A custom game being set up in the Add game dialog.
+struct Draft {
+    program: PathBuf,
+    name: String,
+    args: String,
 }
 
 struct GameManager {
@@ -42,6 +67,11 @@ struct GameManager {
     selected: Option<String>,
     scanning: bool,
     error: Option<String>,
+    /// The file dialog for a custom game's program is open.
+    picking: bool,
+    draft: Option<Draft>,
+    /// The custom game whose removal waits for confirmation.
+    removing: Option<String>,
 }
 
 impl GameManager {
@@ -51,8 +81,7 @@ impl GameManager {
     }
 
     /// Extracts icons after the list is shown, so a large library appears without waiting.
-    fn load_icons(&self, context: &ComponentContext<Self>) {
-        let games = self.games.clone();
+    fn load_icons(games: Vec<Game>, context: &ComponentContext<Self>) {
         context.spawn_background(move |_cancel| {
             let icons = gm_core::icon::extract_all(&games, ICON_PIXELS);
             Message::IconsLoaded(
@@ -67,6 +96,16 @@ impl GameManager {
     fn selected_game(&self) -> Option<&Game> {
         let id = self.selected.as_deref()?;
         self.games.iter().find(|game| game.id == id)
+    }
+
+    /// After games are removed: a store filter with no games left goes back to all stores.
+    fn drop_empty_store_filter(&mut self) {
+        if self
+            .store_filter
+            .is_some_and(|store| !self.games.iter().any(|game| game.store == store))
+        {
+            self.store_filter = None;
+        }
     }
 
     fn icon_view(&self, game: &Game, size: f64) -> View {
@@ -88,7 +127,7 @@ impl GameManager {
         }
     }
 
-    /// Global controls: app title, scan status and Rescan.
+    /// Global controls: app title, scan status, Add game and Rescan.
     fn top_bar(&self, context: &ViewContext<Self>) -> View {
         let status = if self.scanning {
             "Scanning libraries…".to_owned()
@@ -123,6 +162,12 @@ impl GameManager {
                     .text(status)
                     .opacity(0.7)
                     .vertical_alignment(VerticalAlignment::Center),
+                // Not while scanning: a scan that started before the save would drop the new game.
+                Button::new()
+                    .is_enabled(!self.scanning && !self.picking)
+                    .on_click(context.message(Message::AddGame))
+                    .automation_name("Add game")
+                    .content(icon_label(Symbol::Add, "Add game")),
                 Button::new()
                     .is_enabled(!self.scanning)
                     .on_click(context.message(Message::Scan))
@@ -236,7 +281,7 @@ impl GameManager {
             let message = if self.scanning {
                 "Looking for installed games…"
             } else if self.games.is_empty() {
-                "No installed games were found."
+                "No installed games were found. Use Add game to add one by hand."
             } else {
                 "Select a game in the library."
             };
@@ -292,6 +337,13 @@ impl GameManager {
                 .content(alt.label.clone());
             KeyedView::new(format!("alt-{i}"), button)
         });
+        let remove = (game.store == Store::Custom).then(|| {
+            let button = Button::new()
+                .on_click(context.message(Message::RemoveGame(game.id.clone())))
+                .automation_name(format!("Remove {}", game.name))
+                .content(icon_label(Symbol::Delete, "Remove"));
+            KeyedView::new("remove", button)
+        });
         let store = TextBlock::new()
             .text(format!("Store: {}", game.store.name()))
             .opacity(0.7)
@@ -303,6 +355,7 @@ impl GameManager {
             .keyed_children(
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
+                    .chain(remove)
                     .chain(std::iter::once(KeyedView::new("store", store))),
             );
 
@@ -312,6 +365,71 @@ impl GameManager {
                 .margin(Thickness::uniform(32.0))
                 .children((header, actions)),
         )
+    }
+
+    /// Name and arguments for a custom game whose program was just chosen.
+    fn add_dialog(&self, context: &ViewContext<Self>) -> View {
+        let (program, name, args) = self.draft.as_ref().map_or_else(Default::default, |draft| {
+            (
+                draft.program.display().to_string(),
+                draft.name.clone(),
+                draft.args.clone(),
+            )
+        });
+        let has_name = !name.trim().is_empty();
+        let label = |text: &str| {
+            TextBlock::new()
+                .text(text)
+                .margin(Thickness::new(0.0, 8.0, 0.0, 0.0))
+        };
+        ContentDialog::new()
+            .title("Add a game")
+            .primary_button_text("Add")
+            .close_button_text("Cancel")
+            .is_primary_button_enabled(has_name)
+            .is_open(self.draft.is_some())
+            .on_closed(context.callback(Message::DraftClosed))
+            .content(
+                StackPanel::new().spacing(6.0).children((
+                    TextBlock::new()
+                        .text(program)
+                        .opacity(0.7)
+                        .is_text_selection_enabled(true)
+                        .text_wrapping(TextWrapping::Wrap),
+                    label("Name"),
+                    TextBox::new()
+                        .text(name)
+                        .automation_name("Name")
+                        .on_text_changed(context.callback(Message::DraftName)),
+                    label("Command-line arguments (optional)"),
+                    TextBox::new()
+                        .text(args)
+                        .placeholder_text("For example: -windowed")
+                        .automation_name("Command-line arguments")
+                        .on_text_changed(context.callback(Message::DraftArgs)),
+                )),
+            )
+    }
+
+    /// Confirms removing a custom game from the library.
+    fn remove_dialog(&self, context: &ViewContext<Self>) -> View {
+        let name = self
+            .removing
+            .as_deref()
+            .and_then(|id| self.games.iter().find(|game| game.id == id))
+            .map(|game| game.name.clone())
+            .unwrap_or_default();
+        ContentDialog::new()
+            .title(format!("Remove {name}?"))
+            .primary_button_text("Remove")
+            .close_button_text("Cancel")
+            .is_open(self.removing.is_some())
+            .on_closed(context.callback(Message::RemoveClosed))
+            .content(
+                TextBlock::new()
+                    .text("It is removed from the library only. The game's files are not deleted.")
+                    .text_wrapping(TextWrapping::Wrap),
+            )
     }
 }
 
@@ -339,6 +457,9 @@ impl Component for GameManager {
             selected: None,
             scanning: false,
             error: None,
+            picking: false,
+            draft: None,
+            removing: None,
         };
         this.start_scan(context);
         this
@@ -352,19 +473,15 @@ impl Component for GameManager {
                 self.games = report.games;
                 self.error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
-                if self
-                    .store_filter
-                    .is_some_and(|store| !self.games.iter().any(|game| game.store == store))
-                {
-                    self.store_filter = None;
-                }
-                self.load_icons(context);
+                self.drop_empty_store_filter();
+                Self::load_icons(self.games.clone(), context);
             }
             Message::IconsLoaded(icons) => {
-                self.icons = icons
-                    .into_iter()
-                    .map(|(id, png)| (id, EncodedImage::new(png)))
-                    .collect();
+                self.icons.extend(
+                    icons
+                        .into_iter()
+                        .map(|(id, png)| (id, EncodedImage::new(png))),
+                );
             }
             Message::Search(query) => self.query = query,
             Message::FilterStore(store) => self.store_filter = store,
@@ -383,6 +500,89 @@ impl Component for GameManager {
                 }
             }
             Message::DismissError => self.error = None,
+            Message::AddGame => {
+                self.picking = true;
+                let owner = picker::Owner::active();
+                context.spawn_background(move |_cancel| {
+                    let picked = picker::pick_program(owner).map(|program| {
+                        program.map(|program| {
+                            let name = gm_core::custom::suggested_name(&program);
+                            (program, name)
+                        })
+                    });
+                    Message::ProgramPicked(picked)
+                });
+            }
+            Message::ProgramPicked(picked) => {
+                self.picking = false;
+                match picked {
+                    Ok(Some((program, name))) => {
+                        self.draft = Some(Draft {
+                            program,
+                            name,
+                            args: String::new(),
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(e) => self.error = Some(e),
+                }
+            }
+            Message::DraftName(name) => {
+                if let Some(draft) = &mut self.draft {
+                    draft.name = name;
+                }
+            }
+            Message::DraftArgs(args) => {
+                if let Some(draft) = &mut self.draft {
+                    draft.args = args;
+                }
+            }
+            Message::DraftClosed(result) => {
+                if let Some(draft) = self.draft.take()
+                    && result == ContentDialogResult::Primary
+                {
+                    context.spawn_background(move |_cancel| {
+                        Message::CustomGameAdded(gm_core::custom::add(
+                            &draft.name,
+                            &draft.program,
+                            &draft.args,
+                        ))
+                    });
+                }
+            }
+            Message::CustomGameAdded(Ok(custom)) => {
+                let game = custom.to_game();
+                // Show the new game even when the current search or store filter would hide it.
+                if library::filter(std::slice::from_ref(&game), &self.query, self.store_filter)
+                    .is_empty()
+                {
+                    self.query.clear();
+                    self.store_filter = None;
+                }
+                self.selected = Some(game.id.clone());
+                Self::load_icons(vec![game.clone()], context);
+                self.games.push(game);
+                gm_core::sort_games(&mut self.games);
+            }
+            Message::RemoveGame(id) => self.removing = Some(id),
+            Message::RemoveClosed(result) => {
+                if let Some(id) = self.removing.take()
+                    && result == ContentDialogResult::Primary
+                {
+                    context.spawn_background(move |_cancel| {
+                        Message::CustomGameRemoved(gm_core::custom::remove(&id).map(|()| id))
+                    });
+                }
+            }
+            Message::CustomGameRemoved(Ok(id)) => {
+                self.games.retain(|game| game.id != id);
+                self.icons.remove(&id);
+                self.selected = library::keep_selection(&self.games, self.selected.as_deref());
+                self.drop_empty_store_filter();
+            }
+            Message::CustomGameAdded(Err(e)) | Message::CustomGameRemoved(Err(e)) => {
+                self.error = Some(e);
+            }
         }
     }
 
@@ -415,7 +615,13 @@ impl Component for GameManager {
 
         Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
-            .children((self.top_bar(context), error, body))
+            .children((
+                self.top_bar(context),
+                error,
+                body,
+                self.add_dialog(context),
+                self.remove_dialog(context),
+            ))
     }
 }
 

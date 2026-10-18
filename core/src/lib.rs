@@ -1,5 +1,6 @@
 //! Game discovery and launching for Game Manager. Contains no UI code.
 
+pub mod custom;
 pub mod ea;
 pub mod epic;
 pub mod gog;
@@ -23,16 +24,19 @@ pub enum Store {
     Gog,
     Ea,
     Xbox,
+    /// Added by hand in the app (see [`custom`]).
+    Custom,
 }
 
 impl Store {
     /// Every store, in display order.
-    pub const ALL: [Store; 5] = [
+    pub const ALL: [Store; 6] = [
         Store::Steam,
         Store::Epic,
         Store::Gog,
         Store::Ea,
         Store::Xbox,
+        Store::Custom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -42,6 +46,7 @@ impl Store {
             Store::Gog => "GOG",
             Store::Ea => "EA",
             Store::Xbox => "Xbox",
+            Store::Custom => "Custom",
         }
     }
 }
@@ -136,7 +141,7 @@ const SCANNERS: [(Store, Scanner); 5] = [
     (Store::Xbox, xbox::scan),
 ];
 
-/// Scans all supported stores and returns the games sorted by name.
+/// Scans all supported stores, adds the custom games and returns them all sorted by name.
 pub fn scan_all() -> ScanReport {
     let mut report = ScanReport::default();
     for (store, scan) in SCANNERS {
@@ -146,11 +151,21 @@ pub fn scan_all() -> ScanReport {
         }
     }
     dedupe_install_dirs(&mut report.games);
+    // After deduplication: a game added by hand stays even when a store reports its folder too.
+    match custom::scan() {
+        Ok(games) => report.games.extend(games),
+        Err(e) => report.errors.push(format!("{}: {e}", Store::Custom.name())),
+    }
     for game in &mut report.games {
         default_icon_to_program(game);
     }
-    report.games.sort_by_key(|game| game.name.to_lowercase());
+    sort_games(&mut report.games);
     report
+}
+
+/// Library order: by name, ignoring case.
+pub fn sort_games(games: &mut [Game]) {
+    games.sort_by_key(|game| game.name.to_lowercase());
 }
 
 /// A game started through a program shows that program's icon unless the scanner found a better one.
