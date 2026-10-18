@@ -34,3 +34,4 @@ Native Windows 11 game launcher/library written in Rust.
 - Every `unsafe` block gets a `// SAFETY:` comment.
 - Game ids are `<store>:<store id>` and must be stable (used as list keys and, later, for saved data).
 - `windows-reactor` is a preview: when unsure of an API, read its source in `~/.cargo/registry/src/*/windows-reactor-0.100.0/src` rather than guessing.
+- Pending upstream (windows-rs master, not on crates.io as of 2026-10-18): when a `windows-reactor` release has `ComponentContext::run_window` and `windows-pickers` is published past its 0.0.0 placeholder, replace `app/src/picker.rs` with `windows_pickers::OpenFilePicker` (`reactor` feature, `.request(context, …)`, real window handle instead of `GetActiveWindow`), and give the Add game dialog `.default_button(ContentDialogButton::Primary)`.
