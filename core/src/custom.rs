@@ -72,9 +72,9 @@ pub fn remove(id: &str) -> Result<(), String> {
 /// A name for a newly chosen program: the product name or description from its version
 /// information, else the file name without extension.
 pub fn suggested_name(program: &Path) -> String {
-    let version_info = VersionInfo::read(program);
+    let mut version_info = VersionInfo::read(program);
     version_info
-        .as_ref()
+        .as_mut()
         .and_then(|info| {
             info.string("ProductName")
                 .or_else(|| info.string("FileDescription"))
@@ -183,7 +183,7 @@ impl VersionInfo {
     }
 
     /// A string value such as `ProductName`, in the program's first listed language.
-    fn string(&self, key: &str) -> Option<String> {
+    fn string(&mut self, key: &str) -> Option<String> {
         // Language and code page pairs, e.g. 0x0409 0x04B0 for US English, Unicode.
         let mut languages: Vec<String> = self
             .query(r"\VarFileInfo\Translation")
@@ -205,14 +205,19 @@ impl VersionInfo {
         })
     }
 
-    /// The value at `sub_block` as `u16` units.
-    fn query(&self, sub_block: &str) -> Option<&[u16]> {
+    /// The value at `sub_block` as `u16` units. Takes `&mut self` because Windows may convert
+    /// strings in place, in the block's reserved space (16-bit programs), although the block is
+    /// declared read-only.
+    fn query(&mut self, sub_block: &str) -> Option<&[u16]> {
+        let block = self.data.as_mut_ptr();
         let mut value = std::ptr::null_mut();
         let mut len = 0u32;
-        // SAFETY: `data` is a block filled by GetFileVersionInfoW and the out-pointers are valid.
+        // SAFETY: `block` points to the buffer GetFileVersionInfoW filled, through a mutable
+        // borrow, so any write Windows makes into it is allowed; the sub-block string lives until
+        // the call returns and the out-pointers are valid locals.
         let found = unsafe {
             VerQueryValueW(
-                self.data.as_ptr().cast(),
+                block.cast_const().cast(),
                 &HSTRING::from(sub_block),
                 &mut value,
                 &mut len,
@@ -227,7 +232,7 @@ impl VersionInfo {
         } else {
             len as usize / 2
         };
-        let start = self.data.as_ptr() as usize;
+        let start = block as usize;
         let end = start + self.data.len() * 2;
         let value_start = value as usize;
         if value_start < start || value_start + units * 2 > end || !value_start.is_multiple_of(2) {

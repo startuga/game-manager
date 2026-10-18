@@ -43,9 +43,11 @@ impl IconExtractor {
     }
 
     fn encode_png(&self, hicon: HICON) -> Result<Vec<u8>> {
-        // SAFETY: every interface comes from WIC/Shell calls that succeeded; the out-pointers are
-        // valid locals, and `buffer` is sized from the stream's reported length.
-        unsafe {
+        // SAFETY: `hicon` is a live icon handle owned by the caller for this call. Every interface
+        // used comes from the WIC or Shell call just before it, which succeeded; the out-pointers
+        // are valid locals, and the null vendor and rectangle mean "any encoder" and "the whole
+        // bitmap", as WIC documents.
+        let stream = unsafe {
             let bitmap = self.factory.CreateBitmapFromHICON(hicon)?;
             let stream = SHCreateMemStream(None).ok_or_else(windows::core::Error::from_thread)?;
 
@@ -61,9 +63,9 @@ impl IconExtractor {
             frame.WriteSource(&bitmap, std::ptr::null()).ok()?;
             frame.Commit().ok()?;
             encoder.Commit().ok()?;
-
-            read_all(&stream)
-        }
+            stream
+        };
+        read_all(&stream)
     }
 }
 
@@ -100,8 +102,10 @@ fn extract(icon: &IconRef, size: u32) -> Option<HICON> {
 }
 
 /// Reads a whole memory stream from the beginning.
-unsafe fn read_all(stream: &IStream) -> Result<Vec<u8>> {
-    // SAFETY: the caller passes a live stream; `stat` and `buffer` are valid for the calls.
+fn read_all(stream: &IStream) -> Result<Vec<u8>> {
+    // SAFETY: the reference keeps `stream` a live COM object for the calls. `stat` and `read` are
+    // valid out-pointers; `buffer` has exactly the length passed to `Read`, so the stream cannot
+    // write past it; with STATFLAG_NONAME, Stat allocates no name that would need freeing.
     unsafe {
         let mut stat = STATSTG::default();
         stream.Stat(&mut stat, STATFLAG_NONAME as u32).ok()?;
