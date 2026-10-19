@@ -34,6 +34,8 @@ enum Message {
         id: String,
         option: Option<usize>,
     },
+    /// Opens the game's install folder in File Explorer.
+    OpenFolder(String),
     DismissError,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
@@ -340,6 +342,13 @@ impl GameManager {
                 .content(alt.label.clone());
             KeyedView::new(format!("alt-{i}"), button)
         });
+        let open_folder = game.install_dir.is_some().then(|| {
+            let button = Button::new()
+                .on_click(context.message(Message::OpenFolder(game.id.clone())))
+                .automation_name(format!("Open the folder of {}", game.name))
+                .content(icon_label(Symbol::Folder, "Open folder"));
+            KeyedView::new("open-folder", button)
+        });
         let remove = (game.store == Store::Custom).then(|| {
             let button = Button::new()
                 .on_click(context.message(Message::RemoveGame(game.id.clone())))
@@ -365,6 +374,7 @@ impl GameManager {
             .keyed_children(
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
+                    .chain(open_folder)
                     .chain(remove)
                     .chain(std::iter::once(KeyedView::new("store", store)))
                     .chain(arch),
@@ -517,6 +527,14 @@ impl Component for GameManager {
                 };
                 if let Some(launch) = launch {
                     self.error = gm_core::launch(launch).err();
+                }
+            }
+            Message::OpenFolder(id) => {
+                let Some(game) = self.games.iter().find(|game| game.id == id) else {
+                    return;
+                };
+                if let Some(dir) = &game.install_dir {
+                    self.error = gm_core::open_folder(dir, game.program.as_deref()).err();
                 }
             }
             Message::DismissError => self.error = None,

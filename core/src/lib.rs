@@ -12,7 +12,7 @@ mod text;
 pub mod vdf;
 pub mod xbox;
 
-pub use launcher::launch;
+pub use launcher::{launch, open_folder};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
