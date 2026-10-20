@@ -1,0 +1,31 @@
+{
+  "ignoreNamePrefixes": {
+    "steam": ["Steamworks"]
+  },
+  "games": {
+    "steam:228980": {
+      "note": "Steamworks Common Redistributables, installed by Steam for other games",
+      "ignore": true
+    },
+    "epic:Ginger": {
+      "note": "Cyberpunk 2077: Play starts REDprelauncher.exe",
+      "programs": ["bin\\x64\\Cyberpunk2077.exe"]
+    },
+    "steam:1091500": {
+      "note": "Cyberpunk 2077: Play starts REDprelauncher.exe",
+      "programs": ["bin\\x64\\Cyberpunk2077.exe"]
+    },
+    "gog:1423049311": {
+      "note": "Cyberpunk 2077: Play starts REDprelauncher.exe",
+      "programs": ["bin\\x64\\Cyberpunk2077.exe"]
+    },
+    "steam:292030": {
+      "note": "The Witcher 3: Play starts REDprelauncher.exe; DirectX 12 build first, then DirectX 11",
+      "programs": ["bin\\x64_dx12\\witcher3.exe", "bin\\x64\\witcher3.exe"]
+    },
+    "gog:1495134320": {
+      "note": "The Witcher 3 GOTY: Play starts REDprelauncher.exe; DirectX 12 build first, then DirectX 11",
+      "programs": ["bin\\x64_dx12\\witcher3.exe", "bin\\x64\\witcher3.exe"]
+    }
+  }
+}

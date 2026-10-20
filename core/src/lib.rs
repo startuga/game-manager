@@ -1,10 +1,12 @@
 //! Game discovery and launching for Game Manager. Contains no UI code.
 
+pub mod config;
 pub mod custom;
 pub mod ea;
 pub mod epic;
 pub mod gog;
 pub mod icon;
+mod json_file;
 mod launcher;
 pub mod pe;
 pub mod steam;
@@ -189,12 +191,26 @@ pub fn scan_all() -> ScanReport {
             Err(e) => report.errors.push(format!("{}: {e}", store.name())),
         }
     }
-    // Programs first, so a duplicate dropped below can still give its program.
+    // A configuration file that cannot be read is reported and skipped; it never hides games.
+    let defaults = config::load_defaults().unwrap_or_else(|e| {
+        report.errors.push(format!("Game configuration: {e}"));
+        config::GameDefaults::default()
+    });
+    let settings = config::load_settings().unwrap_or_else(|e| {
+        report.errors.push(format!("Game settings: {e}"));
+        config::GameSettings::default()
+    });
+    // Configured programs and then the derived ones first, so a duplicate dropped below can still
+    // give its program.
+    config::apply(&mut report.games, &defaults, &settings);
     report.games.iter_mut().for_each(default_program);
     dedupe_install_dirs(&mut report.games);
     // After deduplication: a game added by hand stays even when a store reports its folder too.
     match custom::scan() {
-        Ok(games) => report.games.extend(games),
+        Ok(mut games) => {
+            config::apply(&mut games, &defaults, &settings);
+            report.games.extend(games);
+        }
         Err(e) => report.errors.push(format!("{}: {e}", Store::Custom.name())),
     }
     report.games.iter_mut().for_each(complete_game);

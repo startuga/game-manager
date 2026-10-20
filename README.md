@@ -6,6 +6,11 @@ Steam, Epic Games, GOG, EA and the Xbox app, shows their icons, and starts them.
 can be added by hand with **Add game** (choose its program, then a name and optional command-line
 arguments); those are saved in `%APPDATA%\Game Manager\custom-games.json`.
 
+When a store's Play action starts a launcher, the game's own program comes from the shipped
+`config/games.json` (known games, e.g. Cyberpunk 2077's `bin\x64\Cyberpunk2077.exe`) or from
+**Choose game .exe**, saved in `%APPDATA%\Game Manager\game-settings.json`. The build copies
+`games.json` next to `app.exe`; keep it there when you move the app.
+
 ## Set up a new computer
 
 1. **Visual Studio Build Tools** (or Visual Studio) with the **Desktop development with C++**
@@ -41,4 +46,5 @@ cargo run -p app
 
 - `app/` – the WinUI 3 window (top bar, library sidebar, game panel).
 - `core/` (crate `gm-core`) – store scanners, icon extraction and launching; no UI code.
+- `config/games.json` – per-game knowledge used by the scanners (no game-specific data in code).
 - `CLAUDE.md` – conventions and notes used when developing with Claude Code.

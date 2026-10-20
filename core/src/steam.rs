@@ -209,11 +209,7 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
     let state = root.get("AppState")?;
     let app_id = state.get_str("appid")?;
     let name = state.get_str("name")?;
-
-    // Skip redistributables and tools that Steam installs alongside games.
-    if app_id == "228980" || name.starts_with("Steamworks") {
-        return None;
-    }
+    // Redistributables Steam installs alongside games are hidden by `config/games.json`.
 
     let install_dir = state
         .get_str("installdir")

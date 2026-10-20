@@ -2,9 +2,9 @@
 
 mod library;
 
-use gm_core::{Game, ScanReport, Store};
+use gm_core::{Arch, Game, ScanReport, Store};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use windows_pickers::OpenFilePicker;
@@ -36,6 +36,12 @@ enum Message {
     },
     /// Opens the game's install folder in File Explorer.
     OpenFolder(String),
+    /// Opens the file dialog to choose the game's own program (Play is not changed).
+    ChooseProgram(String),
+    /// The program picked for the game with this id; `None` when the dialog was cancelled.
+    GameProgramPicked(String, Result<Option<PathBuf>, String>),
+    /// The picked program was saved in the game settings, with its architecture.
+    GameProgramSaved(String, Result<(PathBuf, Option<Arch>), String>),
     DismissError,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
@@ -303,6 +309,18 @@ impl GameManager {
             || "Install folder unknown".to_owned(),
             |dir| dir.display().to_string(),
         );
+        // The game's own program, inside the install folder when it can be shown that way.
+        let program = game.program.as_deref().map_or_else(
+            || "Game program unknown".to_owned(),
+            |program| {
+                let shown = game
+                    .install_dir
+                    .as_deref()
+                    .and_then(|dir| program.strip_prefix(dir).ok())
+                    .unwrap_or(program);
+                format!("Game program: {}", shown.display())
+            },
+        );
         let header = StackPanel::new()
             .orientation(Orientation::Horizontal)
             .spacing(20.0)
@@ -319,6 +337,11 @@ impl GameManager {
                             .text_wrapping(TextWrapping::Wrap),
                         TextBlock::new()
                             .text(install_path)
+                            .opacity(0.7)
+                            .is_text_selection_enabled(true)
+                            .text_wrapping(TextWrapping::Wrap),
+                        TextBlock::new()
+                            .text(program)
                             .opacity(0.7)
                             .is_text_selection_enabled(true)
                             .text_wrapping(TextWrapping::Wrap),
@@ -349,6 +372,14 @@ impl GameManager {
                 .content(icon_label(Symbol::Folder, "Open folder"));
             KeyedView::new("open-folder", button)
         });
+        let choose_program = game.install_dir.is_some().then(|| {
+            let button = Button::new()
+                .is_enabled(!self.picking)
+                .on_click(context.message(Message::ChooseProgram(game.id.clone())))
+                .automation_name(format!("Choose the .exe of {}", game.name))
+                .content(icon_label(Symbol::OpenFile, "Choose game .exe"));
+            KeyedView::new("choose-program", button)
+        });
         let remove = (game.store == Store::Custom).then(|| {
             let button = Button::new()
                 .on_click(context.message(Message::RemoveGame(game.id.clone())))
@@ -375,6 +406,7 @@ impl GameManager {
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
                     .chain(open_folder)
+                    .chain(choose_program)
                     .chain(remove)
                     .chain(std::iter::once(KeyedView::new("store", store)))
                     .chain(arch),
@@ -535,6 +567,54 @@ impl Component for GameManager {
                 };
                 if let Some(dir) = &game.install_dir {
                     self.error = gm_core::open_folder(dir, game.program.as_deref()).err();
+                }
+            }
+            Message::ChooseProgram(id) => {
+                let Some(game) = self.games.iter().find(|game| game.id == id) else {
+                    return;
+                };
+                // Opens where the current program is, else in the install folder.
+                let folder = game
+                    .program
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .or(game.install_dir.as_deref())
+                    .map(Path::to_path_buf);
+                let mut picker = OpenFilePicker::new()
+                    .title(format!("Choose the .exe of {}", game.name))
+                    .filter_extensions("Programs", ["exe"]);
+                if let Some(folder) = folder {
+                    picker = picker.folder(folder);
+                }
+                self.picking = picker.request(context, move |picked| {
+                    let picked =
+                        picked.map_err(|e| format!("could not choose a program: {}", e.message()));
+                    Message::GameProgramPicked(id, picked)
+                });
+                if !self.picking {
+                    self.error = Some("The file dialog is not available right now.".to_owned());
+                }
+            }
+            Message::GameProgramPicked(id, Ok(Some(program))) => {
+                // Saving the setting and reading the program's header are disk work.
+                context.spawn_background(move |_cancel| {
+                    let saved = gm_core::config::set_program(&id, &program).map(|()| {
+                        let arch = gm_core::pe::architecture(&program);
+                        (program, arch)
+                    });
+                    Message::GameProgramSaved(id, saved)
+                });
+            }
+            Message::GameProgramPicked(_, Ok(None)) => self.picking = false,
+            Message::GameProgramPicked(_, Err(e)) | Message::GameProgramSaved(_, Err(e)) => {
+                self.picking = false;
+                self.error = Some(e);
+            }
+            Message::GameProgramSaved(id, Ok((program, arch))) => {
+                self.picking = false;
+                if let Some(game) = self.games.iter_mut().find(|game| game.id == id) {
+                    game.program = Some(program);
+                    game.arch = arch;
                 }
             }
             Message::DismissError => self.error = None,

@@ -3,10 +3,8 @@
 //! They are saved in `%APPDATA%\Game Manager\custom-games.json` and listed with the store games,
 //! but never merged with them: the user chose each one, even when a store reports the same folder.
 
-use crate::{Game, IconRef, Launch, Store};
+use crate::{Game, IconRef, Launch, Store, json_file};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Win32::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
@@ -88,32 +86,15 @@ pub fn suggested_name(program: &Path) -> String {
 }
 
 fn library_file() -> Result<PathBuf, String> {
-    let app_data = std::env::var_os("APPDATA").ok_or("APPDATA is not set")?;
-    Ok(PathBuf::from(app_data)
-        .join("Game Manager")
-        .join("custom-games.json"))
+    json_file::user_file("custom-games.json")
 }
 
 fn load(file: &Path) -> Result<Vec<CustomGame>, String> {
-    match fs::read(file) {
-        Ok(bytes) => serde_json::from_slice::<LibraryFile>(&bytes)
-            .map(|library| library.games)
-            .map_err(|e| format!("{}: {e}", file.display())),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(format!("{}: {e}", file.display())),
-    }
+    json_file::load::<LibraryFile>(file).map(|library| library.games)
 }
 
 fn save(file: &Path, games: Vec<CustomGame>) -> Result<(), String> {
-    let error = |e: std::io::Error| format!("{}: {e}", file.display());
-    if let Some(dir) = file.parent() {
-        fs::create_dir_all(dir).map_err(error)?;
-    }
-    let json = serde_json::to_vec_pretty(&LibraryFile { games }).map_err(|e| e.to_string())?;
-    // Written next to the library first, so a crash never leaves it half written.
-    let temp = file.with_extension("json.tmp");
-    fs::write(&temp, json).map_err(error)?;
-    fs::rename(&temp, file).map_err(error)
+    json_file::save(file, &LibraryFile { games })
 }
 
 fn add_to(
@@ -247,6 +228,7 @@ impl VersionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_library(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("GM-Custom-{test}-{}", std::process::id()));
