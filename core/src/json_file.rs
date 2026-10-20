@@ -1,6 +1,7 @@
-//! The small JSON files Game Manager keeps for the user in `%APPDATA%\Game Manager`: a missing file
-//! reads as empty, and files are written through a temporary file, so a crash never leaves one
-//! half written.
+//! The files Game Manager keeps: the user's choices in `%APPDATA%\Game Manager` (roaming) and
+//! caches in `%LOCALAPPDATA%\Game Manager` (this computer only, safe to delete). For the small JSON
+//! files, a missing file reads as empty, and files are written through a temporary file, so a
+//! crash never leaves one half written.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -12,6 +13,14 @@ use std::path::{Path, PathBuf};
 pub(crate) fn user_file(name: &str) -> Result<PathBuf, String> {
     let app_data = std::env::var_os("APPDATA").ok_or("APPDATA is not set")?;
     Ok(PathBuf::from(app_data).join("Game Manager").join(name))
+}
+
+/// `%LOCALAPPDATA%\Game Manager\<name>`: files for this computer only, such as caches.
+pub(crate) fn local_file(name: &str) -> Result<PathBuf, String> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
+    Ok(PathBuf::from(local_app_data)
+        .join("Game Manager")
+        .join(name))
 }
 
 /// The file's contents, or `T::default()` when it does not exist. A file that cannot be read or

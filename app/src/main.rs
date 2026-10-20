@@ -22,6 +22,8 @@ const GAME_GLYPH: &str = "\u{E7FC}";
 enum Message {
     Scan,
     Scanned(ScanReport),
+    /// The games saved by the last scan, shown until the first scan of this start finishes.
+    SnapshotLoaded(Vec<Game>),
     /// PNG icons keyed by game id.
     IconsLoaded(Vec<(String, Arc<[u8]>)>),
     Search(String),
@@ -88,13 +90,23 @@ struct GameManager {
 impl GameManager {
     fn start_scan(&mut self, context: &ComponentContext<Self>) {
         self.scanning = true;
-        context.spawn_background(|_cancel| Message::Scanned(gm_core::scan_all()));
+        context.spawn_background(|_cancel| {
+            let report = gm_core::scan_all();
+            // The next start shows these games at once. A cache only: failures are ignored.
+            let _ = gm_core::snapshot::save(&report.games);
+            Message::Scanned(report)
+        });
     }
 
     /// Extracts icons after the list is shown, so a large library appears without waiting.
-    fn load_icons(games: Vec<Game>, context: &ComponentContext<Self>) {
+    /// `prune` (full library only) also drops cached icons no game uses any more.
+    fn load_icons(games: Vec<Game>, prune: bool, context: &ComponentContext<Self>) {
         context.spawn_background(move |_cancel| {
-            let icons = gm_core::icon::extract_all(&games, ICON_PIXELS);
+            let icons = if prune {
+                gm_core::icon::refresh_all(&games, ICON_PIXELS)
+            } else {
+                gm_core::icon::extract_all(&games, ICON_PIXELS)
+            };
             Message::IconsLoaded(
                 icons
                     .into_iter()
@@ -523,6 +535,10 @@ impl Component for GameManager {
             draft: None,
             removing: None,
         };
+        // The last scan's games show at once while the fresh scan runs.
+        context.spawn_background(|_cancel| {
+            Message::SnapshotLoaded(gm_core::snapshot::load().unwrap_or_default())
+        });
         this.start_scan(context);
         this
     }
@@ -536,7 +552,15 @@ impl Component for GameManager {
                 self.error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
-                Self::load_icons(self.games.clone(), context);
+                Self::load_icons(self.games.clone(), true, context);
+            }
+            Message::SnapshotLoaded(games) => {
+                // Only before the first scan has listed anything; the scan then replaces it.
+                if self.scanning && self.games.is_empty() && !games.is_empty() {
+                    self.games = games;
+                    self.selected = library::keep_selection(&self.games, self.selected.as_deref());
+                    Self::load_icons(self.games.clone(), false, context);
+                }
             }
             Message::IconsLoaded(icons) => {
                 self.icons.extend(
@@ -690,7 +714,7 @@ impl Component for GameManager {
                     self.store_filter = None;
                 }
                 self.selected = Some(game.id.clone());
-                Self::load_icons(vec![game.clone()], context);
+                Self::load_icons(vec![game.clone()], false, context);
                 self.games.push(game);
                 gm_core::sort_games(&mut self.games);
             }

@@ -11,6 +11,10 @@ When a store's Play action starts a launcher, the game's own program comes from 
 **Choose game .exe**, saved in `%APPDATA%\Game Manager\game-settings.json`. The build copies
 `games.json` next to `app.exe`; keep it there when you move the app.
 
+To start fast, the app caches the last scanned library and the extracted game icons in
+`%LOCALAPPDATA%\Game Manager\cache`. Deleting that folder is always safe: it is rebuilt on the next
+start. Your own choices stay in `%APPDATA%\Game Manager`.
+
 ## Set up a new computer
 
 1. **Visual Studio Build Tools** (or Visual Studio) with the **Desktop development with C++**

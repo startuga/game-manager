@@ -9,6 +9,7 @@ pub mod icon;
 mod json_file;
 mod launcher;
 pub mod pe;
+pub mod snapshot;
 pub mod steam;
 mod text;
 pub mod vdf;
