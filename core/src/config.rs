@@ -2,7 +2,9 @@
 //!
 //! - `games.json`, shipped next to the app (copied from `config/games.json` at build time): what is
 //!   known about particular games, such as their real program when Play starts a launcher, and
-//!   entries that are not games (redistributables) to hide.
+//!   entries that are not games (redistributables) to hide. A game is recognised by its target
+//!   binaries in its install folder, not by a store id, so one entry works for every store and
+//!   computer.
 //! - `%APPDATA%\Game Manager\game-settings.json`: the user's own settings per game, such as the
 //!   program chosen with "Choose game .exe".
 //!
@@ -17,50 +19,43 @@ use std::path::{Path, PathBuf};
 const DEFAULTS_FILE: &str = "games.json";
 const SETTINGS_FILE: &str = "game-settings.json";
 
-/// `games.json`: what is known about particular games, by game id.
+/// `games.json`: what is known about particular games.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameDefaults {
-    /// Per store (the id prefix: `steam`, `epic`, `gog`…): names of entries that are not games.
+    /// Entries whose name starts with one of these are not games (e.g. "Steamworks" packages).
     #[serde(default)]
-    ignore_name_prefixes: BTreeMap<String, Vec<String>>,
+    ignore_name_prefixes: Vec<String>,
+    /// Known games, in priority order. Each also has a `name` (and may have a `note`) for people.
     #[serde(default)]
-    games: BTreeMap<String, GameDefault>,
+    games: Vec<KnownGame>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct GameDefault {
-    /// Not a game (e.g. a redistributable package): never listed.
-    #[serde(default)]
-    ignore: bool,
-    /// The game's own program, relative to its install folder; the first that exists wins.
+struct KnownGame {
+    /// The game's own binaries, relative to its install folder, best first. A game whose install
+    /// folder holds one of them is this game; the first that exists is its program.
     #[serde(default)]
     programs: Vec<PathBuf>,
 }
 
 impl GameDefaults {
     fn ignores(&self, game: &Game) -> bool {
-        let by_id = self.games.get(&game.id).is_some_and(|entry| entry.ignore);
-        let by_name = game
-            .id
-            .split_once(':')
-            .and_then(|(store, _)| self.ignore_name_prefixes.get(store))
-            .is_some_and(|prefixes| {
-                prefixes
-                    .iter()
-                    .any(|prefix| game.name.starts_with(prefix.as_str()))
-            });
-        by_id || by_name
+        self.ignore_name_prefixes
+            .iter()
+            .any(|prefix| game.name.starts_with(prefix.as_str()))
     }
 
+    /// The program of the first known game whose binaries are in this game's install folder.
     fn program(&self, game: &Game) -> Option<PathBuf> {
         let dir = game.install_dir.as_deref()?;
-        self.games
-            .get(&game.id)?
-            .programs
-            .iter()
-            .map(|program| dir.join(program))
-            .find(|program| program.is_file())
+        self.games.iter().find_map(|known| {
+            known
+                .programs
+                .iter()
+                .map(|program| dir.join(program))
+                .find(|program| program.is_file())
+        })
     }
 }
 
@@ -183,27 +178,57 @@ mod tests {
             "Steamworks Common Redistributables",
             None
         )));
-        assert_eq!(
-            shipped.games["epic:Ginger"].programs,
-            [PathBuf::from(r"bin\x64\Cyberpunk2077.exe")]
+        assert!(
+            shipped
+                .games
+                .iter()
+                .any(|known| known.programs == [PathBuf::from(r"bin\x64\Cyberpunk2077.exe")])
         );
     }
 
     #[test]
-    fn hides_entries_by_id_and_by_name_prefix_per_store() {
-        let config = defaults(
-            r#"{ "ignoreNamePrefixes": { "steam": ["Steamworks"] },
-                 "games": { "steam:1": { "ignore": true, "note": "for people" } } }"#,
-        );
+    fn hides_entries_by_name_prefix() {
+        let config = defaults(r#"{ "ignoreNamePrefixes": ["Steamworks"] }"#);
         let mut games = vec![
-            game("steam:1", "Redistributable", None),
-            game("steam:2", "Steamworks Shared", None),
-            game("gog:3", "Steamworks: a GOG game", None),
-            game("steam:4", "Half-Life 2", None),
+            game("steam:228980", "Steamworks Common Redistributables", None),
+            game("steam:220", "Half-Life 2", None),
+            game("gog:1", "Not Steamworks", None),
         ];
         apply(&mut games, &config, &GameSettings::default());
         let ids: Vec<_> = games.iter().map(|g| g.id.as_str()).collect();
-        assert_eq!(ids, ["gog:3", "steam:4"]);
+        assert_eq!(ids, ["steam:220", "gog:1"]);
+    }
+
+    #[test]
+    fn known_games_are_recognised_by_their_binaries_in_any_store() {
+        let cyberpunk = temp_dir("binaries-cyberpunk");
+        fs::create_dir_all(cyberpunk.join(r"bin\x64")).unwrap();
+        fs::write(cyberpunk.join(r"bin\x64\Cyberpunk2077.exe"), b"MZ").unwrap();
+        let other = temp_dir("binaries-other");
+        fs::write(other.join("game.exe"), b"MZ").unwrap();
+        let config = defaults(
+            r#"{ "games": [
+                { "name": "The Witcher 3", "programs": ["bin\\x64\\witcher3.exe"] },
+                { "name": "Cyberpunk 2077", "note": "for people", "programs": ["bin\\x64\\Cyberpunk2077.exe"] }
+            ] }"#,
+        );
+        // The same entry fits the game from every store; a game without the binaries gets none.
+        let mut games = vec![
+            game("epic:Ginger", "Cyberpunk 2077", Some(&cyberpunk)),
+            game("steam:1091500", "Cyberpunk 2077", Some(&cyberpunk)),
+            game("gog:1423049311", "Cyberpunk 2077 (GOG)", Some(&cyberpunk)),
+            game("steam:220", "Half-Life 2", Some(&other)),
+            game("custom:1", "No folder", None),
+        ];
+        apply(&mut games, &config, &GameSettings::default());
+        let expected = cyberpunk.join(r"bin\x64\Cyberpunk2077.exe");
+        assert_eq!(games[0].program.as_ref(), Some(&expected));
+        assert_eq!(games[1].program.as_ref(), Some(&expected));
+        assert_eq!(games[2].program.as_ref(), Some(&expected));
+        assert_eq!(games[3].program, None);
+        assert_eq!(games[4].program, None);
+        fs::remove_dir_all(&cyberpunk).unwrap();
+        fs::remove_dir_all(&other).unwrap();
     }
 
     #[test]
@@ -218,7 +243,7 @@ mod tests {
             fs::write(dir.join(file), b"MZ").unwrap();
         }
         let config = defaults(
-            r#"{ "games": { "epic:Ginger": { "programs": ["bin\\x64_gone\\x.exe", "bin\\x64\\Cyberpunk2077.exe"] } } }"#,
+            r#"{ "games": [ { "name": "Cyberpunk 2077", "programs": ["bin\\x64_gone\\x.exe", "bin\\x64\\Cyberpunk2077.exe"] } ] }"#,
         );
         let scanned = || {
             let mut cyberpunk = game("epic:Ginger", "Cyberpunk 2077", Some(&dir));
@@ -309,6 +334,6 @@ mod tests {
     fn finds_the_shipped_file_next_to_the_program() {
         // Tests run in target\<profile>\deps; the build copies games.json to target\<profile>.
         let shipped = load_defaults().unwrap();
-        assert!(shipped.games.contains_key("epic:Ginger"));
+        assert!(!shipped.games.is_empty());
     }
 }
