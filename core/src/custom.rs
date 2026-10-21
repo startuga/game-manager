@@ -38,6 +38,7 @@ impl CustomGame {
             icon: Some(IconRef::file(&self.program)),
             program: Some(self.program.clone()),
             arch: None,
+            edits: None,
         }
     }
 }

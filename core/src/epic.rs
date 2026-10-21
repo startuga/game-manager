@@ -142,6 +142,7 @@ fn parse_installations(text: &str, titles: &HashMap<String, String>) -> Vec<Game
                 alt_launches: Vec::new(),
                 program: None,
                 arch: None,
+                edits: None,
             }
         })
         .collect()
@@ -259,6 +260,7 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
         alt_launches: Vec::new(),
         program: None,
         arch: None,
+        edits: None,
     })
 }
 

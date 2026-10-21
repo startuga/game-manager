@@ -130,6 +130,30 @@ pub struct Game {
     /// The game's processor architecture: from the package (Xbox) or from `program`'s PE header.
     #[serde(default)]
     pub arch: Option<Arch>,
+    /// What the user changed in the game's settings (already applied to the fields above), so the
+    /// app can show and reset it. `None` when the game is as detected.
+    #[serde(default)]
+    pub edits: Option<config::GameEdits>,
+}
+
+/// `launch` with these command-line arguments, when it can take them: a program gets them as its
+/// arguments, a Steam game as Steam launch options. `None` for other store links.
+pub(crate) fn with_args(launch: &Launch, args: &str) -> Option<Launch> {
+    match launch {
+        Launch::Exe {
+            path, working_dir, ..
+        } => Some(Launch::Exe {
+            path: path.clone(),
+            args: args.to_owned(),
+            working_dir: working_dir.clone(),
+        }),
+        Launch::Uri(uri) => steam::run_uri_with_args(uri, args).map(Launch::Uri),
+    }
+}
+
+/// Whether Play can pass command-line arguments to this launch (see `with_args`).
+pub fn accepts_args(launch: &Launch) -> bool {
+    with_args(launch, "").is_some()
 }
 
 /// The processor architecture a game's program is built for.
@@ -339,6 +363,7 @@ mod tests {
             icon: None,
             program: None,
             arch: None,
+            edits: None,
         }
     }
 
@@ -430,6 +455,18 @@ mod tests {
         dedupe_install_dirs(&mut games);
         let ids: Vec<_> = games.iter().map(|g| g.id.as_str()).collect();
         assert_eq!(ids, ["steam:1", "gog:2", "ea:4", "ea:5"]);
+    }
+
+    #[test]
+    fn programs_and_steam_games_accept_arguments() {
+        assert!(accepts_args(&exe(r"C:\Games\x.exe")));
+        assert!(accepts_args(&Launch::Uri("steam://rungameid/220".into())));
+        assert!(!accepts_args(&Launch::Uri(
+            "com.epicgames.launcher://apps/x".into()
+        )));
+        assert!(!accepts_args(&Launch::Uri(
+            r"shell:AppsFolder\Family_abc!Game".into()
+        )));
     }
 
     #[test]

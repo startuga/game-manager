@@ -212,6 +212,7 @@ fn build_game(
         icon: None,
         program: None,
         arch: None,
+        edits: None,
     })
 }
 

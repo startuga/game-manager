@@ -6,10 +6,14 @@ Steam, Epic Games, GOG, EA and the Xbox app, shows their icons, and starts them.
 can be added by hand with **Add game** (choose its program, then a name and optional command-line
 arguments); those are saved in `%APPDATA%\Game Manager\custom-games.json`.
 
+Each game's **Game settings** (an expander under its buttons) change the name shown, the program
+Play starts (instead of the store's launch), the command-line arguments (also passed to Steam
+games as launch options) and the game's own program (for its bitness, Open folder and mods).
+Edits are saved in `%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them.
+
 When a store's Play action starts a launcher, the game's own program comes from the shipped
-`config/games.json` (known games, e.g. Cyberpunk 2077's `bin\x64\Cyberpunk2077.exe`) or from
-**Choose game .exe**, saved in `%APPDATA%\Game Manager\game-settings.json`. The build copies
-`games.json` next to `app.exe`; keep it there when you move the app.
+`config/games.json` (known games, e.g. Cyberpunk 2077's `bin\x64\Cyberpunk2077.exe`) unless you set
+one. The build copies `games.json` next to `app.exe`; keep it there when you move the app.
 
 To start fast, the app caches the last scanned library and the extracted game icons in
 `%LOCALAPPDATA%\Game Manager\cache`. Deleting that folder is always safe: it is rebuilt on the next

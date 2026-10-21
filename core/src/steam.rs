@@ -225,6 +225,7 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
         icon: icon(app_id),
         program: None,
         arch: None,
+        edits: None,
     })
 }
 
@@ -236,6 +237,35 @@ fn icon(app_id: &str) -> Option<IconRef> {
             .ok()?;
         IconRef::parse(&key.get_string("DisplayIcon").ok()?)
     })
+}
+
+/// Steam's Play link with launch options: `steam://rungameid/<appid>` becomes
+/// `steam://run/<appid>//<percent-encoded options>/`, which starts the app with those options.
+/// Empty options keep the plain link. `None` for links that are not a Steam game's.
+pub(crate) fn run_uri_with_args(uri: &str, args: &str) -> Option<String> {
+    let app_id = uri.strip_prefix("steam://rungameid/")?;
+    if app_id.is_empty() || !app_id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let args = args.trim();
+    if args.is_empty() {
+        return Some(uri.to_owned());
+    }
+    Some(format!("steam://run/{app_id}//{}/", percent_encode(args)))
+}
+
+/// Everything but unreserved URI characters as `%XX`, so spaces, quotes and slashes in launch
+/// options cannot break the link.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
@@ -338,6 +368,26 @@ mod tests {
         }
         assert!(parse_app_info(&[0x27, 0x44, 0x56, 0x07, 1, 0, 0, 0], &wanted).is_none());
         assert!(parse_app_info(&[], &wanted).is_none());
+    }
+
+    #[test]
+    fn launch_options_go_through_steams_run_link() {
+        let run = |args: &str| run_uri_with_args("steam://rungameid/220", args);
+        assert_eq!(
+            run(" -novid -console ").as_deref(),
+            Some("steam://run/220//-novid%20-console/")
+        );
+        assert_eq!(
+            run(r#"+map "c1a0" /x"#).as_deref(),
+            Some("steam://run/220//%2Bmap%20%22c1a0%22%20%2Fx/")
+        );
+        assert_eq!(run("  ").as_deref(), Some("steam://rungameid/220"));
+        assert_eq!(
+            run_uri_with_args("com.epicgames.launcher://apps/x", "-x"),
+            None
+        );
+        assert_eq!(run_uri_with_args("steam://rungameid/", "-x"), None);
+        assert_eq!(run_uri_with_args("steam://rungameid/22a", "-x"), None);
     }
 
     #[test]

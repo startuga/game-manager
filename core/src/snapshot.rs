@@ -87,6 +87,11 @@ mod tests {
                 r"C:\GOG Games\The Witcher 3\bin\x64_dx12\witcher3.exe",
             )),
             arch: Some(Arch::X64),
+            edits: Some(crate::config::GameEdits {
+                name: Some("The Witcher 3".into()),
+                args: Some("-skip".into()),
+                ..Default::default()
+            }),
         }]
     }
 

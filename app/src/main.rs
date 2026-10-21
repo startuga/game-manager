@@ -1,8 +1,10 @@
 #![windows_subsystem = "windows"]
 
+mod edit;
 mod library;
 
-use gm_core::{Arch, Game, ScanReport, Store};
+use edit::{EditDraft, EditField};
+use gm_core::{Game, Launch, ScanReport, Store};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -38,12 +40,19 @@ enum Message {
     },
     /// Opens the game's install folder in File Explorer.
     OpenFolder(String),
-    /// Opens the file dialog to choose the game's own program (Play is not changed).
-    ChooseProgram(String),
-    /// The program picked for the game with this id; `None` when the dialog was cancelled.
-    GameProgramPicked(String, Result<Option<PathBuf>, String>),
-    /// The picked program was saved in the game settings, with its architecture.
-    GameProgramSaved(String, Result<(PathBuf, Option<Arch>), String>),
+    /// The Game settings expander was opened or closed.
+    SettingsExpanded(bool),
+    /// A Game settings field of the selected game changed.
+    EditField(EditField, String),
+    /// Opens the file dialog for the launch program or the game program field.
+    BrowseEdit(EditField),
+    /// The program picked for a field; `None` when the dialog was cancelled.
+    EditPathPicked(EditField, Result<Option<PathBuf>, String>),
+    SaveEdits,
+    CancelEdits,
+    ResetEdits,
+    /// The selected game's edits were saved or reset; a rescan applies them.
+    EditsSaved(Result<(), String>),
     DismissError,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
@@ -85,6 +94,12 @@ struct GameManager {
     draft: Option<Draft>,
     /// The custom game whose removal waits for confirmation.
     removing: Option<String>,
+    /// The Game settings expander is open (kept while switching games).
+    settings_open: bool,
+    /// The Game settings being edited; see `selected_draft`.
+    edit: Option<EditDraft>,
+    /// Game settings are being saved or reset.
+    saving: bool,
 }
 
 impl GameManager {
@@ -119,6 +134,15 @@ impl GameManager {
     fn selected_game(&self) -> Option<&Game> {
         let id = self.selected.as_deref()?;
         self.games.iter().find(|game| game.id == id)
+    }
+
+    /// The selected game's settings draft: the one being edited while it still matches the game,
+    /// else a fresh one from the game's current values.
+    fn selected_draft(&self) -> Option<EditDraft> {
+        Some(EditDraft::for_game(
+            self.edit.as_ref(),
+            self.selected_game()?,
+        ))
     }
 
     /// After games are removed: a store filter with no games left goes back to all stores.
@@ -390,14 +414,6 @@ impl GameManager {
                 .content(icon_label(Symbol::Folder, "Open folder"));
             KeyedView::new("open-folder", button)
         });
-        let choose_program = game.install_dir.is_some().then(|| {
-            let button = Button::new()
-                .is_enabled(!self.picking)
-                .on_click(context.message(Message::ChooseProgram(game.id.clone())))
-                .automation_name(format!("Choose the .exe of {}", game.name))
-                .content(icon_label(Symbol::OpenFile, "Choose game .exe"));
-            KeyedView::new("choose-program", button)
-        });
         let remove = (game.store == Store::Custom).then(|| {
             let button = Button::new()
                 .on_click(context.message(Message::RemoveGame(game.id.clone())))
@@ -424,7 +440,6 @@ impl GameManager {
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
                     .chain(open_folder)
-                    .chain(choose_program)
                     .chain(remove)
                     .chain(std::iter::once(KeyedView::new("store", store)))
                     .chain(arch),
@@ -436,8 +451,127 @@ impl GameManager {
                 StackPanel::new()
                     .spacing(28.0)
                     .margin(Thickness::uniform(32.0))
-                    .children((header, actions)),
+                    .children((header, actions, self.game_settings(game, context))),
             )
+            .into()
+    }
+
+    /// The Game settings expander: name, launch program, arguments and game program.
+    fn game_settings(&self, game: &Game, context: &ViewContext<Self>) -> View {
+        let draft = EditDraft::for_game(self.edit.as_ref(), game);
+        let busy = self.saving || self.scanning || self.picking;
+        let store = game.store.name();
+        let text_box = |field: EditField, name: &str| {
+            TextBox::new()
+                .text(draft.fields.get(field))
+                .automation_name(name)
+                .on_text_changed(
+                    context
+                        .callback(move |text: Rc<str>| Message::EditField(field, text.to_string())),
+                )
+        };
+        let label = |text: &str| {
+            TextBlock::new()
+                .text(text)
+                .font_weight(FontWeight::SEMI_BOLD)
+        };
+        let hint = |text: String| {
+            TextBlock::new()
+                .text(text)
+                .font_size(12.0)
+                .opacity(0.7)
+                .text_wrapping(TextWrapping::Wrap)
+        };
+        let with_browse = |text_box: TextBox, field: EditField, name: &str| -> View {
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto])
+                .children((
+                    text_box.grid_column(0),
+                    Button::new()
+                        .is_enabled(!busy)
+                        .on_click(context.message(Message::BrowseEdit(field)))
+                        .automation_name(name)
+                        .margin(Thickness::new(8.0, 0.0, 0.0, 0.0))
+                        .grid_column(1)
+                        .content("Browse…"),
+                ))
+                .into()
+        };
+
+        // Arguments reach a program, or a Steam game as launch options; other store links
+        // cannot take any.
+        let launch_set = !draft.fields.launch.trim().is_empty();
+        let args_enabled = launch_set || gm_core::accepts_args(&game.launch);
+        let args_hint = if !args_enabled {
+            format!(
+                "{store} starts this game itself, so it takes no arguments. Set a launch .exe to pass some."
+            )
+        } else if !launch_set && matches!(game.launch, Launch::Uri(_)) {
+            "Passed to Steam as the game's launch options.".to_owned()
+        } else {
+            "Passed to the program Play starts.".to_owned()
+        };
+
+        let form = StackPanel::new().spacing(6.0).children((
+            label("Name"),
+            text_box(EditField::Name, "Game name"),
+            label("Launch .exe").margin(Thickness::new(0.0, 10.0, 0.0, 0.0)),
+            with_browse(
+                text_box(EditField::Launch, "Launch .exe")
+                    .placeholder_text(format!("Empty: the game starts through {store}")),
+                EditField::Launch,
+                "Browse for the launch .exe",
+            ),
+            hint(format!(
+                "The program Play starts. Leave it empty to start the game through {store}."
+            )),
+            label("Arguments").margin(Thickness::new(0.0, 10.0, 0.0, 0.0)),
+            text_box(EditField::Args, "Arguments").is_enabled(args_enabled),
+            hint(args_hint),
+            label("Game program").margin(Thickness::new(0.0, 10.0, 0.0, 0.0)),
+            with_browse(
+                text_box(EditField::Program, "Game program"),
+                EditField::Program,
+                "Browse for the game program",
+            ),
+            hint("The game's own .exe: used for its bitness, Open folder and mods.".to_owned()),
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(12.0)
+                .margin(Thickness::new(0.0, 12.0, 0.0, 0.0))
+                .children((
+                    Button::new()
+                        .style(ButtonStyle::Accent)
+                        .is_enabled(draft.is_dirty() && !busy)
+                        .on_click(context.message(Message::SaveEdits))
+                        .automation_name("Save game settings")
+                        .content("Save"),
+                    Button::new()
+                        .is_enabled(draft.is_dirty() && !busy)
+                        .on_click(context.message(Message::CancelEdits))
+                        .automation_name("Cancel game settings changes")
+                        .content("Cancel"),
+                    Button::new()
+                        .is_enabled(game.edits.is_some() && !busy)
+                        .on_click(context.message(Message::ResetEdits))
+                        .automation_name("Reset game settings")
+                        .content(icon_label(Symbol::Undo, "Reset to detected")),
+                )),
+        ));
+
+        let header = if game.edits.is_some() {
+            "Game settings (edited)"
+        } else {
+            "Game settings"
+        };
+        Expander::new()
+            .is_expanded(self.settings_open)
+            .on_is_expanded_changed(context.callback(Message::SettingsExpanded))
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .horizontal_content_alignment(HorizontalAlignment::Stretch)
+            .automation_name("Game settings")
+            .header(header)
+            .content(form)
             .into()
     }
 
@@ -540,6 +674,9 @@ impl Component for GameManager {
             picking: false,
             draft: None,
             removing: None,
+            settings_open: false,
+            edit: None,
+            saving: false,
         };
         // The last scan's games show at once while the fresh scan runs.
         context.spawn_background(|_cancel| {
@@ -599,52 +736,91 @@ impl Component for GameManager {
                     self.error = gm_core::open_folder(dir, game.program.as_deref()).err();
                 }
             }
-            Message::ChooseProgram(id) => {
-                let Some(game) = self.games.iter().find(|game| game.id == id) else {
+            Message::SettingsExpanded(open) => self.settings_open = open,
+            Message::EditField(field, value) => {
+                if let Some(mut draft) = self.selected_draft() {
+                    draft.fields.set(field, value);
+                    self.edit = Some(draft);
+                }
+            }
+            Message::BrowseEdit(field) => {
+                let (Some(game), Some(draft)) = (self.selected_game(), self.selected_draft())
+                else {
                     return;
                 };
-                // Opens where the current program is, else in the install folder.
-                let folder = game
-                    .program
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .or(game.install_dir.as_deref())
-                    .map(Path::to_path_buf);
-                let mut picker = OpenFilePicker::new()
-                    .title(format!("Choose the .exe of {}", game.name))
-                    .filter_extensions("Programs", ["exe"]);
+                // Opens where the field's program is, else in the install folder.
+                let current = PathBuf::from(draft.fields.get(field).trim());
+                let folder = current
+                    .parent()
+                    .filter(|dir| !dir.as_os_str().is_empty() && dir.is_dir())
+                    .map(Path::to_path_buf)
+                    .or_else(|| game.install_dir.clone());
+                let mut picker = match field {
+                    EditField::Launch => OpenFilePicker::new()
+                        .title(format!("Choose the program Play starts for {}", game.name))
+                        .filter_extensions("Programs", ["exe", "bat", "cmd"]),
+                    _ => OpenFilePicker::new()
+                        .title(format!("Choose the .exe of {}", game.name))
+                        .filter_extensions("Programs", ["exe"]),
+                };
                 if let Some(folder) = folder {
                     picker = picker.folder(folder);
                 }
                 self.picking = picker.request(context, move |picked| {
                     let picked =
                         picked.map_err(|e| format!("could not choose a program: {}", e.message()));
-                    Message::GameProgramPicked(id, picked)
+                    Message::EditPathPicked(field, picked)
                 });
                 if !self.picking {
                     self.error = Some("The file dialog is not available right now.".to_owned());
                 }
             }
-            Message::GameProgramPicked(id, Ok(Some(program))) => {
-                // Saving the setting and reading the program's header are disk work.
-                context.spawn_background(move |_cancel| {
-                    let saved = gm_core::config::set_program(&id, &program).map(|()| {
-                        let arch = gm_core::pe::architecture(&program);
-                        (program, arch)
-                    });
-                    Message::GameProgramSaved(id, saved)
-                });
+            Message::EditPathPicked(field, Ok(Some(path))) => {
+                self.picking = false;
+                if let Some(mut draft) = self.selected_draft() {
+                    draft.fields.set(field, path.display().to_string());
+                    self.edit = Some(draft);
+                }
             }
-            Message::GameProgramPicked(_, Ok(None)) => self.picking = false,
-            Message::GameProgramPicked(_, Err(e)) | Message::GameProgramSaved(_, Err(e)) => {
+            Message::EditPathPicked(_, Ok(None)) => self.picking = false,
+            Message::EditPathPicked(_, Err(e)) => {
                 self.picking = false;
                 self.error = Some(e);
             }
-            Message::GameProgramSaved(id, Ok((program, arch))) => {
-                self.picking = false;
-                if let Some(game) = self.games.iter_mut().find(|game| game.id == id) {
-                    game.program = Some(program);
-                    game.arch = arch;
+            Message::SaveEdits => {
+                let (Some(game), Some(draft)) = (self.selected_game(), self.selected_draft())
+                else {
+                    return;
+                };
+                let id = game.id.clone();
+                let edits = draft.edits(game.edits.clone().unwrap_or_default());
+                self.saving = true;
+                // Checking the paths and writing the file are disk work.
+                context.spawn_background(move |_cancel| {
+                    let saved = edit::check_paths(&edits)
+                        .and_then(|()| gm_core::config::save_edits(&id, &edits));
+                    Message::EditsSaved(saved)
+                });
+            }
+            Message::CancelEdits => self.edit = None,
+            Message::ResetEdits => {
+                let Some(id) = self.selected.clone() else {
+                    return;
+                };
+                self.saving = true;
+                context.spawn_background(move |_cancel| {
+                    Message::EditsSaved(gm_core::config::clear_edits(&id))
+                });
+            }
+            Message::EditsSaved(result) => {
+                self.saving = false;
+                match result {
+                    // The scan applies the edits everywhere: name and order, Play, bitness.
+                    Ok(()) => {
+                        self.edit = None;
+                        self.start_scan(context);
+                    }
+                    Err(e) => self.error = Some(e),
                 }
             }
             Message::DismissError => self.error = None,

@@ -60,6 +60,7 @@ mod tests {
             icon: None,
             program: None,
             arch: None,
+            edits: None,
         }
     }
 

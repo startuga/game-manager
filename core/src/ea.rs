@@ -102,6 +102,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
             alt_launches: Vec::new(),
             program: None,
             arch: None,
+            edits: None,
         });
     }
     Ok(games)

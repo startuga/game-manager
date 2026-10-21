@@ -11,7 +11,7 @@
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
 
-use crate::{Game, json_file};
+use crate::{Game, Launch, json_file, with_args};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -71,21 +71,87 @@ pub struct GameSettings {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct GameSetting {
-    /// The game's own program, chosen by the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     program: Option<PathBuf>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
 
+/// What the user changed for one game in its settings. `None` means "as detected"; arguments can
+/// also be `Some("")`, i.e. explicitly none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameEdits {
+    /// The name shown in the library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The program Play starts instead of the store's own launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<PathBuf>,
+    /// The command-line arguments Play passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    /// The game's own program (bitness, Open folder and, later, mods).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<PathBuf>,
+}
+
+impl GameEdits {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Blank names and paths mean "as detected"; arguments are only trimmed.
+    fn normalized(&self) -> Self {
+        let text = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        let path = |value: &Option<PathBuf>| {
+            value
+                .as_deref()
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+        };
+        Self {
+            name: text(&self.name),
+            launch: path(&self.launch),
+            args: self.args.as_deref().map(|args| args.trim().to_owned()),
+            program: path(&self.program),
+        }
+    }
+}
+
+impl GameSetting {
+    fn edits(&self) -> GameEdits {
+        GameEdits {
+            name: self.name.clone(),
+            launch: self.launch.clone(),
+            args: self.args.clone(),
+            program: self.program.clone(),
+        }
+    }
+
+    fn set_edits(&mut self, edits: GameEdits) {
+        self.name = edits.name;
+        self.launch = edits.launch;
+        self.args = edits.args;
+        self.program = edits.program;
+    }
+}
+
 impl GameSettings {
-    /// The program the user chose for a game, while that file exists.
-    fn program(&self, id: &str) -> Option<&Path> {
-        self.games
-            .get(id)?
-            .program
-            .as_deref()
-            .filter(|program| program.is_file())
+    /// The user's edits for a game, if any.
+    fn edits(&self, id: &str) -> Option<GameEdits> {
+        Some(self.games.get(id)?.edits()).filter(|edits| !edits.is_empty())
     }
 }
 
@@ -113,28 +179,70 @@ pub fn load_settings() -> Result<GameSettings, String> {
     json_file::load(&json_file::user_file(SETTINGS_FILE)?)
 }
 
-/// Records the program the user chose for a game.
-pub fn set_program(id: &str, program: &Path) -> Result<(), String> {
-    set_program_in(&json_file::user_file(SETTINGS_FILE)?, id, program)
+/// Saves the user's edits for a game, replacing its previous ones. Empty edits remove them.
+pub fn save_edits(id: &str, edits: &GameEdits) -> Result<(), String> {
+    save_edits_in(&json_file::user_file(SETTINGS_FILE)?, id, edits)
 }
 
-fn set_program_in(file: &Path, id: &str, program: &Path) -> Result<(), String> {
+/// Removes the user's edits for a game, so it is shown and started as detected.
+pub fn clear_edits(id: &str) -> Result<(), String> {
+    save_edits(id, &GameEdits::default())
+}
+
+fn save_edits_in(file: &Path, id: &str, edits: &GameEdits) -> Result<(), String> {
     // Loading first also means a file that cannot be read is never overwritten.
     let mut settings: GameSettings = json_file::load(file)?;
-    settings.games.entry(id.to_owned()).or_default().program = Some(program.to_path_buf());
+    let entry = settings.games.entry(id.to_owned()).or_default();
+    entry.set_edits(edits.normalized());
+    if entry.edits().is_empty() && entry.other.is_empty() {
+        settings.games.remove(id);
+    }
     json_file::save(file, &settings)
 }
 
-/// Applies the configuration to scanned games: drops entries that are not games and sets each
-/// game's program. A program the user chose also decides the architecture, even over a package's.
+/// Applies the configuration to scanned games: drops entries that are not games, applies the
+/// user's edits (name, launch program, arguments) and sets each game's program. A program the
+/// user chose also decides the architecture, even over a package's.
 pub fn apply(games: &mut Vec<Game>, defaults: &GameDefaults, settings: &GameSettings) {
     games.retain(|game| !defaults.ignores(game));
     for game in games.iter_mut() {
-        if let Some(program) = settings.program(&game.id) {
+        let edits = settings.edits(&game.id);
+        if let Some(edits) = &edits {
+            apply_edits(game, edits);
+        }
+        let chosen_program = edits
+            .as_ref()
+            .and_then(|edits| edits.program.as_deref())
+            .filter(|program| program.is_file());
+        if let Some(program) = chosen_program {
             game.program = Some(program.to_path_buf());
             game.arch = None;
         } else if let Some(program) = defaults.program(game) {
             game.program = Some(program);
+        }
+        game.edits = edits;
+    }
+}
+
+/// The user's name, launch program and arguments. A launch program that no longer exists is
+/// ignored, so Play falls back to the detected launch.
+fn apply_edits(game: &mut Game, edits: &GameEdits) {
+    if let Some(name) = &edits.name {
+        game.name = name.clone();
+    }
+    let args = edits.args.as_deref();
+    match edits.launch.as_deref().filter(|launch| launch.is_file()) {
+        Some(program) => {
+            game.launch = Launch::Exe {
+                path: program.to_path_buf(),
+                args: args.unwrap_or_default().to_owned(),
+                working_dir: None,
+            };
+        }
+        None => {
+            if let Some(launch) = args.and_then(|args| with_args(&game.launch, args)) {
+                game.launch = launch;
+            }
         }
     }
 }
@@ -156,6 +264,7 @@ mod tests {
             icon: None,
             program: None,
             arch: None,
+            edits: None,
         }
     }
 
@@ -293,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn saves_the_chosen_program_and_keeps_other_settings() {
+    fn saves_edits_and_keeps_other_settings() {
         let dir = temp_dir("settings");
         let file = dir.join(SETTINGS_FILE);
         fs::write(
@@ -301,22 +410,32 @@ mod tests {
             r#"{ "games": { "gog:1": { "program": "C:\\a.exe", "later": 1 } }, "version": 2 }"#,
         )
         .unwrap();
-        set_program_in(
-            &file,
-            "epic:Ginger",
-            Path::new(r"C:\Games\Cyberpunk2077.exe"),
-        )
-        .unwrap();
+        let edits = GameEdits {
+            name: Some("  Cyberpunk  ".into()),
+            launch: Some(PathBuf::from(r"C:\Games\bin\x64\Cyberpunk2077.exe")),
+            args: Some(" -skipStartScreen ".into()),
+            program: Some(PathBuf::new()),
+        };
+        save_edits_in(&file, "epic:Ginger", &edits).unwrap();
 
-        let saved: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(
-            saved["games"]["epic:Ginger"]["program"],
-            r"C:\Games\Cyberpunk2077.exe"
-        );
-        assert_eq!(saved["games"]["gog:1"]["program"], r"C:\a.exe");
-        assert_eq!(saved["games"]["gog:1"]["later"], 1);
-        assert_eq!(saved["version"], 2);
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        let cyberpunk = &saved()["games"]["epic:Ginger"];
+        // Trimmed, and a blank path means "as detected" (not saved).
+        assert_eq!(cyberpunk["name"], "Cyberpunk");
+        assert_eq!(cyberpunk["launch"], r"C:\Games\bin\x64\Cyberpunk2077.exe");
+        assert_eq!(cyberpunk["args"], "-skipStartScreen");
+        assert!(cyberpunk.get("program").is_none());
+        assert_eq!(saved()["games"]["gog:1"]["later"], 1);
+        assert_eq!(saved()["version"], 2);
+
+        // Clearing removes an entry with nothing else in it, and keeps another's unknown fields.
+        save_edits_in(&file, "epic:Ginger", &GameEdits::default()).unwrap();
+        save_edits_in(&file, "gog:1", &GameEdits::default()).unwrap();
+        assert!(saved()["games"].get("epic:Ginger").is_none());
+        assert!(saved()["games"]["gog:1"].get("program").is_none());
+        assert_eq!(saved()["games"]["gog:1"]["later"], 1);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -325,8 +444,105 @@ mod tests {
         let dir = temp_dir("broken");
         let file = dir.join(SETTINGS_FILE);
         fs::write(&file, "{ broken").unwrap();
-        assert!(set_program_in(&file, "epic:Ginger", Path::new(r"C:\x.exe")).is_err());
+        let edits = GameEdits {
+            name: Some("x".into()),
+            ..GameEdits::default()
+        };
+        assert!(save_edits_in(&file, "epic:Ginger", &edits).is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "{ broken");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn settings_with(id: &str, edits: GameEdits) -> GameSettings {
+        let mut settings = GameSettings::default();
+        settings
+            .games
+            .entry(id.into())
+            .or_default()
+            .set_edits(edits);
+        settings
+    }
+
+    #[test]
+    fn edits_rename_and_change_how_play_starts() {
+        let dir = temp_dir("edits");
+        fs::write(dir.join("launcher.exe"), b"MZ").unwrap();
+        let launcher = dir.join("launcher.exe");
+        let exe = |path: &str, args: &str| Launch::Exe {
+            path: PathBuf::from(path),
+            args: args.into(),
+            working_dir: Some(PathBuf::from(r"C:\GOG\Game")),
+        };
+        let apply_one = |mut game: Game, edits: GameEdits| {
+            let id = game.id.clone();
+            let mut games = vec![game.clone()];
+            apply(
+                &mut games,
+                &GameDefaults::default(),
+                &settings_with(&id, edits),
+            );
+            game = games.remove(0);
+            game
+        };
+
+        // Name and a launch program with arguments; the program starts in its own folder.
+        let mut steam = game("steam:220", "Half-Life 2", None);
+        steam.launch = Launch::Uri("steam://rungameid/220".into());
+        let edits = GameEdits {
+            name: Some("HL2".into()),
+            launch: Some(launcher.clone()),
+            args: Some("-novid".into()),
+            program: None,
+        };
+        let edited = apply_one(steam.clone(), edits.clone());
+        assert_eq!(edited.name, "HL2");
+        assert_eq!(
+            edited.launch,
+            Launch::Exe {
+                path: launcher.clone(),
+                args: "-novid".into(),
+                working_dir: None
+            }
+        );
+        assert_eq!(edited.edits, Some(edits));
+
+        // Arguments alone: Steam launch options, a program's own arguments, none for Epic.
+        let args = |text: &str| GameEdits {
+            args: Some(text.into()),
+            ..GameEdits::default()
+        };
+        assert_eq!(
+            apply_one(steam.clone(), args("-novid -console")).launch,
+            Launch::Uri("steam://run/220//-novid%20-console/".into())
+        );
+        let mut gog = game("gog:1", "Some GOG game", None);
+        gog.launch = exe(r"C:\GOG\Game\game.exe", "-old");
+        assert_eq!(
+            apply_one(gog.clone(), args("-new")).launch,
+            exe(r"C:\GOG\Game\game.exe", "-new")
+        );
+        assert_eq!(
+            apply_one(gog, args("")).launch,
+            exe(r"C:\GOG\Game\game.exe", "")
+        );
+        let mut epic = game("epic:Ginger", "Cyberpunk 2077", None);
+        epic.launch = Launch::Uri("com.epicgames.launcher://apps/x?action=launch".into());
+        assert_eq!(apply_one(epic.clone(), args("-x")).launch, epic.launch);
+
+        // A launch program that no longer exists falls back to the detected launch.
+        let gone = GameEdits {
+            launch: Some(dir.join("gone.exe")),
+            ..GameEdits::default()
+        };
+        assert_eq!(apply_one(steam.clone(), gone).launch, steam.launch);
+        // No edits: as detected, and nothing to reset.
+        let mut games = vec![steam.clone()];
+        apply(
+            &mut games,
+            &GameDefaults::default(),
+            &GameSettings::default(),
+        );
+        assert_eq!(games[0], steam);
         fs::remove_dir_all(&dir).unwrap();
     }
 

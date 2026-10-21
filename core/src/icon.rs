@@ -341,6 +341,7 @@ mod tests {
             icon: Some(icon),
             program: None,
             arch: None,
+            edits: None,
         }
     }
 

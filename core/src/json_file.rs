@@ -27,7 +27,11 @@ pub(crate) fn local_file(name: &str) -> Result<PathBuf, String> {
 /// parsed is an error, so a caller that loads before saving never overwrites it.
 pub(crate) fn load<T: DeserializeOwned + Default>(file: &Path) -> Result<T, String> {
     match fs::read(file) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", file.display())),
+        Ok(bytes) => {
+            // Some editors save UTF-8 with a byte order mark, which JSON parsers reject.
+            let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            serde_json::from_slice(json).map_err(|e| format!("{}: {e}", file.display()))
+        }
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(format!("{}: {e}", file.display())),
     }
@@ -75,6 +79,20 @@ mod tests {
         save(&file, &sample).unwrap();
         assert_eq!(load::<Sample>(&file), Ok(sample));
         assert!(!file.with_extension("json.tmp").exists());
+        fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn reads_files_saved_with_a_byte_order_mark() {
+        let file = temp_file("bom");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"\xEF\xBB\xBF{ \"values\": { \"a\": 1 } }").unwrap();
+        assert_eq!(
+            load::<Sample>(&file),
+            Ok(Sample {
+                values: BTreeMap::from([("a".to_owned(), 1)]),
+            })
+        );
         fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
 
