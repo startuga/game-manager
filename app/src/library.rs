@@ -1,6 +1,8 @@
 //! Library logic behind the sidebar: search, store filter and selection. No UI code.
 
 use gm_core::{Game, Store};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// Indices of the games matching the search text and store filter, in list order.
 pub fn filter(games: &[Game], query: &str, store: Option<Store>) -> Vec<usize> {
@@ -24,6 +26,14 @@ pub fn store_options(games: &[Game]) -> Vec<(Option<Store>, String)> {
         }
     }
     options
+}
+
+/// A key for the list showing exactly these game ids, in this order. The sidebar builds a new list
+/// whenever it changes rather than changing a live list's rows (see `sidebar` in `main.rs`).
+pub fn list_key(ids: &[String]) -> String {
+    let mut hasher = DefaultHasher::new();
+    ids.hash(&mut hasher);
+    format!("games-{:016x}", hasher.finish())
 }
 
 /// The selection after a rescan: the same game if it is still installed, else the first game.
@@ -103,5 +113,21 @@ mod tests {
             Some("steam:244210")
         );
         assert_eq!(keep_selection(&[], Some("steam:244210")), None);
+    }
+
+    #[test]
+    fn list_key_changes_with_the_visible_games() {
+        let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let all = ids(&["steam:1", "gog:2", "ea:3"]);
+        // Same games: the same list keeps its rows, e.g. when icons arrive or a rescan finds the
+        // same library.
+        assert_eq!(list_key(&all), list_key(&all.clone()));
+        // A search, a store filter, an added or removed game, or another order: a new list.
+        assert_ne!(list_key(&all), list_key(&ids(&["steam:1", "ea:3"])));
+        assert_ne!(
+            list_key(&all),
+            list_key(&ids(&["gog:2", "steam:1", "ea:3"]))
+        );
+        assert_ne!(list_key(&all), list_key(&[]));
     }
 }

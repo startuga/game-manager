@@ -263,12 +263,16 @@ impl GameManager {
                 ));
             DataItem::new(game.id.clone(), &game.name).content(row)
         });
+        // windows-reactor applies `selected_index` while it is still changing a live list's rows,
+        // which can select a row that is not there yet (E_INVALIDARG, which stops the app) or
+        // leave rows showing another game's name. So every different set of visible games gets a
+        // new list, keyed by those games, instead of changing the rows in place.
+        let list_key = library::list_key(&ids);
         let list: View = if visible.is_empty() && !self.games.is_empty() {
             TextBlock::new()
                 .text("No games match the search.")
                 .opacity(0.7)
                 .margin(Thickness::uniform(8.0))
-                .grid_row(2)
                 .into()
         } else {
             ListView::new()
@@ -277,10 +281,12 @@ impl GameManager {
                 .on_selection_changed(context.callback(move |index: Option<usize>| {
                     Message::Select(index.and_then(|i| ids.get(i).cloned()))
                 }))
-                .grid_row(2)
                 .items(items)
                 .into()
         };
+        let list = Grid::new()
+            .grid_row(2)
+            .keyed_children(std::iter::once(KeyedView::new(list_key, list)));
 
         Border::new()
             .width(SIDEBAR_WIDTH)
