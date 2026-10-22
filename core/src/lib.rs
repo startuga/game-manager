@@ -1,5 +1,6 @@
 //! Game discovery and launching for Game Manager. Contains no UI code.
 
+mod com;
 pub mod config;
 pub mod custom;
 pub mod ea;
@@ -10,6 +11,7 @@ mod json_file;
 mod launcher;
 pub mod pcgamingwiki;
 pub mod pe;
+mod shortcut;
 pub mod snapshot;
 pub mod steam;
 mod text;

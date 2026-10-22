@@ -1,9 +1,10 @@
-//! Games the user added by hand: a program with a name and optional command-line arguments.
+//! Games the user added by hand: a program with a name and optional command-line arguments,
+//! chosen with Add game or dropped on the window (the program, or a shortcut to it).
 //!
 //! They are saved in `%APPDATA%\Game Manager\custom-games.json` and listed with the store games,
 //! but never merged with them: the user chose each one, even when a store reports the same folder.
 
-use crate::{Game, IconRef, Launch, Store, json_file};
+use crate::{Game, IconRef, Launch, Store, json_file, shortcut};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +21,88 @@ pub struct CustomGame {
     /// Command-line arguments, passed as one string.
     #[serde(default)]
     pub args: String,
+    /// The icon of the shortcut the game was added from; `None` shows the program's own icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<IconRef>,
+}
+
+/// A game about to be added: what the Add a game dialog shows and lets the user change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewGame {
+    pub name: String,
+    pub program: PathBuf,
+    pub args: String,
+    /// A shortcut's own icon; `None` shows the program's icon.
+    pub icon: Option<IconRef>,
+}
+
+impl NewGame {
+    /// A chosen program, named after its version information, without arguments.
+    pub fn from_program(program: PathBuf) -> Self {
+        Self {
+            name: suggested_name(&program),
+            program,
+            args: String::new(),
+            icon: None,
+        }
+    }
+
+    /// Files dropped on the window: exactly one program (`.exe`, `.bat`, `.cmd`), or one
+    /// shortcut to a program, which brings the name it shows, its arguments and its icon.
+    pub fn from_dropped(paths: &[PathBuf]) -> Result<Self, String> {
+        let usable: Vec<&PathBuf> = paths
+            .iter()
+            .filter(|path| is_program(path) || is_shortcut(path))
+            .collect();
+        let path = match usable[..] {
+            [path] => path,
+            [] => return Err("Drop a game's .exe or its shortcut to add it.".to_owned()),
+            _ => return Err("Drop one game at a time.".to_owned()),
+        };
+        if !is_shortcut(path) {
+            return Ok(Self::from_program(path.clone()));
+        }
+
+        let shortcut = shortcut::read(path)?;
+        let name = shortcut::shortcut_name(path);
+        let target = &shortcut.target;
+        if !target.exists() {
+            return Err(format!(
+                "The shortcut {name} starts {}, which does not exist.",
+                target.display()
+            ));
+        }
+        if !target.is_file() || !is_program(target) {
+            return Err(format!(
+                "The shortcut {name} does not start a program. Steam, Epic, GOG, EA and Xbox \
+                 games are found automatically."
+            ));
+        }
+        Ok(Self {
+            name: Some(name)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| suggested_name(target)),
+            program: shortcut.target,
+            args: shortcut.args,
+            icon: shortcut.icon,
+        })
+    }
+}
+
+fn is_program(path: &Path) -> bool {
+    has_extension(path, &["exe", "bat", "cmd"])
+}
+
+fn is_shortcut(path: &Path) -> bool {
+    has_extension(path, &["lnk"])
+}
+
+fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension().is_some_and(|ext| {
+        extensions
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+    })
 }
 
 impl CustomGame {
@@ -35,7 +118,11 @@ impl CustomGame {
                 working_dir: None,
             },
             alt_launches: Vec::new(),
-            icon: Some(IconRef::file(&self.program)),
+            icon: Some(
+                self.icon
+                    .clone()
+                    .unwrap_or_else(|| IconRef::file(&self.program)),
+            ),
             program: Some(self.program.clone()),
             arch: None,
             edits: None,
@@ -59,8 +146,8 @@ pub fn scan() -> Result<Vec<Game>, String> {
 }
 
 /// Saves a new custom game and returns it.
-pub fn add(name: &str, program: &Path, args: &str) -> Result<CustomGame, String> {
-    add_to(&library_file()?, name, program, args, unix_millis())
+pub fn add(game: &NewGame) -> Result<CustomGame, String> {
+    add_to(&library_file()?, game, unix_millis())
 }
 
 /// Forgets a custom game. The game's files are not touched.
@@ -98,14 +185,8 @@ fn save(file: &Path, games: Vec<CustomGame>) -> Result<(), String> {
     json_file::save(file, &LibraryFile { games })
 }
 
-fn add_to(
-    file: &Path,
-    name: &str,
-    program: &Path,
-    args: &str,
-    now: u128,
-) -> Result<CustomGame, String> {
-    let name = name.trim();
+fn add_to(file: &Path, new: &NewGame, now: u128) -> Result<CustomGame, String> {
+    let name = new.name.trim();
     if name.is_empty() {
         return Err("a game needs a name".to_owned());
     }
@@ -114,8 +195,9 @@ fn add_to(
     let game = CustomGame {
         id: new_id(&games, now),
         name: name.to_owned(),
-        program: program.to_path_buf(),
-        args: args.trim().to_owned(),
+        program: new.program.clone(),
+        args: new.args.trim().to_owned(),
+        icon: new.icon.clone(),
     };
     games.push(game.clone());
     save(file, games)?;
@@ -243,24 +325,41 @@ mod tests {
         assert_eq!(load(&file), Ok(Vec::new()));
     }
 
+    fn new_game(name: &str, program: &str, args: &str) -> NewGame {
+        NewGame {
+            name: name.into(),
+            program: PathBuf::from(program),
+            args: args.into(),
+            icon: None,
+        }
+    }
+
     #[test]
     fn adds_and_removes_games() {
         let file = temp_library("add-remove");
-        let program = Path::new(r"C:\Games\Doom\gzdoom.exe");
-        let doom = add_to(&file, " Doom ", program, " -iwad doom2.wad ", 1000).unwrap();
+        let program = r"C:\Games\Doom\gzdoom.exe";
+        let doom = add_to(
+            &file,
+            &new_game(" Doom ", program, " -iwad doom2.wad "),
+            1000,
+        )
+        .unwrap();
         assert_eq!(
             doom,
             CustomGame {
                 id: "custom:1000".into(),
                 name: "Doom".into(),
-                program: program.to_path_buf(),
+                program: PathBuf::from(program),
                 args: "-iwad doom2.wad".into(),
+                icon: None,
             }
         );
         // Same millisecond: the id still has to be unique.
-        let heretic = add_to(&file, "Heretic", program, "", 1000).unwrap();
+        let heretic = add_to(&file, &new_game("Heretic", program, ""), 1000).unwrap();
         assert_eq!(heretic.id, "custom:1001");
         assert_eq!(load(&file).unwrap(), [doom.clone(), heretic.clone()]);
+        // No icon of its own: the file does not mention one.
+        assert!(!fs::read_to_string(&file).unwrap().contains("icon"));
 
         remove_from(&file, &doom.id).unwrap();
         assert_eq!(load(&file).unwrap(), [heretic]);
@@ -268,9 +367,26 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_shortcut_icon() {
+        let file = temp_library("icon");
+        let icon = IconRef {
+            path: PathBuf::from(r"C:\Games\Doom\doom.ico"),
+            index: 2,
+        };
+        let new = NewGame {
+            icon: Some(icon.clone()),
+            ..new_game("Doom", r"C:\Games\Doom\gzdoom.exe", "")
+        };
+        let doom = add_to(&file, &new, 1).unwrap();
+        assert_eq!(load(&file).unwrap(), std::slice::from_ref(&doom));
+        assert_eq!(doom.to_game().icon, Some(icon));
+        fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn rejects_empty_names() {
         let file = temp_library("empty-name");
-        assert!(add_to(&file, "  ", Path::new(r"C:\x.exe"), "", 1).is_err());
+        assert!(add_to(&file, &new_game("  ", r"C:\x.exe", ""), 1).is_err());
         assert!(!file.exists());
     }
 
@@ -280,7 +396,7 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, "not json").unwrap();
         assert!(load(&file).is_err());
-        assert!(add_to(&file, "Doom", Path::new(r"C:\x.exe"), "", 1).is_err());
+        assert!(add_to(&file, &new_game("Doom", r"C:\x.exe", ""), 1).is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "not json");
         fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
@@ -292,6 +408,7 @@ mod tests {
             name: "Doom".into(),
             program: PathBuf::from(r"C:\Games\Doom\gzdoom.exe"),
             args: "-iwad doom2.wad".into(),
+            icon: None,
         };
         let game = custom.to_game();
         assert_eq!(game.store, Store::Custom);
@@ -305,6 +422,50 @@ mod tests {
             }
         );
         assert_eq!(game.icon, Some(IconRef::file(&custom.program)));
+    }
+
+    #[test]
+    fn dropped_programs_and_shortcuts_become_new_games() {
+        let dir = crate::shortcut::tests::temp_dir("dropped");
+        let program = dir.join("Some Game.exe");
+        fs::write(&program, b"MZ").unwrap();
+        let notes = dir.join("notes.txt");
+        fs::write(&notes, "").unwrap();
+
+        // A program, next to a file that is not one.
+        assert_eq!(
+            NewGame::from_dropped(&[notes.clone(), program.clone()]),
+            Ok(NewGame::from_program(program.clone()))
+        );
+
+        // A shortcut: its name, arguments and icon.
+        let lnk = dir.join("My Game.lnk");
+        let icon_file = dir.join("game.ico").to_string_lossy().into_owned();
+        crate::shortcut::tests::write(&lnk, &program, "-windowed", Some((&icon_file, 1)));
+        assert_eq!(
+            NewGame::from_dropped(std::slice::from_ref(&lnk)),
+            Ok(NewGame {
+                name: "My Game".into(),
+                program: program.clone(),
+                args: "-windowed".into(),
+                icon: Some(IconRef {
+                    path: PathBuf::from(&icon_file),
+                    index: 1,
+                }),
+            })
+        );
+
+        let error = |paths: &[PathBuf]| NewGame::from_dropped(paths).unwrap_err();
+        assert!(error(&[program.clone(), lnk.clone()]).contains("one game at a time"));
+        assert!(error(&[notes, dir.join("Store Game.url")]).contains(".exe or its shortcut"));
+        let folder = dir.join("Folder.lnk");
+        crate::shortcut::tests::write(&folder, &dir, "", None);
+        assert!(error(&[folder]).contains("does not start a program"));
+        let moved = dir.join("Moved.lnk");
+        crate::shortcut::tests::write(&moved, &program, "", None);
+        fs::remove_file(&program).unwrap();
+        assert!(error(&[moved]).contains("does not exist"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

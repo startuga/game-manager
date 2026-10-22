@@ -4,6 +4,7 @@ mod edit;
 mod library;
 
 use edit::{EditDraft, EditField};
+use gm_core::custom::NewGame;
 use gm_core::{Game, Launch, ScanReport, Store};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,8 +61,10 @@ enum Message {
     AddGame,
     /// The chosen program; `None` when the dialog was cancelled.
     ProgramPicked(Result<Option<PathBuf>, String>),
-    /// The chosen program and the name suggested by its version information.
-    ProgramNamed(PathBuf, String),
+    /// Files dropped on the window: a game's program or its shortcut adds it.
+    Dropped(DroppedData),
+    /// The Add a game dialog's starting values, from a chosen program or a dropped file.
+    DraftReady(Result<NewGame, String>),
     DraftName(String),
     DraftArgs(String),
     /// The Add game dialog closed: `Primary` is Add.
@@ -76,13 +79,6 @@ enum Message {
     CustomGameRemoved(Result<String, String>),
 }
 
-/// A custom game being set up in the Add game dialog.
-struct Draft {
-    program: PathBuf,
-    name: String,
-    args: String,
-}
-
 struct GameManager {
     games: Vec<Game>,
     icons: HashMap<String, EncodedImage>,
@@ -91,9 +87,10 @@ struct GameManager {
     selected: Option<String>,
     scanning: bool,
     error: Option<String>,
-    /// The file dialog for a custom game's program is open.
+    /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
     picking: bool,
-    draft: Option<Draft>,
+    /// The custom game being set up in the Add a game dialog.
+    draft: Option<NewGame>,
     /// The custom game whose removal waits for confirmation.
     removing: Option<String>,
     /// The Game settings expander is open (kept while switching games).
@@ -113,6 +110,12 @@ impl GameManager {
             let _ = gm_core::snapshot::save(&report.games);
             Message::Scanned(report)
         });
+    }
+
+    /// Add game and dropping a game's file. Not while scanning: a scan that started before the
+    /// save would drop the new game.
+    fn can_add_game(&self) -> bool {
+        !self.scanning && !self.picking && self.draft.is_none()
     }
 
     /// Extracts icons after the list is shown, so a large library appears without waiting.
@@ -211,12 +214,12 @@ impl GameManager {
                     .text(status)
                     .opacity(0.7)
                     .vertical_alignment(VerticalAlignment::Center),
-                // Not while scanning: a scan that started before the save would drop the new game.
                 Button::new()
-                    .is_enabled(!self.scanning && !self.picking)
+                    .is_enabled(self.can_add_game())
                     .on_click(context.message(Message::AddGame))
                     .automation_name("Add game")
-                    .content(icon_label(Symbol::Add, "Add game")),
+                    .content(icon_label(Symbol::Add, "Add game"))
+                    .tooltip("Or drop a game's .exe or its shortcut on the window"),
                 Button::new()
                     .is_enabled(!self.scanning)
                     .on_click(context.message(Message::Scan))
@@ -336,7 +339,8 @@ impl GameManager {
             let message = if self.scanning {
                 "Looking for installed games…"
             } else if self.games.is_empty() {
-                "No installed games were found. Use Add game to add one by hand."
+                "No installed games were found. Use Add game, or drop a game's .exe or its \
+                 shortcut here."
             } else {
                 "Select a game in the library."
             };
@@ -858,8 +862,7 @@ impl Component for GameManager {
             Message::ProgramPicked(Ok(Some(program))) => {
                 // The suggested name comes from the program's version information on disk.
                 context.spawn_background(move |_cancel| {
-                    let name = gm_core::custom::suggested_name(&program);
-                    Message::ProgramNamed(program, name)
+                    Message::DraftReady(Ok(NewGame::from_program(program)))
                 });
             }
             Message::ProgramPicked(Ok(None)) => self.picking = false,
@@ -867,13 +870,25 @@ impl Component for GameManager {
                 self.picking = false;
                 self.error = Some(e);
             }
-            Message::ProgramNamed(program, name) => {
-                self.picking = false;
-                self.draft = Some(Draft {
-                    program,
-                    name,
-                    args: String::new(),
+            Message::Dropped(DroppedData::StorageItems(items)) => {
+                // The drop policy only accepts files while a game can be added.
+                if !self.can_add_game() {
+                    return;
+                }
+                self.picking = true;
+                let paths: Vec<PathBuf> = items.into_iter().map(|item| item.path.into()).collect();
+                // Reading a shortcut uses COM and the disk.
+                context.spawn_background(move |_cancel| {
+                    Message::DraftReady(NewGame::from_dropped(&paths))
                 });
+            }
+            Message::Dropped(_) => {}
+            Message::DraftReady(ready) => {
+                self.picking = false;
+                match ready {
+                    Ok(game) => self.draft = Some(game),
+                    Err(e) => self.error = Some(e),
+                }
             }
             Message::DraftName(name) => {
                 if let Some(draft) = &mut self.draft {
@@ -890,13 +905,12 @@ impl Component for GameManager {
                     && result == ContentDialogResult::Primary
                 {
                     context.spawn_background(move |_cancel| {
-                        let added = gm_core::custom::add(&draft.name, &draft.program, &draft.args)
-                            .map(|custom| {
-                                // As a scan would: program, icon and architecture.
-                                let mut game = custom.to_game();
-                                gm_core::complete_game(&mut game);
-                                Box::new(game)
-                            });
+                        let added = gm_core::custom::add(&draft).map(|custom| {
+                            // As a scan would: program, icon and architecture.
+                            let mut game = custom.to_game();
+                            gm_core::complete_game(&mut game);
+                            Box::new(game)
+                        });
                         Message::CustomGameAdded(added)
                     });
                 }
@@ -964,7 +978,7 @@ impl Component for GameManager {
             .grid_row(2)
             .children((self.sidebar(context), self.main_panel(context)));
 
-        Grid::new()
+        let window = Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
             .children((
                 // Each view can carry one dialog.
@@ -972,7 +986,22 @@ impl Component for GameManager {
                     .content_dialog(self.add_dialog(context)),
                 error,
                 body.content_dialog(self.remove_dialog(context)),
-            ))
+            ));
+
+        // A game's program or shortcut dropped anywhere on the window adds it. The transparent
+        // background makes empty areas accept the drop too; without a policy nothing is accepted.
+        let drop_policy = if self.can_add_game() {
+            DragDropPolicy::new().storage_items(
+                DragDropAction::new(DragDropOperation::Link).caption("Add as a game"),
+            )
+        } else {
+            DragDropPolicy::new()
+        };
+        Border::new()
+            .background(Color::transparent())
+            .drop_policy(drop_policy)
+            .on_drop(context.callback(Message::Dropped))
+            .content(window)
             .into()
     }
 }

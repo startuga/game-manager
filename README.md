@@ -4,7 +4,8 @@ A native Windows 11 game launcher written in Rust with a WinUI 3 interface
 ([`windows-reactor`](https://github.com/microsoft/windows-rs)). It finds installed games from
 Steam, Epic Games, GOG, EA and the Xbox app, shows their icons, and starts them. Any other game
 can be added by hand with **Add game** (choose its program, then a name and optional command-line
-arguments); those are saved in `%APPDATA%\Game Manager\custom-games.json`.
+arguments), or by dropping the game's `.exe` or its desktop shortcut on the window (a shortcut
+brings its name, arguments and icon); those are saved in `%APPDATA%\Game Manager\custom-games.json`.
 
 Each game's **Game settings** (an expander under its buttons) change the name shown, the program
 Play starts (instead of the store's launch), the command-line arguments (also passed to Steam

@@ -5,18 +5,18 @@
 //! icon file's path, index, size, length and modified time, so a game's files are only read again
 //! when they change.
 
+use crate::com::ComGuard;
 use crate::{Game, IconRef, json_file};
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::fs;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use windows::Win32::{
-    CLSCTX_INPROC_SERVER, CLSID_WICImagingFactory, COINIT_MULTITHREADED, CoCreateInstance,
-    CoInitializeEx, CoUninitialize, DestroyIcon, GUID_ContainerFormatPng, HICON, IPropertyBag2,
-    IStream, IWICBitmapFrameEncode, IWICImagingFactory, LARGE_INTEGER, SHCreateMemStream,
-    SHDefExtractIconW, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET, WICBitmapEncoderNoCache,
+    CLSCTX_INPROC_SERVER, CLSID_WICImagingFactory, CoCreateInstance, DestroyIcon,
+    GUID_ContainerFormatPng, HICON, IPropertyBag2, IStream, IWICBitmapFrameEncode,
+    IWICImagingFactory, LARGE_INTEGER, SHCreateMemStream, SHDefExtractIconW, STATFLAG_NONAME,
+    STATSTG, STREAM_SEEK_SET, WICBitmapEncoderNoCache,
 };
 use windows::core::{HSTRING, Result};
 
@@ -251,35 +251,6 @@ fn read_all(stream: &IStream) -> Result<Vec<u8>> {
             .ok()?;
         buffer.truncate(read as usize);
         Ok(buffer)
-    }
-}
-
-/// Initializes COM for the current thread and balances it on drop. Not `Send`, so it is always
-/// dropped on the thread that created it.
-struct ComGuard {
-    initialized: bool,
-    _not_send: PhantomData<*const ()>,
-}
-
-impl ComGuard {
-    fn new() -> Self {
-        // SAFETY: plain COM initialization. If the thread already uses another apartment model
-        // (RPC_E_CHANGED_MODE) COM is still usable, but must not be uninitialized by us.
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED as u32) };
-        Self {
-            initialized: hr.is_ok(),
-            _not_send: PhantomData,
-        }
-    }
-}
-
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        if self.initialized {
-            // SAFETY: balances the successful CoInitializeEx in `new`; the guard is not `Send`,
-            // so this runs on the same thread.
-            unsafe { CoUninitialize() };
-        }
     }
 }
 
