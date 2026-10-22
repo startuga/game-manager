@@ -40,6 +40,8 @@ enum Message {
     },
     /// Opens the game's install folder in File Explorer.
     OpenFolder(String),
+    /// Opens the game's PCGamingWiki page in the browser.
+    OpenWiki(String),
     /// The Game settings expander was opened or closed.
     SettingsExpanded(bool),
     /// A Game settings field of the selected game changed.
@@ -414,6 +416,11 @@ impl GameManager {
                 .content(icon_label(Symbol::Folder, "Open folder"));
             KeyedView::new("open-folder", button)
         });
+        let wiki = Button::new()
+            .on_click(context.message(Message::OpenWiki(game.id.clone())))
+            .automation_name(format!("Open {} on PCGamingWiki", game.name))
+            .content(icon_label(Symbol::Globe, "PCGamingWiki"))
+            .tooltip("Fixes and settings for this game on PCGamingWiki");
         let remove = (game.store == Store::Custom).then(|| {
             let button = Button::new()
                 .on_click(context.message(Message::RemoveGame(game.id.clone())))
@@ -440,6 +447,7 @@ impl GameManager {
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
                     .chain(open_folder)
+                    .chain(std::iter::once(KeyedView::new("wiki", wiki)))
                     .chain(remove)
                     .chain(std::iter::once(KeyedView::new("store", store)))
                     .chain(arch),
@@ -735,6 +743,13 @@ impl Component for GameManager {
                 if let Some(dir) = &game.install_dir {
                     self.error = gm_core::open_folder(dir, game.program.as_deref()).err();
                 }
+            }
+            Message::OpenWiki(id) => {
+                let Some(game) = self.games.iter().find(|game| game.id == id) else {
+                    return;
+                };
+                let page = Launch::Uri(gm_core::pcgamingwiki::page_url(game));
+                self.error = gm_core::launch(&page).err();
             }
             Message::SettingsExpanded(open) => self.settings_open = open,
             Message::EditField(field, value) => {

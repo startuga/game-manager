@@ -37,6 +37,20 @@ pub(crate) fn strip_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
+/// Everything but unreserved URI characters as `%XX` (UTF-8 bytes), so spaces, quotes, slashes
+/// and `&` in a value cannot break the link it goes into.
+pub(crate) fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 /// Trimmed, non-empty text of the first child element called `name` (namespaces ignored).
 pub(crate) fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Option<&'a str> {
     node.children()

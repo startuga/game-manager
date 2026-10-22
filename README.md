@@ -11,6 +11,10 @@ Play starts (instead of the store's launch), the command-line arguments (also pa
 games as launch options) and the game's own program (for its bitness, Open folder and mods).
 Edits are saved in `%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them.
 
+**PCGamingWiki** opens the game's [PCGamingWiki](https://www.pcgamingwiki.com) page (fixes,
+settings, save locations) in your browser: by store id for Steam and GOG games, otherwise a wiki
+search for the game's name (rename the game in Game settings if the search misses it).
+
 When a store's Play action starts a launcher, the game's own program comes from the shipped
 `config/games.json` (known games, e.g. Cyberpunk 2077's `bin\x64\Cyberpunk2077.exe`) unless you set
 one. The build copies `games.json` next to `app.exe`; keep it there when you move the app.

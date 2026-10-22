@@ -8,6 +8,7 @@ pub mod gog;
 pub mod icon;
 mod json_file;
 mod launcher;
+pub mod pcgamingwiki;
 pub mod pe;
 pub mod snapshot;
 pub mod steam;

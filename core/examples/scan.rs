@@ -1,6 +1,7 @@
 //! Prints every detected game: `cargo run -p gm-core --example scan [-- -v] [-- --icons <dir>]`
 //! Each line shows the game's bitness ("?" when unknown). `-v` also prints how each game is
-//! launched, where its icon comes from and which program the bitness was read from.
+//! launched, where its icon comes from, which program the bitness was read from and the address
+//! of its PCGamingWiki page.
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 
 use gm_core::icon::IconExtractor;
@@ -32,6 +33,7 @@ fn main() {
             }
             println!("           icon: {:?}", game.icon);
             println!("           program: {:?}", game.program);
+            println!("           wiki: {}", gm_core::pcgamingwiki::page_url(game));
         }
     }
     println!("{} games", report.games.len());

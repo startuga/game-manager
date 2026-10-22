@@ -4,6 +4,7 @@
 //! (`steam://rungameid/<appid>`), so the game's own program is read from Steam's binary app info
 //! cache, `appcache\appinfo.vdf`: the launch entry Steam would use on 64-bit Windows.
 
+use crate::text::percent_encode;
 use crate::vdf::BinaryKeys;
 use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, on_disk_case, vdf};
 use std::collections::{HashMap, HashSet};
@@ -252,20 +253,6 @@ pub(crate) fn run_uri_with_args(uri: &str, args: &str) -> Option<String> {
         return Some(uri.to_owned());
     }
     Some(format!("steam://run/{app_id}//{}/", percent_encode(args)))
-}
-
-/// Everything but unreserved URI characters as `%XX`, so spaces, quotes and slashes in launch
-/// options cannot break the link.
-fn percent_encode(text: &str) -> String {
-    text.bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
 }
 
 fn paths_equal(a: &Path, b: &Path) -> bool {
