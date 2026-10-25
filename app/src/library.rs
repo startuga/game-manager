@@ -1,28 +1,56 @@
-//! Library logic behind the sidebar: search, store filter and selection. No UI code.
+//! Library logic behind the sidebar: search, filter and selection. No UI code.
 
 use gm_core::{Game, Store};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Indices of the games matching the search text and store filter, in list order.
-pub fn filter(games: &[Game], query: &str, store: Option<Store>) -> Vec<usize> {
+/// Which games the list shows, before the search.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LibraryFilter {
+    #[default]
+    All,
+    Favorites,
+    Store(Store),
+}
+
+impl LibraryFilter {
+    pub fn matches(self, game: &Game) -> bool {
+        match self {
+            LibraryFilter::All => true,
+            LibraryFilter::Favorites => game.favorite,
+            LibraryFilter::Store(store) => game.store == store,
+        }
+    }
+}
+
+/// Indices of the games matching the search text and filter, in list order.
+pub fn filter(games: &[Game], query: &str, filter: LibraryFilter) -> Vec<usize> {
     let query = query.trim().to_lowercase();
     games
         .iter()
         .enumerate()
-        .filter(|(_, game)| store.is_none_or(|store| game.store == store))
+        .filter(|(_, game)| filter.matches(game))
         .filter(|(_, game)| query.is_empty() || game.name.to_lowercase().contains(&query))
         .map(|(index, _)| index)
         .collect()
 }
 
-/// Store filter entries: "All stores", then each store that has games, with game counts.
-pub fn store_options(games: &[Game]) -> Vec<(Option<Store>, String)> {
-    let mut options = vec![(None, format!("All stores ({})", games.len()))];
+/// Filter entries with game counts: all games, the favorites (listed even when there are none,
+/// so the filter can be found), then each store that has games.
+pub fn filter_options(games: &[Game]) -> Vec<(LibraryFilter, String)> {
+    let count = |filter: LibraryFilter| games.iter().filter(|game| filter.matches(game)).count();
+    let mut options = vec![
+        (LibraryFilter::All, format!("All games ({})", games.len())),
+        (
+            LibraryFilter::Favorites,
+            format!("Favorites ({})", count(LibraryFilter::Favorites)),
+        ),
+    ];
     for store in Store::ALL {
-        let count = games.iter().filter(|game| game.store == store).count();
+        let filter = LibraryFilter::Store(store);
+        let count = count(filter);
         if count > 0 {
-            options.push((Some(store), format!("{} ({count})", store.name())));
+            options.push((filter, format!("{} ({count})", store.name())));
         }
     }
     options
@@ -61,6 +89,7 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
+            favorite: false,
         }
     }
 
@@ -76,26 +105,46 @@ mod tests {
     #[test]
     fn filters_by_name_and_store() {
         let games = library();
-        assert_eq!(filter(&games, "", None), [0, 1, 2, 3]);
-        assert_eq!(filter(&games, "  tomb RAIDER ", None), [2, 3]);
-        assert_eq!(filter(&games, "theme hospital", None), [1]);
-        assert_eq!(filter(&games, "", Some(Store::Steam)), [0, 3]);
-        assert_eq!(filter(&games, "tomb", Some(Store::Steam)), [3]);
-        assert!(filter(&games, "tomb", Some(Store::Xbox)).is_empty());
+        let steam = LibraryFilter::Store(Store::Steam);
+        assert_eq!(filter(&games, "", LibraryFilter::All), [0, 1, 2, 3]);
+        assert_eq!(filter(&games, "  tomb RAIDER ", LibraryFilter::All), [2, 3]);
+        assert_eq!(filter(&games, "theme hospital", LibraryFilter::All), [1]);
+        assert_eq!(filter(&games, "", steam), [0, 3]);
+        assert_eq!(filter(&games, "tomb", steam), [3]);
+        assert!(filter(&games, "tomb", LibraryFilter::Store(Store::Xbox)).is_empty());
     }
 
     #[test]
-    fn store_options_list_only_stores_with_games() {
+    fn filters_favorites() {
+        let mut games = library();
+        assert!(filter(&games, "", LibraryFilter::Favorites).is_empty());
+        games[1].favorite = true;
+        games[3].favorite = true;
+        assert_eq!(filter(&games, "", LibraryFilter::Favorites), [1, 3]);
+        assert_eq!(filter(&games, "tomb", LibraryFilter::Favorites), [3]);
+    }
+
+    #[test]
+    fn filter_options_list_favorites_and_only_stores_with_games() {
+        let mut games = library();
+        games[0].favorite = true;
         assert_eq!(
-            store_options(&library()),
+            filter_options(&games),
             [
-                (None, "All stores (4)".to_owned()),
-                (Some(Store::Steam), "Steam (2)".to_owned()),
-                (Some(Store::Gog), "GOG (1)".to_owned()),
-                (Some(Store::Ea), "EA (1)".to_owned()),
+                (LibraryFilter::All, "All games (4)".to_owned()),
+                (LibraryFilter::Favorites, "Favorites (1)".to_owned()),
+                (LibraryFilter::Store(Store::Steam), "Steam (2)".to_owned()),
+                (LibraryFilter::Store(Store::Gog), "GOG (1)".to_owned()),
+                (LibraryFilter::Store(Store::Ea), "EA (1)".to_owned()),
             ]
         );
-        assert_eq!(store_options(&[]), [(None, "All stores (0)".to_owned())]);
+        assert_eq!(
+            filter_options(&[]),
+            [
+                (LibraryFilter::All, "All games (0)".to_owned()),
+                (LibraryFilter::Favorites, "Favorites (0)".to_owned()),
+            ]
+        );
     }
 
     #[test]

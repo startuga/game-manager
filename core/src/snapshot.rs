@@ -92,6 +92,7 @@ mod tests {
                 args: Some("-skip".into()),
                 ..Default::default()
             }),
+            favorite: true,
         }]
     }
 

@@ -51,6 +51,7 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
+            favorite: false,
         }
     }
 

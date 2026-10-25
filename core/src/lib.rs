@@ -139,6 +139,9 @@ pub struct Game {
     /// app can show and reset it. `None` when the game is as detected.
     #[serde(default)]
     pub edits: Option<config::GameEdits>,
+    /// One of the user's favorites (`game-settings.json`).
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 /// `launch` with these command-line arguments, when it can take them: a program gets them as its
@@ -373,6 +376,7 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
+            favorite: false,
         }
     }
 

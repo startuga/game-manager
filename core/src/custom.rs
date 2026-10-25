@@ -124,6 +124,7 @@ impl CustomGame {
             program: Some(self.program.clone()),
             arch: None,
             edits: None,
+            favorite: false,
         }
     }
 }

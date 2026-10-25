@@ -143,6 +143,7 @@ fn parse_installations(text: &str, titles: &HashMap<String, String>) -> Vec<Game
                 program: None,
                 arch: None,
                 edits: None,
+                favorite: false,
             }
         })
         .collect()
@@ -261,6 +262,7 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
         program: None,
         arch: None,
         edits: None,
+        favorite: false,
     })
 }
 

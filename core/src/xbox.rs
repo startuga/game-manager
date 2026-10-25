@@ -213,6 +213,7 @@ fn build_game(
         program: None,
         arch: None,
         edits: None,
+        favorite: false,
     })
 }
 

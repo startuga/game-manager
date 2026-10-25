@@ -6,6 +6,7 @@ mod library;
 use edit::{EditDraft, EditField};
 use gm_core::custom::NewGame;
 use gm_core::{Game, Launch, Store};
+use library::LibraryFilter;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,6 +22,11 @@ const ICON_PIXELS: u32 = 128;
 const LIST_ICON_SIZE: f64 = 32.0;
 const HEADER_ICON_SIZE: f64 = 96.0;
 const SIDEBAR_WIDTH: f64 = 340.0;
+/// A list row's width inside the sidebar, so a right-click anywhere on the row reaches it.
+const ROW_WIDTH: f64 = SIDEBAR_WIDTH - 56.0;
+/// The game menu's size, to keep it inside the window.
+const MENU_WIDTH: f64 = 240.0;
+const MENU_HEIGHT: f64 = 92.0;
 /// "Game" glyph from Segoe Fluent Icons, shown while an icon loads or when a game has none.
 const GAME_GLYPH: &str = "\u{E7FC}";
 
@@ -34,7 +40,19 @@ enum Message {
     /// PNG icons keyed by game id.
     IconsLoaded(Vec<(String, Arc<[u8]>)>),
     Search(String),
-    FilterStore(Option<Store>),
+    /// The list filter picked; `None` (the dropdown losing its selection) keeps the current one.
+    Filter(Option<LibraryFilter>),
+    /// A mouse button went down on a game's row in the list: the right button opens its menu.
+    RowPointer(String, PointerEventInfo),
+    /// The game menu's Play.
+    RowMenuPlay,
+    /// The game menu's Add to / Remove from Favorites.
+    RowMenuFavorite,
+    /// A click outside the game menu, or Escape.
+    CloseRowMenu,
+    /// The favorite flag of the game was saved (or not; then it is set back).
+    FavoriteSaved(String, bool, Result<(), String>),
+    WindowResized(WindowSize),
     /// A game picked in the sidebar. `None` (e.g. the list losing its selection while filtered)
     /// keeps the current game in the main panel.
     Select(Option<String>),
@@ -83,12 +101,23 @@ enum Message {
     CustomGameRemoved(Result<String, String>),
 }
 
+/// A game's right-click menu: which game, and where the pointer was (window DIPs).
+struct RowMenu {
+    id: String,
+    x: f64,
+    y: f64,
+}
+
 struct GameManager {
     games: Vec<Game>,
     icons: HashMap<String, EncodedImage>,
     query: String,
-    store_filter: Option<Store>,
+    filter: LibraryFilter,
     selected: Option<String>,
+    /// The right-click menu of a game in the list, while it is open.
+    row_menu: Option<RowMenu>,
+    /// The window's client size in DIPs, to keep the menu inside it.
+    window_size: (f64, f64),
     scanning: bool,
     error: Option<String>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
@@ -155,13 +184,41 @@ impl GameManager {
         ))
     }
 
-    /// After games are removed: a store filter with no games left goes back to all stores.
+    /// Starts a game: its default action, or the alternative at `option` in `alt_launches`.
+    fn launch(&mut self, id: &str, option: Option<usize>) {
+        let Some(game) = self.games.iter().find(|game| game.id == id) else {
+            return;
+        };
+        let launch = match option {
+            None => Some(&game.launch),
+            Some(i) => game.alt_launches.get(i).map(|alt| &alt.launch),
+        };
+        if let Some(launch) = launch {
+            self.error = gm_core::launch(launch).err().map(|e| e.to_string());
+        }
+    }
+
+    /// Adds the game to the favorites, or removes it. Shown at once; the settings file is written
+    /// in the background, and a failure sets the flag back.
+    fn toggle_favorite(&mut self, id: String, context: &ComponentContext<Self>) {
+        let Some(game) = self.games.iter_mut().find(|game| game.id == id) else {
+            return;
+        };
+        game.favorite = !game.favorite;
+        let favorite = game.favorite;
+        context.spawn_background(move |_cancel| {
+            let saved = gm_core::config::set_favorite(&id, favorite).map_err(|e| e.to_string());
+            Message::FavoriteSaved(id, favorite, saved)
+        });
+    }
+
+    /// After games are removed: a store filter with no games left goes back to all games. The
+    /// Favorites filter stays, even when empty.
     fn drop_empty_store_filter(&mut self) {
-        if self
-            .store_filter
-            .is_some_and(|store| !self.games.iter().any(|game| game.store == store))
+        if let LibraryFilter::Store(store) = self.filter
+            && !self.games.iter().any(|game| game.store == store)
         {
-            self.store_filter = None;
+            self.filter = LibraryFilter::All;
         }
     }
 
@@ -254,20 +311,21 @@ impl GameManager {
             .on_text_changed(context.callback(|text: Rc<str>| Message::Search(text.to_string())))
             .grid_row(0);
 
-        let options = library::store_options(&self.games);
-        let stores: Vec<Option<Store>> = options.iter().map(|(store, _)| *store).collect();
-        let store_index = stores.iter().position(|store| *store == self.store_filter);
-        let store_filter = ComboBox::new()
+        let options = library::filter_options(&self.games);
+        let filters: Vec<LibraryFilter> = options.iter().map(|(filter, _)| *filter).collect();
+        let filter_index = filters.iter().position(|filter| *filter == self.filter);
+        let filter = ComboBox::new()
             .items_source(options.into_iter().map(|(_, label)| label))
-            .selected_index(store_index)
+            .selected_index(filter_index)
             .on_selection_changed(context.callback(move |index: Option<usize>| {
-                Message::FilterStore(index.and_then(|i| stores.get(i).copied()).flatten())
+                // `None` (the list losing its selection while it changes) keeps the filter.
+                Message::Filter(index.and_then(|i| filters.get(i).copied()))
             }))
             .horizontal_alignment(HorizontalAlignment::Stretch)
-            .automation_name("Store")
+            .automation_name("Filter")
             .grid_row(1);
 
-        let visible = library::filter(&self.games, &self.query, self.store_filter);
+        let visible = library::filter(&self.games, &self.query, self.filter);
         let ids: Vec<String> = visible.iter().map(|&i| self.games[i].id.clone()).collect();
         let selected_index = self
             .selected
@@ -295,6 +353,16 @@ impl GameManager {
                                 .opacity(0.6),
                         )),
                 ));
+            // The whole row (a transparent background is hit-testable) opens the game's menu on a
+            // right-click; left clicks still reach the list, which selects as before.
+            let id = game.id.clone();
+            let row = Border::new()
+                .background(Color::transparent())
+                .min_width(ROW_WIDTH)
+                .on_pointer_pressed(context.callback(move |pointer: PointerEventInfo| {
+                    Message::RowPointer(id.clone(), pointer)
+                }))
+                .content(row);
             DataItem::new(game.id.clone(), &game.name).content(row)
         });
         // windows-reactor applies `selected_index` while it is still changing a live list's rows,
@@ -303,8 +371,15 @@ impl GameManager {
         // new list, keyed by those games, instead of changing the rows in place.
         let list_key = library::list_key(&ids);
         let list: View = if visible.is_empty() && !self.games.is_empty() {
+            let message = if self.filter == LibraryFilter::Favorites && self.query.trim().is_empty()
+            {
+                "No favorite games yet. Right-click a game and choose Add to Favorites."
+            } else {
+                "No games match the search."
+            };
             TextBlock::new()
-                .text("No games match the search.")
+                .text(message)
+                .text_wrapping(TextWrapping::Wrap)
                 .opacity(0.7)
                 .margin(Thickness::uniform(8.0))
                 .into()
@@ -333,9 +408,82 @@ impl GameManager {
                 Grid::new()
                     .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
                     .row_spacing(8.0)
-                    .children((search, store_filter, list)),
+                    .children((search, filter, list)),
             )
             .into()
+    }
+
+    /// The open right-click menu of a game, drawn by the app: windows-reactor attaches menus only
+    /// to buttons, not as a right-click menu. Over the whole window, a transparent backdrop that
+    /// closes the menu when clicked, and above it the menu at the pointer, kept inside the window.
+    /// The backdrop is the menu's sibling, not its parent, so a press on an item never closes the
+    /// menu before the item's click.
+    fn row_menu_view(&self, context: &ViewContext<Self>) -> Option<View> {
+        let menu = self.row_menu.as_ref()?;
+        let game = self.games.iter().find(|game| game.id == menu.id)?;
+        let (width, height) = self.window_size;
+        let left = if menu.x + MENU_WIDTH > width {
+            (menu.x - MENU_WIDTH).max(0.0)
+        } else {
+            menu.x
+        };
+        let top = if menu.y + MENU_HEIGHT > height {
+            (menu.y - MENU_HEIGHT).max(0.0)
+        } else {
+            menu.y
+        };
+        let item = |symbol, label: &str, name: String, message| {
+            Button::new()
+                .style(ButtonStyle::Subtle)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .horizontal_content_alignment(HorizontalAlignment::Left)
+                .on_click(context.message(message))
+                .automation_name(name)
+                .content(icon_label(symbol, label))
+        };
+        let favorite = if game.favorite {
+            item(
+                Symbol::UnFavorite,
+                "Remove from Favorites",
+                format!("Remove {} from Favorites", game.name),
+                Message::RowMenuFavorite,
+            )
+        } else {
+            item(
+                Symbol::Favorite,
+                "Add to Favorites",
+                format!("Add {} to Favorites", game.name),
+                Message::RowMenuFavorite,
+            )
+        };
+        let panel = Border::new()
+            .width(MENU_WIDTH)
+            .padding(Thickness::uniform(4.0))
+            .corner_radius(8.0)
+            .background(ThemeBrush::SolidBackground)
+            .border_brush(ThemeBrush::CardStroke)
+            .border_thickness(Thickness::uniform(1.0))
+            .canvas_left(left)
+            .canvas_top(top)
+            .content(StackPanel::new().spacing(2.0).children((
+                item(
+                    Symbol::Play,
+                    "Play",
+                    format!("Play {}", game.name),
+                    Message::RowMenuPlay,
+                ),
+                favorite,
+            )));
+        let backdrop = Border::new()
+            .background(Color::transparent())
+            .on_pointer_pressed(context.callback(|_: PointerEventInfo| Message::CloseRowMenu));
+        Some(
+            Grid::new()
+                .grid_row(0)
+                .grid_row_span(3)
+                .children((backdrop, Canvas::new().children((panel,))))
+                .into(),
+        )
     }
 
     /// The selected game: header with title and install path, then the action and metadata bar.
@@ -684,8 +832,10 @@ impl Component for GameManager {
             games: Vec::new(),
             icons: HashMap::new(),
             query: String::new(),
-            store_filter: None,
+            filter: LibraryFilter::All,
             selected: None,
+            row_menu: None,
+            window_size: (0.0, 0.0),
             scanning: false,
             error: None,
             picking: false,
@@ -730,21 +880,40 @@ impl Component for GameManager {
                 );
             }
             Message::Search(query) => self.query = query,
-            Message::FilterStore(store) => self.store_filter = store,
-            Message::Select(Some(id)) => self.selected = Some(id),
-            Message::Select(None) => {}
-            Message::Launch { id, option } => {
-                let Some(game) = self.games.iter().find(|game| game.id == id) else {
-                    return;
-                };
-                let launch = match option {
-                    None => Some(&game.launch),
-                    Some(i) => game.alt_launches.get(i).map(|alt| &alt.launch),
-                };
-                if let Some(launch) = launch {
-                    self.error = gm_core::launch(launch).err().map(|e| e.to_string());
+            Message::Filter(Some(filter)) => self.filter = filter,
+            Message::Filter(None) => {}
+            Message::RowPointer(id, pointer) => {
+                if pointer.is_right_button_pressed {
+                    self.selected = Some(id.clone());
+                    self.row_menu = Some(RowMenu {
+                        id,
+                        x: pointer.window_x,
+                        y: pointer.window_y,
+                    });
                 }
             }
+            Message::RowMenuPlay => {
+                if let Some(menu) = self.row_menu.take() {
+                    self.launch(&menu.id, None);
+                }
+            }
+            Message::RowMenuFavorite => {
+                if let Some(menu) = self.row_menu.take() {
+                    self.toggle_favorite(menu.id, context);
+                }
+            }
+            Message::CloseRowMenu => self.row_menu = None,
+            Message::FavoriteSaved(_, _, Ok(())) => {}
+            Message::FavoriteSaved(id, favorite, Err(e)) => {
+                if let Some(game) = self.games.iter_mut().find(|game| game.id == id) {
+                    game.favorite = !favorite;
+                }
+                self.error = Some(e);
+            }
+            Message::WindowResized(size) => self.window_size = (size.width, size.height),
+            Message::Select(Some(id)) => self.selected = Some(id),
+            Message::Select(None) => {}
+            Message::Launch { id, option } => self.launch(&id, option),
             Message::OpenFolder(id) => {
                 let Some(game) = self.games.iter().find(|game| game.id == id) else {
                     return;
@@ -928,12 +1097,11 @@ impl Component for GameManager {
             }
             Message::CustomGameAdded(Ok(game)) => {
                 let game = *game;
-                // Show the new game even when the current search or store filter would hide it.
-                if library::filter(std::slice::from_ref(&game), &self.query, self.store_filter)
-                    .is_empty()
+                // Show the new game even when the current search or filter would hide it.
+                if library::filter(std::slice::from_ref(&game), &self.query, self.filter).is_empty()
                 {
                     self.query.clear();
-                    self.store_filter = None;
+                    self.filter = LibraryFilter::All;
                 }
                 self.selected = Some(game.id.clone());
                 Self::load_icons(vec![game.clone()], false, context);
@@ -993,15 +1161,19 @@ impl Component for GameManager {
             .grid_row(2)
             .children((self.sidebar(context), self.main_panel(context)));
 
+        let resized = context.callback(Message::WindowResized);
+        context.on_window_size(resized);
+        // Each view can carry one dialog.
+        let mut layers: Vec<View> = vec![
+            self.top_bar(context)
+                .content_dialog(self.add_dialog(context)),
+            error.into(),
+            body.content_dialog(self.remove_dialog(context)),
+        ];
+        layers.extend(self.row_menu_view(context));
         let window = Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
-            .children((
-                // Each view can carry one dialog.
-                self.top_bar(context)
-                    .content_dialog(self.add_dialog(context)),
-                error,
-                body.content_dialog(self.remove_dialog(context)),
-            ));
+            .children(layers);
 
         // A game's program or shortcut dropped anywhere on the window adds it. The transparent
         // background makes empty areas accept the drop too; without a policy nothing is accepted.
@@ -1012,12 +1184,21 @@ impl Component for GameManager {
         } else {
             DragDropPolicy::new()
         };
-        Border::new()
+        let root = Border::new()
             .background(Color::transparent())
             .drop_policy(drop_policy)
-            .on_drop(context.callback(Message::Dropped))
-            .content(window)
-            .into()
+            .on_drop(context.callback(Message::Dropped));
+        // Escape closes the game menu. The root is an ancestor of whatever has focus; the handler
+        // exists only while the menu is open, so Escape keeps its usual meaning otherwise.
+        let root = if self.row_menu.is_some() {
+            let sender = context.sender();
+            root.on_key_up(RoutedCallback::new(move |key: KeyEventInfo| {
+                key.key == VirtualKey::ESCAPE && sender.send(Message::CloseRowMenu)
+            }))
+        } else {
+            root
+        };
+        root.content(window).into()
     }
 }
 

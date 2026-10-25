@@ -79,6 +79,9 @@ struct GameSetting {
     args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     program: Option<PathBuf>,
+    /// Kept apart from the edits: Reset to detected does not unfavorite a game.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    favorite: bool,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -146,12 +149,21 @@ impl GameSetting {
         self.args = edits.args;
         self.program = edits.program;
     }
+
+    /// Nothing left to save for the game.
+    fn is_empty(&self) -> bool {
+        self.edits().is_empty() && !self.favorite && self.other.is_empty()
+    }
 }
 
 impl GameSettings {
     /// The user's edits for a game, if any.
     fn edits(&self, id: &str) -> Option<GameEdits> {
         Some(self.games.get(id)?.edits()).filter(|edits| !edits.is_empty())
+    }
+
+    fn is_favorite(&self, id: &str) -> bool {
+        self.games.get(id).is_some_and(|setting| setting.favorite)
     }
 }
 
@@ -189,12 +201,26 @@ pub fn clear_edits(id: &str) -> Result<()> {
     save_edits(id, &GameEdits::default())
 }
 
+/// Adds a game to the user's favorites, or removes it.
+pub fn set_favorite(id: &str, favorite: bool) -> Result<()> {
+    set_favorite_in(&json_file::user_file(SETTINGS_FILE)?, id, favorite)
+}
+
 fn save_edits_in(file: &Path, id: &str, edits: &GameEdits) -> Result<()> {
+    update_setting(file, id, |setting| setting.set_edits(edits.normalized()))
+}
+
+fn set_favorite_in(file: &Path, id: &str, favorite: bool) -> Result<()> {
+    update_setting(file, id, |setting| setting.favorite = favorite)
+}
+
+/// Changes one game's entry in the settings file, dropping the entry once nothing is left in it.
+fn update_setting(file: &Path, id: &str, change: impl FnOnce(&mut GameSetting)) -> Result<()> {
     // Loading first also means a file that cannot be read is never overwritten.
     let mut settings: GameSettings = json_file::load(file)?;
     let entry = settings.games.entry(id.to_owned()).or_default();
-    entry.set_edits(edits.normalized());
-    if entry.edits().is_empty() && entry.other.is_empty() {
+    change(entry);
+    if entry.is_empty() {
         settings.games.remove(id);
     }
     json_file::save(file, &settings)
@@ -221,6 +247,7 @@ pub fn apply(games: &mut Vec<Game>, defaults: &GameDefaults, settings: &GameSett
             game.program = Some(program);
         }
         game.edits = edits;
+        game.favorite = settings.is_favorite(&game.id);
     }
 }
 
@@ -265,6 +292,7 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
+            favorite: false,
         }
     }
 
@@ -449,7 +477,52 @@ mod tests {
             ..GameEdits::default()
         };
         assert!(save_edits_in(&file, "epic:Ginger", &edits).is_err());
+        assert!(set_favorite_in(&file, "epic:Ginger", true).is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "{ broken");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn favorites_are_saved_apart_from_the_edits() {
+        let dir = temp_dir("favorites");
+        let file = dir.join(SETTINGS_FILE);
+        fs::write(&file, r#"{ "games": { "gog:1": { "later": 1 } } }"#).unwrap();
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+
+        set_favorite_in(&file, "epic:Ginger", true).unwrap();
+        set_favorite_in(&file, "gog:1", true).unwrap();
+        assert_eq!(saved()["games"]["epic:Ginger"]["favorite"], true);
+        assert_eq!(saved()["games"]["gog:1"]["later"], 1);
+
+        // Reset to detected (clearing the edits) keeps the game a favorite.
+        let renamed = GameEdits {
+            name: Some("Cyberpunk".into()),
+            ..GameEdits::default()
+        };
+        save_edits_in(&file, "epic:Ginger", &renamed).unwrap();
+        save_edits_in(&file, "epic:Ginger", &GameEdits::default()).unwrap();
+        assert_eq!(saved()["games"]["epic:Ginger"]["favorite"], true);
+        assert!(saved()["games"]["epic:Ginger"].get("name").is_none());
+
+        // Unfavoriting drops an entry with nothing else in it, not one with other settings.
+        set_favorite_in(&file, "epic:Ginger", false).unwrap();
+        set_favorite_in(&file, "gog:1", false).unwrap();
+        assert!(saved()["games"].get("epic:Ginger").is_none());
+        assert!(saved()["games"]["gog:1"].get("favorite").is_none());
+        assert_eq!(saved()["games"]["gog:1"]["later"], 1);
+
+        // `apply` marks the scanned games.
+        set_favorite_in(&file, "epic:Ginger", true).unwrap();
+        let settings: GameSettings = json_file::load(&file).unwrap();
+        let mut games = vec![
+            game("epic:Ginger", "Cyberpunk 2077", None),
+            game("gog:1", "The Witcher 3", None),
+        ];
+        apply(&mut games, &GameDefaults::default(), &settings);
+        assert!(games[0].favorite);
+        assert!(!games[1].favorite);
         fs::remove_dir_all(&dir).unwrap();
     }
 

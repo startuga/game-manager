@@ -164,6 +164,7 @@ fn build_game(entry: &RegistryEntry, info: Option<&Info>, galaxy: Option<&Path>)
         program,
         arch: None,
         edits: None,
+        favorite: false,
     })
 }
 

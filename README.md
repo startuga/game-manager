@@ -12,6 +12,10 @@ Play starts (instead of the store's launch), the command-line arguments (also pa
 games as launch options) and the game's own program (for its bitness, Open folder and mods).
 Edits are saved in `%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them.
 
+Right-click a game in the library for **Play** and **Add to Favorites** (or Remove from
+Favorites); the **Favorites** entry of the filter above the list shows only those games. Favorites
+are saved in `game-settings.json` too.
+
 **PCGamingWiki** opens the game's [PCGamingWiki](https://www.pcgamingwiki.com) page (fixes,
 settings, save locations) in your browser: by store id for Steam and GOG games, otherwise a wiki
 search for the game's name (rename the game in Game settings if the search misses it).
