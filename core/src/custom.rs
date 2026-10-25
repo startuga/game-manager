@@ -4,7 +4,7 @@
 //! They are saved in `%APPDATA%\Game Manager\custom-games.json` and listed with the store games,
 //! but never merged with them: the user chose each one, even when a store reports the same folder.
 
-use crate::{Game, IconRef, Launch, Store, json_file, shortcut};
+use crate::{Error, Game, IconRef, Launch, Result, Store, json_file, shortcut};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,34 +49,32 @@ impl NewGame {
 
     /// Files dropped on the window: exactly one program (`.exe`, `.bat`, `.cmd`), or one
     /// shortcut to a program, which brings the name it shows, its arguments and its icon.
-    pub fn from_dropped(paths: &[PathBuf]) -> Result<Self, String> {
+    pub fn from_dropped(paths: &[PathBuf]) -> Result<Self> {
         let usable: Vec<&PathBuf> = paths
             .iter()
             .filter(|path| is_program(path) || is_shortcut(path))
             .collect();
         let path = match usable[..] {
             [path] => path,
-            [] => return Err("Drop a game's .exe or its shortcut to add it.".to_owned()),
-            _ => return Err("Drop one game at a time.".to_owned()),
+            [] => return Err(Error::NothingToAdd),
+            _ => return Err(Error::SeveralGames),
         };
         if !is_shortcut(path) {
             return Ok(Self::from_program(path.clone()));
         }
 
-        let shortcut = shortcut::read(path)?;
         let name = shortcut::shortcut_name(path);
+        let shortcut = shortcut::read(path)?
+            .ok_or_else(|| Error::ShortcutNotAProgram { name: name.clone() })?;
         let target = &shortcut.target;
         if !target.exists() {
-            return Err(format!(
-                "The shortcut {name} starts {}, which does not exist.",
-                target.display()
-            ));
+            return Err(Error::ShortcutTargetMissing {
+                name,
+                target: target.clone(),
+            });
         }
         if !target.is_file() || !is_program(target) {
-            return Err(format!(
-                "The shortcut {name} does not start a program. Steam, Epic, GOG, EA and Xbox \
-                 games are found automatically."
-            ));
+            return Err(Error::ShortcutNotAProgram { name });
         }
         Ok(Self {
             name: Some(name)
@@ -138,7 +136,7 @@ struct LibraryFile {
 }
 
 /// The saved custom games, as library games.
-pub fn scan() -> Result<Vec<Game>, String> {
+pub fn scan() -> Result<Vec<Game>> {
     Ok(load(&library_file()?)?
         .iter()
         .map(CustomGame::to_game)
@@ -146,12 +144,12 @@ pub fn scan() -> Result<Vec<Game>, String> {
 }
 
 /// Saves a new custom game and returns it.
-pub fn add(game: &NewGame) -> Result<CustomGame, String> {
+pub fn add(game: &NewGame) -> Result<CustomGame> {
     add_to(&library_file()?, game, unix_millis())
 }
 
 /// Forgets a custom game. The game's files are not touched.
-pub fn remove(id: &str) -> Result<(), String> {
+pub fn remove(id: &str) -> Result<()> {
     remove_from(&library_file()?, id)
 }
 
@@ -173,22 +171,22 @@ pub fn suggested_name(program: &Path) -> String {
         })
 }
 
-fn library_file() -> Result<PathBuf, String> {
+fn library_file() -> Result<PathBuf> {
     json_file::user_file("custom-games.json")
 }
 
-fn load(file: &Path) -> Result<Vec<CustomGame>, String> {
+fn load(file: &Path) -> Result<Vec<CustomGame>> {
     json_file::load::<LibraryFile>(file).map(|library| library.games)
 }
 
-fn save(file: &Path, games: Vec<CustomGame>) -> Result<(), String> {
+fn save(file: &Path, games: Vec<CustomGame>) -> Result<()> {
     json_file::save(file, &LibraryFile { games })
 }
 
-fn add_to(file: &Path, new: &NewGame, now: u128) -> Result<CustomGame, String> {
+fn add_to(file: &Path, new: &NewGame, now: u128) -> Result<CustomGame> {
     let name = new.name.trim();
     if name.is_empty() {
-        return Err("a game needs a name".to_owned());
+        return Err(Error::MissingName);
     }
     // Loading first also means a file that cannot be read is never overwritten.
     let mut games = load(file)?;
@@ -204,7 +202,7 @@ fn add_to(file: &Path, new: &NewGame, now: u128) -> Result<CustomGame, String> {
     Ok(game)
 }
 
-fn remove_from(file: &Path, id: &str) -> Result<(), String> {
+fn remove_from(file: &Path, id: &str) -> Result<()> {
     let mut games = load(file)?;
     games.retain(|game| game.id != id);
     save(file, games)
@@ -212,10 +210,14 @@ fn remove_from(file: &Path, id: &str) -> Result<(), String> {
 
 /// `custom:<creation time in ms>`, made unique among the saved games.
 fn new_id(games: &[CustomGame], now: u128) -> String {
-    (now..)
-        .map(|n| format!("custom:{n}"))
-        .find(|id| !games.iter().any(|game| game.id == *id))
-        .expect("an unused id")
+    let mut n = now;
+    loop {
+        let id = format!("custom:{n}");
+        if !games.iter().any(|game| game.id == id) {
+            return id;
+        }
+        n += 1;
+    }
 }
 
 fn unix_millis() -> u128 {
@@ -322,7 +324,7 @@ mod tests {
     #[test]
     fn missing_library_is_empty() {
         let file = temp_library("missing");
-        assert_eq!(load(&file), Ok(Vec::new()));
+        assert_eq!(load(&file).unwrap(), Vec::new());
     }
 
     fn new_game(name: &str, program: &str, args: &str) -> NewGame {
@@ -434,8 +436,8 @@ mod tests {
 
         // A program, next to a file that is not one.
         assert_eq!(
-            NewGame::from_dropped(&[notes.clone(), program.clone()]),
-            Ok(NewGame::from_program(program.clone()))
+            NewGame::from_dropped(&[notes.clone(), program.clone()]).unwrap(),
+            NewGame::from_program(program.clone())
         );
 
         // A shortcut: its name, arguments and icon.
@@ -443,8 +445,8 @@ mod tests {
         let icon_file = dir.join("game.ico").to_string_lossy().into_owned();
         crate::shortcut::tests::write(&lnk, &program, "-windowed", Some((&icon_file, 1)));
         assert_eq!(
-            NewGame::from_dropped(std::slice::from_ref(&lnk)),
-            Ok(NewGame {
+            NewGame::from_dropped(std::slice::from_ref(&lnk)).unwrap(),
+            NewGame {
                 name: "My Game".into(),
                 program: program.clone(),
                 args: "-windowed".into(),
@@ -452,19 +454,31 @@ mod tests {
                     path: PathBuf::from(&icon_file),
                     index: 1,
                 }),
-            })
+            }
         );
 
         let error = |paths: &[PathBuf]| NewGame::from_dropped(paths).unwrap_err();
-        assert!(error(&[program.clone(), lnk.clone()]).contains("one game at a time"));
-        assert!(error(&[notes, dir.join("Store Game.url")]).contains(".exe or its shortcut"));
+        assert!(matches!(
+            error(&[program.clone(), lnk.clone()]),
+            Error::SeveralGames
+        ));
+        assert!(matches!(
+            error(&[notes, dir.join("Store Game.url")]),
+            Error::NothingToAdd
+        ));
         let folder = dir.join("Folder.lnk");
         crate::shortcut::tests::write(&folder, &dir, "", None);
-        assert!(error(&[folder]).contains("does not start a program"));
+        assert!(matches!(
+            error(&[folder]),
+            Error::ShortcutNotAProgram { name } if name == "Folder"
+        ));
         let moved = dir.join("Moved.lnk");
         crate::shortcut::tests::write(&moved, &program, "", None);
         fs::remove_file(&program).unwrap();
-        assert!(error(&[moved]).contains("does not exist"));
+        assert!(matches!(
+            error(&[moved]),
+            Error::ShortcutTargetMissing { name, target } if name == "Moved" && target == program
+        ));
         fs::remove_dir_all(&dir).unwrap();
     }
 

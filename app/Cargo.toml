@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 gm-core = { path = "../core" }
+# The startup error dialog (winuser) and the "Windows App Runtime missing" code (winerror).
+windows = { workspace = true, features = ["winuser", "winerror"] }
 windows-pickers = { workspace = true, features = ["reactor"] }
 windows-reactor = { workspace = true }

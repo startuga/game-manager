@@ -10,14 +10,14 @@
 //! Both identify a game by the same app name (`artifactId` / `AppName`), so a game migrated
 //! from the legacy launcher is only listed once.
 
-use crate::{Game, IconRef, Launch, Store};
+use crate::{Error, Game, IconRef, Launch, Result, Store};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Scans both launcher generations for installed games.
-pub fn scan() -> Result<Vec<Game>, String> {
+pub fn scan() -> Result<Vec<Game>> {
     let mut games = Vec::new();
 
     if let Some(data) = eglv2_dir() {
@@ -35,7 +35,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
     }
 
     if let Some(dir) = legacy_manifests_dir() {
-        let entries = fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let entries = fs::read_dir(&dir).map_err(Error::io(&dir))?;
         for entry in entries.flatten() {
             let path = entry.path();
             if path

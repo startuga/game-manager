@@ -4,6 +4,11 @@
 //! of its PCGamingWiki page.
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 
+#![allow(
+    clippy::expect_used,
+    reason = "a developer tool: stopping with the reason is the right response to a failure"
+)]
+
 use gm_core::icon::IconExtractor;
 use std::path::PathBuf;
 

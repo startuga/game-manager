@@ -6,7 +6,7 @@
 
 use crate::text::percent_encode;
 use crate::vdf::BinaryKeys;
-use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, on_disk_case, vdf};
+use crate::{Error, Game, IconRef, Launch, Result, Store, UNINSTALL_KEYS, on_disk_case, vdf};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ pub fn install_dir() -> Option<PathBuf> {
 }
 
 /// Scans every Steam library folder for installed games.
-pub fn scan() -> Result<Vec<Game>, String> {
+pub fn scan() -> Result<Vec<Game>> {
     let Some(steam) = install_dir() else {
         return Ok(Vec::new());
     };
@@ -183,14 +183,17 @@ fn launch_program(app: &vdf::Value, install_dir: &Path) -> Option<PathBuf> {
     })
 }
 
-fn library_folders(steam: &Path) -> Result<Vec<PathBuf>, String> {
+fn library_folders(steam: &Path) -> Result<Vec<PathBuf>> {
     let file = steam.join("steamapps").join("libraryfolders.vdf");
     let mut folders = vec![steam.to_path_buf()];
 
     let Ok(text) = fs::read_to_string(&file) else {
         return Ok(folders);
     };
-    let root = vdf::parse(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+    let root = vdf::parse(&text).map_err(|source| Error::Vdf {
+        path: file.clone(),
+        source,
+    })?;
     if let Some(list) = root.get("libraryfolders") {
         for (_, folder) in list.entries() {
             if let Some(path) = folder.get_str("path") {

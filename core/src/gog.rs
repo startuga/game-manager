@@ -7,7 +7,7 @@
 //! The default Play action starts the game directly (GOG games are DRM-free). When GOG Galaxy is
 //! installed, "Play via Galaxy" is offered as an extra action for playtime tracking and cloud saves.
 
-use crate::{Game, IconRef, Launch, LaunchOption, Store};
+use crate::{Error, Game, IconRef, Launch, LaunchOption, Result, Store};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,11 +58,11 @@ struct PlayTask {
 }
 
 /// Scans the GOG registry key for installed games.
-pub fn scan() -> Result<Vec<Game>, String> {
+pub fn scan() -> Result<Vec<Game>> {
     let Ok(games_key) = windows_registry::LOCAL_MACHINE.open(GAMES_KEY) else {
         return Ok(Vec::new());
     };
-    let ids = games_key.keys().map_err(|e| format!("{GAMES_KEY}: {e}"))?;
+    let ids = games_key.keys().map_err(Error::windows(GAMES_KEY))?;
     let galaxy = galaxy_client();
 
     let mut games = Vec::new();

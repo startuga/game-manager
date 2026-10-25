@@ -1,8 +1,6 @@
 //! Minimal parsers for Valve's KeyValues formats: text (`.vdf` / `.acf`) and binary (the entries
 //! of Steam's `appinfo.vdf`).
 
-use std::fmt;
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Str(String),
@@ -40,23 +38,12 @@ impl Value {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, thiserror::Error)]
+#[error("VDF parse error at byte {offset}: {message}")]
 pub struct VdfError {
     pub offset: usize,
     pub message: &'static str,
 }
-
-impl fmt::Display for VdfError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "VDF parse error at byte {}: {}",
-            self.offset, self.message
-        )
-    }
-}
-
-impl std::error::Error for VdfError {}
 
 #[derive(Debug, PartialEq)]
 enum Token {
@@ -148,11 +135,20 @@ pub fn parse(src: &str) -> Result<Value, VdfError> {
         src: src.strip_prefix('\u{feff}').unwrap_or(src),
         pos: 0,
     };
-    let entries = parse_entries(&mut lexer, false)?;
+    let entries = parse_entries(&mut lexer, 0)?;
     Ok(Value::Obj(entries))
 }
 
-fn parse_entries(lexer: &mut Lexer, nested: bool) -> Result<Vec<(String, Value)>, VdfError> {
+/// Deepest nesting of objects either parser accepts. Steam's files nest a few levels; the limit
+/// keeps a damaged file from overflowing the stack (which would end the app, not just the scan).
+const MAX_DEPTH: usize = 64;
+
+/// The entries of an object `depth` levels down (0 = the root, which has no closing brace).
+fn parse_entries(lexer: &mut Lexer, depth: usize) -> Result<Vec<(String, Value)>, VdfError> {
+    if depth > MAX_DEPTH {
+        return Err(lexer.error("objects nested too deeply"));
+    }
+    let nested = depth > 0;
     let mut entries = Vec::new();
     loop {
         let key = match lexer.next()? {
@@ -164,7 +160,7 @@ fn parse_entries(lexer: &mut Lexer, nested: bool) -> Result<Vec<(String, Value)>
         };
         let value = match lexer.next()? {
             Some(Token::Str(s)) => Value::Str(s),
-            Some(Token::Open) => Value::Obj(parse_entries(lexer, true)?),
+            Some(Token::Open) => Value::Obj(parse_entries(lexer, depth + 1)?),
             _ => return Err(lexer.error("expected value")),
         };
         entries.push((key, value));
@@ -184,7 +180,7 @@ pub enum BinaryKeys<'a> {
 /// result reads like text VDF.
 pub fn parse_binary(data: &[u8], keys: BinaryKeys) -> Result<Value, VdfError> {
     let mut reader = BinaryReader { data, pos: 0, keys };
-    Ok(Value::Obj(reader.entries(false)?))
+    Ok(Value::Obj(reader.entries(0)?))
 }
 
 const BINARY_OBJECT: u8 = 0x00;
@@ -205,7 +201,12 @@ struct BinaryReader<'a> {
 }
 
 impl BinaryReader<'_> {
-    fn entries(&mut self, nested: bool) -> Result<Vec<(String, Value)>, VdfError> {
+    /// The entries of an object `depth` levels down (0 = the root, which may end with the data).
+    fn entries(&mut self, depth: usize) -> Result<Vec<(String, Value)>, VdfError> {
+        if depth > MAX_DEPTH {
+            return Err(self.error("objects nested too deeply"));
+        }
+        let nested = depth > 0;
         let mut entries = Vec::new();
         loop {
             let Some(&kind) = self.data.get(self.pos) else {
@@ -221,7 +222,7 @@ impl BinaryReader<'_> {
             }
             let key = self.key()?;
             let value = match kind {
-                BINARY_OBJECT => Value::Obj(self.entries(true)?),
+                BINARY_OBJECT => Value::Obj(self.entries(depth + 1)?),
                 BINARY_STRING => Value::Str(self.c_string()?),
                 BINARY_INT32 => Value::Str(i32::from_le_bytes(self.bytes()?).to_string()),
                 BINARY_FLOAT32 => Value::Str(f32::from_le_bytes(self.bytes()?).to_string()),
@@ -409,5 +410,24 @@ mod tests {
     #[test]
     fn reports_unclosed_object() {
         assert!(parse(r#""a" { "b" "c""#).is_err());
+    }
+
+    #[test]
+    fn limits_how_deeply_objects_nest() {
+        let text = |depth: usize| format!("{}{}", r#""k" { "#.repeat(depth), "} ".repeat(depth));
+        let binary = |depth: usize| {
+            let mut data = [BINARY_OBJECT, b'k', 0].repeat(depth);
+            data.extend(vec![BINARY_END; depth]);
+            data
+        };
+        assert!(parse(&text(MAX_DEPTH)).is_ok());
+        assert!(parse_binary(&binary(MAX_DEPTH), BinaryKeys::Inline).is_ok());
+        // Far deeper than the stack would allow: an error, not a crash.
+        for depth in [MAX_DEPTH + 1, 100_000] {
+            let error = parse(&text(depth)).unwrap_err();
+            assert_eq!(error.message, "objects nested too deeply");
+            let error = parse_binary(&binary(depth), BinaryKeys::Inline).unwrap_err();
+            assert_eq!(error.message, "objects nested too deeply");
+        }
     }
 }

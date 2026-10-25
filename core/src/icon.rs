@@ -41,39 +41,49 @@ impl IconExtractor {
         if is_image_file(&icon.path) {
             return std::fs::read(&icon.path).ok();
         }
-        let hicon = extract(icon, size)?;
-        let png = self.encode_png(hicon);
-        // SAFETY: `hicon` was created by SHDefExtractIconW and is not used after this.
-        unsafe {
-            let _ = DestroyIcon(hicon);
-        }
-        png.ok()
+        let icon = extract(icon, size)?;
+        self.encode_png(&icon).ok()
     }
 
-    fn encode_png(&self, hicon: HICON) -> Result<Vec<u8>> {
-        // SAFETY: `hicon` is a live icon handle owned by the caller for this call. Every interface
-        // used comes from the WIC or Shell call just before it, which succeeded; the out-pointers
-        // are valid locals, and the null vendor and rectangle mean "any encoder" and "the whole
-        // bitmap", as WIC documents.
-        let stream = unsafe {
-            let bitmap = self.factory.CreateBitmapFromHICON(hicon)?;
-            let stream = SHCreateMemStream(None).ok_or_else(windows::core::Error::from_thread)?;
-
-            let encoder = self
-                .factory
-                .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())?;
-            encoder.Initialize(&stream, WICBitmapEncoderNoCache).ok()?;
-            let mut frame: Option<IWICBitmapFrameEncode> = None;
-            let mut options: Option<IPropertyBag2> = None;
-            encoder.CreateNewFrame(&mut frame, &mut options).ok()?;
-            let frame = frame.ok_or_else(windows::core::Error::empty)?;
-            frame.Initialize(options.as_ref()).ok()?;
-            frame.WriteSource(&bitmap, std::ptr::null()).ok()?;
-            frame.Commit().ok()?;
-            encoder.Commit().ok()?;
-            stream
-        };
+    /// Every interface used comes from the WIC or Shell call just before it, which succeeded.
+    fn encode_png(&self, icon: &OwnedIcon) -> Result<Vec<u8>> {
+        // SAFETY: `icon` is a live icon handle for the whole call.
+        let bitmap = unsafe { self.factory.CreateBitmapFromHICON(icon.0) }?;
+        // SAFETY: no initial data, so the stream starts empty.
+        let stream =
+            unsafe { SHCreateMemStream(None) }.ok_or_else(windows::core::Error::from_thread)?;
+        // SAFETY: a null vendor means "any encoder", as WIC documents.
+        let encoder = unsafe {
+            self.factory
+                .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())
+        }?;
+        // SAFETY: `stream` is the live stream created above.
+        unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }.ok()?;
+        let mut frame: Option<IWICBitmapFrameEncode> = None;
+        let mut options: Option<IPropertyBag2> = None;
+        // SAFETY: both out-pointers are valid locals.
+        unsafe { encoder.CreateNewFrame(&mut frame, &mut options) }.ok()?;
+        let frame = frame.ok_or_else(windows::core::Error::empty)?;
+        // SAFETY: `options` is the property bag CreateNewFrame returned with this frame.
+        unsafe { frame.Initialize(options.as_ref()) }.ok()?;
+        // SAFETY: `bitmap` is live; a null rectangle means the whole bitmap.
+        unsafe { frame.WriteSource(&bitmap, std::ptr::null()) }.ok()?;
+        // SAFETY: the frame was initialized and written.
+        unsafe { frame.Commit() }.ok()?;
+        // SAFETY: the encoder's only frame was committed.
+        unsafe { encoder.Commit() }.ok()?;
         read_all(&stream)
+    }
+}
+
+/// An icon handle from the Shell, destroyed when dropped, so no way out of a function leaks it.
+struct OwnedIcon(HICON);
+
+impl Drop for OwnedIcon {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from SHDefExtractIconW in `extract`, only this value owns it,
+        // and it is destroyed once, here.
+        let _ = unsafe { DestroyIcon(self.0) };
     }
 }
 
@@ -220,38 +230,36 @@ fn is_image_file(path: &std::path::Path) -> bool {
 }
 
 /// Extracts the icon at `size` pixels, scaling from the closest size the file contains.
-fn extract(icon: &IconRef, size: u32) -> Option<HICON> {
+fn extract(icon: &IconRef, size: u32) -> Option<OwnedIcon> {
     let path = HSTRING::from(icon.path.as_os_str());
     let mut hicon: HICON = std::ptr::null_mut();
     // SAFETY: `path` is a valid wide string and `hicon` a valid out-pointer. The low word of the
     // last argument is the large icon's size; no small icon is requested.
     let hr = unsafe { SHDefExtractIconW(&path, icon.index, 0, Some(&mut hicon), None, size) };
-    (hr.0 == 0 && !hicon.is_null()).then_some(hicon)
+    // Owned first, so a handle returned with a failure code is still destroyed.
+    let icon = (!hicon.is_null()).then_some(OwnedIcon(hicon))?;
+    (hr.0 == 0).then_some(icon)
 }
 
 /// Reads a whole memory stream from the beginning.
 fn read_all(stream: &IStream) -> Result<Vec<u8>> {
-    // SAFETY: the reference keeps `stream` a live COM object for the calls. `stat` and `read` are
-    // valid out-pointers; `buffer` has exactly the length passed to `Read`, so the stream cannot
-    // write past it; with STATFLAG_NONAME, Stat allocates no name that would need freeing.
-    unsafe {
-        let mut stat = STATSTG::default();
-        stream.Stat(&mut stat, STATFLAG_NONAME as u32).ok()?;
-        stream
-            .Seek(LARGE_INTEGER { QuadPart: 0 }, STREAM_SEEK_SET as u32, None)
-            .ok()?;
-        let mut buffer = vec![0u8; stat.cbSize.QuadPart as usize];
-        let mut read = 0u32;
-        stream
-            .Read(
-                buffer.as_mut_ptr().cast::<c_void>(),
-                buffer.len() as u32,
-                Some(&mut read),
-            )
-            .ok()?;
-        buffer.truncate(read as usize);
-        Ok(buffer)
-    }
+    let too_large = |_| windows::core::Error::empty();
+    let mut stat = STATSTG::default();
+    // SAFETY: `stat` is a valid out-pointer; with STATFLAG_NONAME, Stat allocates no name that
+    // would need freeing.
+    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME as u32) }.ok()?;
+    // SAFETY: Stat filled in the size, and every member of the union holds a valid integer.
+    let size = unsafe { stat.cbSize.QuadPart };
+    // SAFETY: seeking a live stream to its start; no out-pointer.
+    unsafe { stream.Seek(LARGE_INTEGER { QuadPart: 0 }, STREAM_SEEK_SET as u32, None) }.ok()?;
+    let mut buffer = vec![0u8; usize::try_from(size).map_err(too_large)?];
+    let len = u32::try_from(buffer.len()).map_err(too_large)?;
+    let mut read = 0u32;
+    // SAFETY: `buffer` has exactly `len` bytes, so the stream cannot write past it, and `read` is
+    // a valid out-pointer.
+    unsafe { stream.Read(buffer.as_mut_ptr().cast::<c_void>(), len, Some(&mut read)) }.ok()?;
+    buffer.truncate(read as usize);
+    Ok(buffer)
 }
 
 #[cfg(test)]

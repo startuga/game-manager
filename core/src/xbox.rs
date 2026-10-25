@@ -9,7 +9,7 @@
 //! package identity, `shell:AppsFolder\<PackageFamilyName>!<AppId>`, as the Start menu does.
 
 use crate::text::{child_text, read_text, xml_body};
-use crate::{Arch, Game, IconRef, Launch, LaunchOption, Store};
+use crate::{Arch, Error, Game, IconRef, Launch, LaunchOption, Result, Store};
 use std::fs;
 use std::path::{Path, PathBuf};
 use windows::Management::Deployment::PackageManager;
@@ -31,12 +31,12 @@ struct GameConfig {
 }
 
 /// Scans the current user's packages for Xbox PC games.
-pub fn scan() -> Result<Vec<Game>, String> {
-    let manager = PackageManager::new().map_err(|e| format!("PackageManager: {e}"))?;
+pub fn scan() -> Result<Vec<Game>> {
+    let manager = PackageManager::new().map_err(Error::windows("PackageManager"))?;
     // An empty security ID means the current user, which needs no admin rights.
     let packages = manager
         .FindPackagesByUserSecurityId(&HSTRING::new())
-        .map_err(|e| format!("listing packages: {e}"))?;
+        .map_err(Error::windows("listing packages"))?;
 
     let mut games = Vec::new();
     for package in packages {

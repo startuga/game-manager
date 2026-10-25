@@ -1,0 +1,3 @@
+# A failed unwrap or expect in a test is that test failing, which is what it should do.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

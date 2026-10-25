@@ -14,14 +14,14 @@
 //! `Origin Games\<contentID>` key or an uninstall entry that runs EA's installer cleanup.
 
 use crate::text::{child_text, decode_text, read_text, xml_body};
-use crate::{Game, IconRef, Launch, Store, UNINSTALL_KEYS, folder_key};
+use crate::{Game, IconRef, Launch, Result, Store, UNINSTALL_KEYS, folder_key};
 use std::fs;
 use std::path::{Path, PathBuf};
 use windows::Win32::{
-    FindResourceW, FreeLibrary, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+    FindResourceW, FreeLibrary, HMODULE, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
     LoadLibraryExW, LoadResource, LockResource, SizeofResource,
 };
-use windows::core::{HSTRING, w};
+use windows::core::{HSTRING, PCWSTR, w};
 
 const PUBLISHER_KEYS: [&str; 4] = [
     r"SOFTWARE\Electronic Arts",
@@ -45,7 +45,7 @@ struct Candidate {
 }
 
 /// Scans the registry for EA-installed game folders.
-pub fn scan() -> Result<Vec<Game>, String> {
+pub fn scan() -> Result<Vec<Game>> {
     let mut candidates = Vec::new();
     for candidate in uninstall_candidates().chain(publisher_candidates()) {
         add_candidate(&mut candidates, candidate);
@@ -378,38 +378,60 @@ fn read_gdf(dir: &Path, locale: &str) -> Option<String> {
 
 /// Loads the DLL as a data file (no code runs) and copies out its `DATA/__GDF_XML` resource.
 fn read_gdf_resource(dll: &Path) -> Option<String> {
-    let path = HSTRING::from(dll.as_os_str());
-    // SAFETY: `path` is a valid wide string. The module is mapped as an image resource only, so
-    // none of its code executes. The resource pointer is valid for `size` bytes until the module
-    // is freed, and the bytes are copied before `FreeLibrary`.
-    unsafe {
-        let module = LoadLibraryExW(
-            &path,
-            None,
-            (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE) as u32,
-        );
-        if module.is_null() {
+    let module = DataModule::load(dll)?;
+    module
+        .resource(w!("__GDF_XML"), w!("DATA"))
+        .map(decode_text)
+}
+
+/// A DLL mapped as data only, so none of its code runs; freed when dropped.
+struct DataModule(HMODULE);
+
+impl DataModule {
+    fn load(dll: &Path) -> Option<Self> {
+        let path = HSTRING::from(dll.as_os_str());
+        // SAFETY: `path` is a valid wide string. Loaded as a data file and image resource, the
+        // module is only mapped: none of its code executes.
+        let module = unsafe {
+            LoadLibraryExW(
+                &path,
+                None,
+                (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE) as u32,
+            )
+        };
+        (!module.is_null()).then_some(Self(module))
+    }
+
+    /// A resource's bytes. They stay mapped while the module is loaded, which the borrow of
+    /// `self` guarantees.
+    fn resource(&self, name: PCWSTR, kind: PCWSTR) -> Option<&[u8]> {
+        // SAFETY: the module is loaded while `self` lives; `name` and `kind` are wide strings.
+        let resource = unsafe { FindResourceW(Some(self.0), name, kind) };
+        if resource.is_null() {
             return None;
         }
-        let text = (|| {
-            let resource = FindResourceW(Some(module), w!("__GDF_XML"), w!("DATA"));
-            if resource.is_null() {
-                return None;
-            }
-            let size = SizeofResource(Some(module), resource) as usize;
-            let loaded = LoadResource(Some(module), resource);
-            if loaded.is_null() {
-                return None;
-            }
-            let data = LockResource(loaded);
-            if data.is_null() || size == 0 {
-                return None;
-            }
-            let bytes = std::slice::from_raw_parts(data.cast::<u8>(), size);
-            Some(decode_text(bytes))
-        })();
-        let _ = FreeLibrary(module);
-        text
+        // SAFETY: `resource` was just found in this module.
+        let size = unsafe { SizeofResource(Some(self.0), resource) } as usize;
+        // SAFETY: as above.
+        let loaded = unsafe { LoadResource(Some(self.0), resource) };
+        if loaded.is_null() || size == 0 {
+            return None;
+        }
+        // SAFETY: `loaded` is the resource just loaded from this module.
+        let data = unsafe { LockResource(loaded) };
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: LockResource points to the resource's `size` bytes, mapped read-only while the
+        // module is loaded; the returned slice borrows `self`, so it cannot outlive the module.
+        Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) })
+    }
+}
+
+impl Drop for DataModule {
+    fn drop(&mut self) {
+        // SAFETY: loaded by `load`, freed once, here; no slice from `resource` outlives `self`.
+        let _ = unsafe { FreeLibrary(self.0) };
     }
 }
 

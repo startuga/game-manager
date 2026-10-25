@@ -5,11 +5,14 @@ mod library;
 
 use edit::{EditDraft, EditField};
 use gm_core::custom::NewGame;
-use gm_core::{Game, Launch, ScanReport, Store};
+use gm_core::{Game, Launch, Store};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
+use windows::Win32::{MB_ICONERROR, MB_OK, MessageBoxW, STATEREPOSITORY_E_DEPENDENCY_NOT_RESOLVED};
+use windows::core::{HSTRING, w};
 use windows_pickers::OpenFilePicker;
 use windows_reactor::*;
 
@@ -24,7 +27,8 @@ const GAME_GLYPH: &str = "\u{E7FC}";
 #[derive(Clone)]
 enum Message {
     Scan,
-    Scanned(ScanReport),
+    /// The scanned games, and the message of each part of the scan that failed.
+    Scanned(Vec<Game>, Vec<String>),
     /// The games saved by the last scan, shown until the first scan of this start finishes.
     SnapshotLoaded(Vec<Game>),
     /// PNG icons keyed by game id.
@@ -108,7 +112,8 @@ impl GameManager {
             let report = gm_core::scan_all();
             // The next start shows these games at once. A cache only: failures are ignored.
             let _ = gm_core::snapshot::save(&report.games);
-            Message::Scanned(report)
+            let errors = report.errors.iter().map(ToString::to_string).collect();
+            Message::Scanned(report.games, errors)
         });
     }
 
@@ -701,10 +706,10 @@ impl Component for GameManager {
     fn update(&mut self, message: Message, context: &ComponentContext<Self>) {
         match message {
             Message::Scan => self.start_scan(context),
-            Message::Scanned(report) => {
+            Message::Scanned(games, errors) => {
                 self.scanning = false;
-                self.games = report.games;
-                self.error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
+                self.games = games;
+                self.error = (!errors.is_empty()).then(|| errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
                 Self::load_icons(self.games.clone(), true, context);
@@ -737,7 +742,7 @@ impl Component for GameManager {
                     Some(i) => game.alt_launches.get(i).map(|alt| &alt.launch),
                 };
                 if let Some(launch) = launch {
-                    self.error = gm_core::launch(launch).err();
+                    self.error = gm_core::launch(launch).err().map(|e| e.to_string());
                 }
             }
             Message::OpenFolder(id) => {
@@ -745,7 +750,9 @@ impl Component for GameManager {
                     return;
                 };
                 if let Some(dir) = &game.install_dir {
-                    self.error = gm_core::open_folder(dir, game.program.as_deref()).err();
+                    self.error = gm_core::open_folder(dir, game.program.as_deref())
+                        .err()
+                        .map(|e| e.to_string());
                 }
             }
             Message::OpenWiki(id) => {
@@ -753,7 +760,7 @@ impl Component for GameManager {
                     return;
                 };
                 let page = Launch::Uri(gm_core::pcgamingwiki::page_url(game));
-                self.error = gm_core::launch(&page).err();
+                self.error = gm_core::launch(&page).err().map(|e| e.to_string());
             }
             Message::SettingsExpanded(open) => self.settings_open = open,
             Message::EditField(field, value) => {
@@ -816,8 +823,9 @@ impl Component for GameManager {
                 self.saving = true;
                 // Checking the paths and writing the file are disk work.
                 context.spawn_background(move |_cancel| {
-                    let saved = edit::check_paths(&edits)
-                        .and_then(|()| gm_core::config::save_edits(&id, &edits));
+                    let saved = edit::check_paths(&edits).and_then(|()| {
+                        gm_core::config::save_edits(&id, &edits).map_err(|e| e.to_string())
+                    });
                     Message::EditsSaved(saved)
                 });
             }
@@ -828,7 +836,9 @@ impl Component for GameManager {
                 };
                 self.saving = true;
                 context.spawn_background(move |_cancel| {
-                    Message::EditsSaved(gm_core::config::clear_edits(&id))
+                    Message::EditsSaved(
+                        gm_core::config::clear_edits(&id).map_err(|e| e.to_string()),
+                    )
                 });
             }
             Message::EditsSaved(result) => {
@@ -879,7 +889,7 @@ impl Component for GameManager {
                 let paths: Vec<PathBuf> = items.into_iter().map(|item| item.path.into()).collect();
                 // Reading a shortcut uses COM and the disk.
                 context.spawn_background(move |_cancel| {
-                    Message::DraftReady(NewGame::from_dropped(&paths))
+                    Message::DraftReady(NewGame::from_dropped(&paths).map_err(|e| e.to_string()))
                 });
             }
             Message::Dropped(_) => {}
@@ -905,7 +915,8 @@ impl Component for GameManager {
                     && result == ContentDialogResult::Primary
                 {
                     context.spawn_background(move |_cancel| {
-                        let added = gm_core::custom::add(&draft).map(|custom| {
+                        let added = gm_core::custom::add(&draft).map_err(|e| e.to_string());
+                        let added = added.map(|custom| {
                             // As a scan would: program, icon and architecture.
                             let mut game = custom.to_game();
                             gm_core::complete_game(&mut game);
@@ -935,7 +946,11 @@ impl Component for GameManager {
                     && result == ContentDialogResult::Primary
                 {
                     context.spawn_background(move |_cancel| {
-                        Message::CustomGameRemoved(gm_core::custom::remove(&id).map(|()| id))
+                        Message::CustomGameRemoved(
+                            gm_core::custom::remove(&id)
+                                .map(|()| id)
+                                .map_err(|e| e.to_string()),
+                        )
                     });
                 }
             }
@@ -1006,6 +1021,33 @@ impl Component for GameManager {
     }
 }
 
-fn main() {
-    App::run_component::<GameManager>(()).unwrap();
+fn main() -> ExitCode {
+    match App::run_component::<GameManager>(()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            show_start_error(&error);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The app has no console, so a failure to start would otherwise end it without a word. When the
+/// Windows App Runtime is missing, the reactor has already offered to install it.
+fn show_start_error(error: &windows::core::Error) {
+    if error.code() == STATEREPOSITORY_E_DEPENDENCY_NOT_RESOLVED {
+        return;
+    }
+    let text = HSTRING::from(format!(
+        "Game Manager could not start.\n\n{}",
+        error.message()
+    ));
+    // SAFETY: both strings are valid wide strings that outlive the call; no owner window.
+    unsafe {
+        MessageBoxW(
+            None,
+            &text,
+            w!("Game Manager"),
+            (MB_OK | MB_ICONERROR) as u32,
+        )
+    };
 }

@@ -11,7 +11,7 @@
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
 
-use crate::{Game, Launch, json_file, with_args};
+use crate::{Game, Launch, Result, json_file, with_args};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -157,7 +157,7 @@ impl GameSettings {
 
 /// The shipped configuration: `games.json` in the running program's folder, or in its parent
 /// (where examples and tests find it). No file means no defaults.
-pub fn load_defaults() -> Result<GameDefaults, String> {
+pub fn load_defaults() -> Result<GameDefaults> {
     match defaults_file() {
         Some(file) => json_file::load(&file),
         None => Ok(GameDefaults::default()),
@@ -175,21 +175,21 @@ fn defaults_file() -> Option<PathBuf> {
 }
 
 /// The user's settings; empty when there are none yet.
-pub fn load_settings() -> Result<GameSettings, String> {
+pub fn load_settings() -> Result<GameSettings> {
     json_file::load(&json_file::user_file(SETTINGS_FILE)?)
 }
 
 /// Saves the user's edits for a game, replacing its previous ones. Empty edits remove them.
-pub fn save_edits(id: &str, edits: &GameEdits) -> Result<(), String> {
+pub fn save_edits(id: &str, edits: &GameEdits) -> Result<()> {
     save_edits_in(&json_file::user_file(SETTINGS_FILE)?, id, edits)
 }
 
 /// Removes the user's edits for a game, so it is shown and started as detected.
-pub fn clear_edits(id: &str) -> Result<(), String> {
+pub fn clear_edits(id: &str) -> Result<()> {
     save_edits(id, &GameEdits::default())
 }
 
-fn save_edits_in(file: &Path, id: &str, edits: &GameEdits) -> Result<(), String> {
+fn save_edits_in(file: &Path, id: &str, edits: &GameEdits) -> Result<()> {
     // Loading first also means a file that cannot be read is never overwritten.
     let mut settings: GameSettings = json_file::load(file)?;
     let entry = settings.games.entry(id.to_owned()).or_default();

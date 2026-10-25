@@ -1,14 +1,15 @@
 //! Starts games through the Windows shell, and opens their folders in File Explorer.
 
-use crate::{Launch, folder_key, on_disk_case};
+use crate::{Error, Launch, Result, folder_key, on_disk_case};
 use std::path::Path;
 use windows::Win32::{
-    ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems, SW_SHOWNORMAL, ShellExecuteW,
+    ILCreateFromPathW, ILFree, LPITEMIDLIST, SHOpenFolderAndSelectItems, SW_SHOWNORMAL,
+    ShellExecuteW,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
 /// Launches a game. Store URIs (e.g. `steam://`) are handed to their registered client.
-pub fn launch(launch: &Launch) -> Result<(), String> {
+pub fn launch(launch: &Launch) -> Result<()> {
     let (target, args, working_dir) = match launch {
         Launch::Uri(uri) => (HSTRING::from(uri.as_str()), HSTRING::new(), HSTRING::new()),
         Launch::Exe {
@@ -51,21 +52,22 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
     if code > 32 {
         Ok(())
     } else {
-        Err(format!(
-            "failed to launch {} (code {code})",
-            target.display()
-        ))
+        Err(Error::Shell {
+            action: "launch",
+            target: target.to_string_lossy(),
+            code,
+        })
     }
 }
 
 /// Opens a game's folder in File Explorer, with `program` selected when it is directly in that
 /// folder. Call it on the UI thread, like `launch`: the Shell needs COM, which is initialized there.
-pub fn open_folder(dir: &Path, program: Option<&Path>) -> Result<(), String> {
+pub fn open_folder(dir: &Path, program: Option<&Path>) -> Result<()> {
     // Follows links: an Xbox game's `WindowsApps` package folder is a link to its real
     // `XboxGames\...\Content` folder, which File Explorer can show.
     let folder = on_disk_case(dir);
     if !folder.is_dir() {
-        return Err(format!("{} does not exist", dir.display()));
+        return Err(Error::NotFound(dir.to_path_buf()));
     }
     if let Some(name) = item_to_select(dir, program).and_then(Path::file_name)
         && select_in_folder(&folder.join(name))
@@ -89,7 +91,11 @@ pub fn open_folder(dir: &Path, program: Option<&Path>) -> Result<(), String> {
     if code > 32 {
         Ok(())
     } else {
-        Err(format!("failed to open {} (code {code})", folder.display()))
+        Err(Error::Shell {
+            action: "open",
+            target: folder.display().to_string(),
+            code,
+        })
     }
 }
 
@@ -101,12 +107,22 @@ fn select_in_folder(file: &Path) -> bool {
     if pidl.is_null() {
         return false;
     }
-    // SAFETY: `pidl` is a valid absolute item ID list from ILCreateFromPathW. Without child items,
-    // the Shell opens the item's parent folder and selects the item.
-    let result = unsafe { SHOpenFolderAndSelectItems(pidl.cast_const(), None, 0) };
-    // SAFETY: `pidl` was allocated by ILCreateFromPathW; it is freed once here and not used after.
-    unsafe { ILFree(Some(pidl)) };
+    let item = ItemIdList(pidl);
+    // SAFETY: `item` holds a valid absolute item ID list from ILCreateFromPathW. Without child
+    // items, the Shell opens the item's parent folder and selects the item.
+    let result = unsafe { SHOpenFolderAndSelectItems(item.0.cast_const(), None, 0) };
     result.is_ok()
+}
+
+/// An item ID list from `ILCreateFromPathW`, freed when dropped.
+struct ItemIdList(LPITEMIDLIST);
+
+impl Drop for ItemIdList {
+    fn drop(&mut self) {
+        // SAFETY: allocated by ILCreateFromPathW, only this value owns it, and it is freed once,
+        // here.
+        unsafe { ILFree(Some(self.0)) };
+    }
 }
 
 /// The program to select in the game's folder: only one directly inside it, so File Explorer
@@ -142,7 +158,12 @@ mod tests {
 
     #[test]
     fn missing_folders_are_reported_without_opening_anything() {
-        let error = open_folder(Path::new(r"C:\does\not\exist\Special K"), None).unwrap_err();
-        assert_eq!(error, r"C:\does\not\exist\Special K does not exist");
+        let missing = Path::new(r"C:\does\not\exist\Special K");
+        let error = open_folder(missing, None).unwrap_err();
+        assert!(matches!(&error, Error::NotFound(dir) if dir == missing));
+        assert_eq!(
+            error.to_string(),
+            r"C:\does\not\exist\Special K does not exist"
+        );
     }
 }

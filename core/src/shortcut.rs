@@ -1,8 +1,8 @@
 //! Reads Windows shortcuts (`.lnk`) with the Shell's own `ShellLink` object: the program a
 //! shortcut starts, its arguments and its icon.
 
-use crate::IconRef;
 use crate::com::ComGuard;
+use crate::{Error, IconRef, Result};
 use std::path::{Path, PathBuf};
 use windows::Win32::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, IShellLinkW, STGM_READ, ShellLink,
@@ -21,10 +21,12 @@ pub(crate) struct Shortcut {
     pub icon: Option<IconRef>,
 }
 
-/// Reads a `.lnk` file. A shortcut that opens no file (a Store app, a Control Panel item) is an
-/// error.
-pub(crate) fn read(lnk: &Path) -> Result<Shortcut, String> {
-    let error = |e: windows::core::Error| format!("{}: {}", lnk.display(), e.message());
+/// Reads a `.lnk` file; `None` when it opens no file (a Store app, a Control Panel item).
+pub(crate) fn read(lnk: &Path) -> Result<Option<Shortcut>> {
+    let error = |source| Error::Windows {
+        context: lnk.display().to_string(),
+        source,
+    };
     let _com = ComGuard::new();
     // SAFETY: COM is initialized on this thread while `_com` lives, which outlasts `link`.
     let link: IShellLinkW =
@@ -58,7 +60,7 @@ pub(crate) fn read(lnk: &Path) -> Result<Shortcut, String> {
 
     // Store apps and other shell items have no file path.
     if target.trim().is_empty() {
-        return Err(format!("{} does not start a program", shortcut_name(lnk)));
+        return Ok(None);
     }
     let target = PathBuf::from(target);
     let icon = Some(icon_file.trim())
@@ -68,11 +70,11 @@ pub(crate) fn read(lnk: &Path) -> Result<Shortcut, String> {
             index,
         })
         .filter(|icon| !(icon.index == 0 && same_file(&icon.path, &target)));
-    Ok(Shortcut {
+    Ok(Some(Shortcut {
         target,
         args: args.trim().to_owned(),
         icon,
-    })
+    }))
 }
 
 /// A string an `IShellLinkW` getter writes into a buffer it is given.
@@ -125,6 +127,10 @@ pub(crate) mod tests {
     use super::*;
 
     /// Writes a `.lnk` with the Shell's own ShellLink object, as Explorer would.
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "a test fixture: one justification covers setting up the shortcut"
+    )]
     pub(crate) fn write(lnk: &Path, target: &Path, args: &str, icon: Option<(&str, i32)>) {
         let _com = ComGuard::new();
         // SAFETY: COM is initialized on this thread while `_com` lives; every string is a
@@ -170,7 +176,7 @@ pub(crate) mod tests {
             Some((r"%SystemRoot%\System32\shell32.dll", 12)),
         );
 
-        let shortcut = read(&lnk).unwrap();
+        let shortcut = read(&lnk).unwrap().unwrap();
         assert_eq!(shortcut.target, target);
         assert_eq!(shortcut.args, "-windowed");
         let system_root = std::env::var("SystemRoot").unwrap();
@@ -185,7 +191,7 @@ pub(crate) mod tests {
 
         // The target's own first icon is no icon of the shortcut's own.
         write(&lnk, &target, "", Some((&target.to_string_lossy(), 0)));
-        assert_eq!(read(&lnk).unwrap().icon, None);
+        assert_eq!(read(&lnk).unwrap().unwrap().icon, None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

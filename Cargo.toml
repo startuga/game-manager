@@ -14,3 +14,27 @@ windows = { git = "https://github.com/microsoft/windows-rs" }
 windows-pickers = { git = "https://github.com/microsoft/windows-rs" }
 windows-reactor = { git = "https://github.com/microsoft/windows-rs" }
 windows-registry = { git = "https://github.com/microsoft/windows-rs" }
+roxmltree = "0.21.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+
+# Every crate opts in with `[lints] workspace = true`. They enforce the conventions in CLAUDE.md:
+# each unsafe operation in its own block with a `// SAFETY:` comment, no unwrap/expect outside
+# tests (clippy.toml allows them there).
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "deny"
+todo = "warn"
+
+# Measured: app.exe 3.88 MB -> 3.34 MB; a clean release build takes about twice as long.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -5,6 +5,7 @@ pub mod config;
 pub mod custom;
 pub mod ea;
 pub mod epic;
+mod error;
 pub mod gog;
 pub mod icon;
 mod json_file;
@@ -18,6 +19,7 @@ mod text;
 pub mod vdf;
 pub mod xbox;
 
+pub use error::{Error, Result, ScanError, ScanPart};
 pub use launcher::{launch, open_folder};
 
 use serde::{Deserialize, Serialize};
@@ -190,15 +192,15 @@ impl Arch {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct ScanReport {
     pub games: Vec<Game>,
-    /// One entry per store that failed to scan.
-    pub errors: Vec<String>,
+    /// One entry per store or configuration file that could not be read.
+    pub errors: Vec<ScanError>,
 }
 
 /// A store scanner. Returns `Ok(vec![])` when the store is not installed.
-type Scanner = fn() -> Result<Vec<Game>, String>;
+type Scanner = fn() -> Result<Vec<Game>>;
 
 /// Scanners in priority order: when two stores report the same install folder, the earlier one
 /// keeps the game (e.g. an EA game bought on Steam also ships EA's `__Installer` folder).
@@ -213,19 +215,20 @@ const SCANNERS: [(Store, Scanner); 5] = [
 /// Scans all supported stores, adds the custom games and returns them all sorted by name.
 pub fn scan_all() -> ScanReport {
     let mut report = ScanReport::default();
+    let mut failed = |part, error| report.errors.push(ScanError { part, error });
     for (store, scan) in SCANNERS {
         match scan() {
             Ok(games) => report.games.extend(games),
-            Err(e) => report.errors.push(format!("{}: {e}", store.name())),
+            Err(error) => failed(ScanPart::Store(store), error),
         }
     }
     // A configuration file that cannot be read is reported and skipped; it never hides games.
-    let defaults = config::load_defaults().unwrap_or_else(|e| {
-        report.errors.push(format!("Game configuration: {e}"));
+    let defaults = config::load_defaults().unwrap_or_else(|error| {
+        failed(ScanPart::GameConfiguration, error);
         config::GameDefaults::default()
     });
-    let settings = config::load_settings().unwrap_or_else(|e| {
-        report.errors.push(format!("Game settings: {e}"));
+    let settings = config::load_settings().unwrap_or_else(|error| {
+        failed(ScanPart::GameSettings, error);
         config::GameSettings::default()
     });
     // Configured programs and then the derived ones first, so a duplicate dropped below can still
@@ -239,7 +242,10 @@ pub fn scan_all() -> ScanReport {
             config::apply(&mut games, &defaults, &settings);
             report.games.extend(games);
         }
-        Err(e) => report.errors.push(format!("{}: {e}", Store::Custom.name())),
+        Err(error) => report.errors.push(ScanError {
+            part: ScanPart::Store(Store::Custom),
+            error,
+        }),
     }
     report.games.iter_mut().for_each(complete_game);
     sort_games(&mut report.games);

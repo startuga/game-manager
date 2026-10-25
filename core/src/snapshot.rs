@@ -1,7 +1,7 @@
 //! The last scan's games, saved in `%LOCALAPPDATA%\Game Manager\cache\library.json` so the next
 //! start can show the library at once while a fresh scan runs.
 
-use crate::{Game, json_file};
+use crate::{Game, Result, json_file};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -23,12 +23,12 @@ struct SnapshotRef<'a> {
     games: &'a [Game],
 }
 
-fn snapshot_file() -> Result<PathBuf, String> {
+fn snapshot_file() -> Result<PathBuf> {
     Ok(json_file::local_file("cache")?.join("library.json"))
 }
 
 /// Saves the games of a scan. Blocking.
-pub fn save(games: &[Game]) -> Result<(), String> {
+pub fn save(games: &[Game]) -> Result<()> {
     save_to(&snapshot_file()?, games)
 }
 
@@ -38,7 +38,7 @@ pub fn load() -> Option<Vec<Game>> {
     load_from(&snapshot_file().ok()?)
 }
 
-fn save_to(file: &Path, games: &[Game]) -> Result<(), String> {
+fn save_to(file: &Path, games: &[Game]) -> Result<()> {
     json_file::save(
         file,
         &SnapshotRef {
