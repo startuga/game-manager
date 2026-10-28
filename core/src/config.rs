@@ -11,7 +11,8 @@
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
 
-use crate::{Game, Launch, Result, json_file, with_args};
+use crate::graphics::GraphicsApi;
+use crate::{Arch, Game, Launch, Result, json_file, with_args};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -70,6 +71,7 @@ pub struct GameSettings {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GameSetting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -79,6 +81,10 @@ struct GameSetting {
     args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     program: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    arch: Option<Arch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    graphics_api: Option<GraphicsApi>,
     /// Kept apart from the edits: Reset to detected does not unfavorite a game.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     favorite: bool,
@@ -89,6 +95,7 @@ struct GameSetting {
 /// What the user changed for one game in its settings. `None` means "as detected"; arguments can
 /// also be `Some("")`, i.e. explicitly none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameEdits {
     /// The name shown in the library.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +109,13 @@ pub struct GameEdits {
     /// The game's own program (bitness, Open folder and, later, mods).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<PathBuf>,
+    /// The game's bitness, when the one read from its program is wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<Arch>,
+    /// The one graphics API the game runs on, when detection lists several or a wrong one (mods
+    /// such as ReShade and DXVK hook a single API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graphics_api: Option<GraphicsApi>,
 }
 
 impl GameEdits {
@@ -129,6 +143,8 @@ impl GameEdits {
             launch: path(&self.launch),
             args: self.args.as_deref().map(|args| args.trim().to_owned()),
             program: path(&self.program),
+            arch: self.arch,
+            graphics_api: self.graphics_api,
         }
     }
 }
@@ -140,6 +156,8 @@ impl GameSetting {
             launch: self.launch.clone(),
             args: self.args.clone(),
             program: self.program.clone(),
+            arch: self.arch,
+            graphics_api: self.graphics_api,
         }
     }
 
@@ -148,6 +166,8 @@ impl GameSetting {
         self.launch = edits.launch;
         self.args = edits.args;
         self.program = edits.program;
+        self.arch = edits.arch;
+        self.graphics_api = edits.graphics_api;
     }
 
     /// Nothing left to save for the game.
@@ -228,7 +248,8 @@ fn update_setting(file: &Path, id: &str, change: impl FnOnce(&mut GameSetting)) 
 
 /// Applies the configuration to scanned games: drops entries that are not games, applies the
 /// user's edits (name, launch program, arguments) and sets each game's program. A program the
-/// user chose also decides the architecture, even over a package's.
+/// user chose also decides the architecture, even over a package's, and a bitness the user chose
+/// decides it over both. The chosen graphics API stays in `Game::edits`.
 pub fn apply(games: &mut Vec<Game>, defaults: &GameDefaults, settings: &GameSettings) {
     games.retain(|game| !defaults.ignores(game));
     for game in games.iter_mut() {
@@ -245,6 +266,9 @@ pub fn apply(games: &mut Vec<Game>, defaults: &GameDefaults, settings: &GameSett
             game.arch = None;
         } else if let Some(program) = defaults.program(game) {
             game.program = Some(program);
+        }
+        if let Some(arch) = edits.as_ref().and_then(|edits| edits.arch) {
+            game.arch = Some(arch);
         }
         game.edits = edits;
         game.favorite = settings.is_favorite(&game.id);
@@ -410,6 +434,14 @@ mod tests {
         assert_eq!(games[0].program, Some(dir.join("chosen.exe")));
         assert_eq!(games[0].arch, None);
 
+        // A chosen bitness wins over both the scanner's and the chosen program's.
+        settings.games.get_mut("epic:Ginger").unwrap().arch = Some(Arch::X86);
+        let mut games = scanned();
+        apply(&mut games, &config, &settings);
+        assert_eq!(games[0].program, Some(dir.join("chosen.exe")));
+        assert_eq!(games[0].arch, Some(Arch::X86));
+        settings.games.get_mut("epic:Ginger").unwrap().arch = None;
+
         // A chosen program that no longer exists falls back; nothing configured keeps the scan.
         settings.games.get_mut("epic:Ginger").unwrap().program = Some(dir.join("moved.exe"));
         let mut games = scanned();
@@ -443,6 +475,8 @@ mod tests {
             launch: Some(PathBuf::from(r"C:\Games\bin\x64\Cyberpunk2077.exe")),
             args: Some(" -skipStartScreen ".into()),
             program: Some(PathBuf::new()),
+            arch: Some(Arch::X86),
+            graphics_api: Some(GraphicsApi::DirectX11),
         };
         save_edits_in(&file, "epic:Ginger", &edits).unwrap();
 
@@ -455,8 +489,17 @@ mod tests {
         assert_eq!(cyberpunk["launch"], r"C:\Games\bin\x64\Cyberpunk2077.exe");
         assert_eq!(cyberpunk["args"], "-skipStartScreen");
         assert!(cyberpunk.get("program").is_none());
+        assert_eq!(cyberpunk["arch"], "X86");
+        assert_eq!(cyberpunk["graphicsApi"], "DirectX11");
         assert_eq!(saved()["games"]["gog:1"]["later"], 1);
         assert_eq!(saved()["version"], 2);
+        // Read back as saved.
+        let settings: GameSettings = json_file::load(&file).unwrap();
+        let read = settings.edits("epic:Ginger").unwrap();
+        assert_eq!(
+            (read.arch, read.graphics_api),
+            (Some(Arch::X86), Some(GraphicsApi::DirectX11))
+        );
 
         // Clearing removes an entry with nothing else in it, and keeps another's unknown fields.
         save_edits_in(&file, "epic:Ginger", &GameEdits::default()).unwrap();
@@ -496,15 +539,17 @@ mod tests {
         assert_eq!(saved()["games"]["epic:Ginger"]["favorite"], true);
         assert_eq!(saved()["games"]["gog:1"]["later"], 1);
 
-        // Reset to detected (clearing the edits) keeps the game a favorite.
+        // Reset to detected (clearing the edits, choices included) keeps the game a favorite.
         let renamed = GameEdits {
             name: Some("Cyberpunk".into()),
+            graphics_api: Some(GraphicsApi::DirectX12),
             ..GameEdits::default()
         };
         save_edits_in(&file, "epic:Ginger", &renamed).unwrap();
         save_edits_in(&file, "epic:Ginger", &GameEdits::default()).unwrap();
         assert_eq!(saved()["games"]["epic:Ginger"]["favorite"], true);
         assert!(saved()["games"]["epic:Ginger"].get("name").is_none());
+        assert!(saved()["games"]["epic:Ginger"].get("graphicsApi").is_none());
 
         // Unfavoriting drops an entry with nothing else in it, not one with other settings.
         set_favorite_in(&file, "epic:Ginger", false).unwrap();
@@ -565,7 +610,7 @@ mod tests {
             name: Some("HL2".into()),
             launch: Some(launcher.clone()),
             args: Some("-novid".into()),
-            program: None,
+            ..GameEdits::default()
         };
         let edited = apply_one(steam.clone(), edits.clone());
         assert_eq!(edited.name, "HL2");

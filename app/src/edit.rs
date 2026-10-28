@@ -2,7 +2,8 @@
 //! stores. No UI code.
 
 use gm_core::config::GameEdits;
-use gm_core::{Game, Launch};
+use gm_core::graphics::GraphicsApi;
+use gm_core::{Arch, Game, Launch};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,13 +16,37 @@ pub enum EditField {
     Program,
 }
 
-/// The expander's text fields.
+/// The expander's drop-downs. Their first item is "As detected", then the choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditChoice {
+    Bitness,
+    GraphicsApi,
+}
+
+/// The bitness a game can be set to (mods such as ReShade and DXVK come in 32 and 64-bit builds).
+pub const BITNESS_CHOICES: [Arch; 2] = [Arch::X86, Arch::X64];
+
+impl EditChoice {
+    /// The drop-down's items after "As detected".
+    pub fn labels(self) -> Vec<&'static str> {
+        match self {
+            EditChoice::Bitness => BITNESS_CHOICES.iter().map(|arch| arch.label()).collect(),
+            EditChoice::GraphicsApi => GraphicsApi::ALL.iter().map(|api| api.label()).collect(),
+        }
+    }
+}
+
+/// The expander's fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EditFields {
     pub name: String,
     pub launch: String,
     pub args: String,
     pub program: String,
+    /// The chosen bitness; `None` as detected.
+    pub arch: Option<Arch>,
+    /// The chosen graphics API; `None` as detected.
+    pub graphics_api: Option<GraphicsApi>,
 }
 
 impl EditFields {
@@ -47,6 +72,8 @@ impl EditFields {
                 .as_deref()
                 .map(|program| program.display().to_string())
                 .unwrap_or_default(),
+            arch: game.edits.as_ref().and_then(|edits| edits.arch),
+            graphics_api: game.edits.as_ref().and_then(|edits| edits.graphics_api),
         }
     }
 
@@ -65,6 +92,32 @@ impl EditFields {
             EditField::Launch => self.launch = value,
             EditField::Args => self.args = value,
             EditField::Program => self.program = value,
+        }
+    }
+
+    /// The drop-down's selected item: 0 for "As detected", else the choice's place after it.
+    pub fn choice_index(&self, choice: EditChoice) -> usize {
+        let position = match choice {
+            EditChoice::Bitness => self
+                .arch
+                .and_then(|arch| BITNESS_CHOICES.iter().position(|&item| item == arch)),
+            EditChoice::GraphicsApi => self
+                .graphics_api
+                .and_then(|api| GraphicsApi::ALL.iter().position(|&item| item == api)),
+        };
+        position.map_or(0, |position| position + 1)
+    }
+
+    /// Sets the choice the drop-down's item `index` stands for; 0 is "As detected".
+    pub fn choose(&mut self, choice: EditChoice, index: usize) {
+        let position = index.checked_sub(1);
+        match choice {
+            EditChoice::Bitness => {
+                self.arch = position.and_then(|i| BITNESS_CHOICES.get(i).copied());
+            }
+            EditChoice::GraphicsApi => {
+                self.graphics_api = position.and_then(|i| GraphicsApi::ALL.get(i).copied());
+            }
         }
     }
 }
@@ -121,6 +174,12 @@ impl EditDraft {
         }
         if fields.program != start.program {
             edits.program = path(&fields.program);
+        }
+        if fields.arch != start.arch {
+            edits.arch = fields.arch;
+        }
+        if fields.graphics_api != start.graphics_api {
+            edits.graphics_api = fields.graphics_api;
         }
         edits
     }
@@ -235,6 +294,55 @@ mod tests {
             Some(PathBuf::from(r"C:\Steam\W3\bin\x64\witcher3.exe"))
         );
         assert_eq!(edits.args, Some(String::new()));
+    }
+
+    #[test]
+    fn drop_down_items_map_to_choices() {
+        let mut fields = EditFields::default();
+        assert_eq!(fields.choice_index(EditChoice::Bitness), 0);
+        assert_eq!(fields.choice_index(EditChoice::GraphicsApi), 0);
+        fields.choose(EditChoice::Bitness, 1);
+        fields.choose(EditChoice::GraphicsApi, 4);
+        assert_eq!(fields.arch, Some(Arch::X86));
+        assert_eq!(fields.graphics_api, Some(GraphicsApi::DirectX11));
+        assert_eq!(fields.choice_index(EditChoice::Bitness), 1);
+        assert_eq!(fields.choice_index(EditChoice::GraphicsApi), 4);
+        assert_eq!(EditChoice::GraphicsApi.labels()[3], "DirectX 11");
+        assert_eq!(
+            EditChoice::Bitness.labels(),
+            ["32-bit (x86)", "64-bit (x64)"]
+        );
+
+        // "As detected", and an index past the items, choose nothing.
+        fields.choose(EditChoice::Bitness, 0);
+        fields.choose(EditChoice::GraphicsApi, 99);
+        assert_eq!((fields.arch, fields.graphics_api), (None, None));
+    }
+
+    #[test]
+    fn save_stores_changed_choices() {
+        let mut witcher = game(exe(r"C:\GOG\W3\REDprelauncher.exe", ""));
+        let saved = GameEdits {
+            graphics_api: Some(GraphicsApi::DirectX12),
+            ..GameEdits::default()
+        };
+        witcher.edits = Some(saved.clone());
+        let mut draft = EditDraft::of(&witcher);
+        assert_eq!(draft.fields.graphics_api, Some(GraphicsApi::DirectX12));
+        assert_eq!(draft.fields.arch, None);
+
+        draft.fields.choose(EditChoice::Bitness, 2);
+        assert!(draft.is_dirty());
+        assert_eq!(
+            draft.edits(saved.clone()),
+            GameEdits {
+                arch: Some(Arch::X64),
+                ..saved.clone()
+            }
+        );
+        // Back to "As detected".
+        draft.fields.choose(EditChoice::GraphicsApi, 0);
+        assert_eq!(draft.edits(saved).graphics_api, None);
     }
 
     #[test]

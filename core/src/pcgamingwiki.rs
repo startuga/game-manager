@@ -7,7 +7,7 @@
 //!   wiki's API without an account. Requests carry a descriptive User-Agent and are spaced one
 //!   second apart, as the wiki asks (at most 60 a minute).
 
-use crate::graphics::GraphicsApi;
+use crate::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
 use crate::text::percent_encode;
 use crate::{Error, Game, Result, Store, http};
 use serde_json::Value;
@@ -22,21 +22,12 @@ const REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 /// When the last request was made, shared by every thread.
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// A game's API table on the wiki.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApiTable {
-    /// The page's title.
-    pub page: String,
-    pub apis: Vec<GraphicsApi>,
-    /// Found by the game's name rather than its store id: possibly another game of the same name
-    /// (Dead Space, 2008, for the 2023 remake).
-    pub found_by_name: bool,
-}
-
-/// The game's API table; `None` when the wiki has no page for the game, or its page lists no API.
+/// The APIs in the game's API table on the wiki; `None` when the wiki has no page for the game, or
+/// its page lists no API. A page found by name may be another game of the same name (Dead Space,
+/// 2008, for the 2023 remake): the user can choose the right API in the game's settings.
 /// Blocking: up to three web requests.
-pub fn api_table(game: &Game) -> Result<Option<ApiTable>> {
-    let Some((page, found_by_name)) = find_page(game)? else {
+pub fn api_table(game: &Game) -> Result<Option<GraphicsInfo>> {
+    let Some(page) = find_page(game)? else {
         return Ok(None);
     };
     let path = format!(
@@ -46,16 +37,15 @@ pub fn api_table(game: &Game) -> Result<Option<ApiTable>> {
     let apis = wikitext(&request(&path)?)
         .map(|text| parse_api_table(&text))
         .unwrap_or_default();
-    Ok((!apis.is_empty()).then_some(ApiTable {
-        page,
+    Ok((!apis.is_empty()).then_some(GraphicsInfo {
         apis,
-        found_by_name,
+        source: GraphicsSource::PcGamingWiki { page },
     }))
 }
 
-/// The title of the game's page, and whether it was found by name: by store id for Steam and
-/// GOG, else (or when the wiki does not know the id) by name.
-fn find_page(game: &Game) -> Result<Option<(String, bool)>> {
+/// The title of the game's page: by store id for Steam and GOG, else (or when the wiki does not
+/// know the id) by name.
+fn find_page(game: &Game) -> Result<Option<String>> {
     let field = match game.store {
         Store::Steam => Some("steamappid"),
         Store::Gog => Some("gogid"),
@@ -64,7 +54,7 @@ fn find_page(game: &Game) -> Result<Option<(String, bool)>> {
     if let (Some(field), Some(id)) = (field, store_number(&game.id)) {
         let path = format!("/w/api.php?action=idlookup&field={field}&value={id}&format=json");
         if let Some(page) = idlookup_page(&request(&path)?) {
-            return Ok(Some((page, false)));
+            return Ok(Some(page));
         }
     }
     let name = search_name(&game.name);
@@ -72,9 +62,7 @@ fn find_page(game: &Game) -> Result<Option<(String, bool)>> {
         "/w/api.php?action=opensearch&search={}&limit=1&namespace=0&redirects=resolve&format=json",
         percent_encode(&name)
     );
-    Ok(opensearch_title(&request(&path)?)
-        .filter(|title| same_game(title, &name))
-        .map(|title| (title, true)))
+    Ok(opensearch_title(&request(&path)?).filter(|title| same_game(title, &name)))
 }
 
 /// A request to the wiki's API, at most one a second, answered with JSON.

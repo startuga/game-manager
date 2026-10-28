@@ -215,7 +215,7 @@ fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
     use std::path::PathBuf;
@@ -374,6 +374,11 @@ mod tests {
             put32(&mut file, at + 4, rva);
         }
         file
+    }
+
+    /// A 64-bit program importing `imports`, for other modules' tests.
+    pub(crate) fn program_importing(imports: &[&str]) -> Vec<u8> {
+        pe_with_imports(PE32_PLUS_MAGIC, imports, &[])
     }
 
     #[test]

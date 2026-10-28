@@ -4,7 +4,7 @@
 //! of its PCGamingWiki page.
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 //! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
-//! side (no cache; the wiki is asked about once a second).
+//! side (no cache; the wiki is asked about once a second), and the API chosen in its settings.
 
 #![allow(
     clippy::expect_used,
@@ -58,31 +58,17 @@ fn main() {
                 .join(", ")
         };
         for game in &report.games {
-            let table = gm_core::pcgamingwiki::api_table(game);
-            let files = gm_core::graphics::from_files(game);
-            let wiki = match &table {
-                Ok(Some(table)) => format!(
-                    "{} [{}{}]",
-                    labels(&table.apis),
-                    table.page,
-                    if table.found_by_name { ", by name" } else { "" }
-                ),
+            let wiki = match gm_core::pcgamingwiki::api_table(game) {
+                Ok(Some(info)) => format!("{} ({:?})", labels(&info.apis), info.source),
                 Ok(None) => "-".to_owned(),
                 Err(error) => format!("error: {error}"),
             };
-            let shown = match table {
-                Ok(Some(table)) => gm_core::graphics::choose(table, || files.clone()),
-                _ => files.clone(),
-            };
-            let shown = shown.map_or_else(
-                || "-".to_owned(),
-                |info| format!("{} ({:?})", labels(&info.apis), info.source),
-            );
-            let files = files.map_or_else(|| "-".to_owned(), |info| labels(&info.apis));
-            println!(
-                "{}\n    wiki: {wiki}\n    files: {files}\n    shown: {shown}",
-                game.name
-            );
+            let files = gm_core::graphics::from_files(game)
+                .map_or_else(|| "-".to_owned(), |info| labels(&info.apis));
+            println!("{}\n    wiki: {wiki}\n    files: {files}", game.name);
+            if let Some(api) = game.edits.as_ref().and_then(|edits| edits.graphics_api) {
+                println!("    chosen: {}", api.label());
+            }
         }
     }
 

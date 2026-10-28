@@ -9,8 +9,11 @@ brings its name, arguments and icon); those are saved in `%APPDATA%\Game Manager
 
 Each game's **Game settings** (an expander under its buttons) change the name shown, the program
 Play starts (instead of the store's launch), the command-line arguments (also passed to Steam
-games as launch options) and the game's own program (for its bitness, Open folder and mods).
-Edits are saved in `%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them.
+games as launch options) and the game's own program (for its bitness, Open folder and mods). Its
+**Bitness** and **Graphics API** drop-downs set the game's 32 or 64-bit build and the one API it
+runs on, when detection got them wrong or found several APIs: mods such as ReShade and DXVK need
+exactly these. Edits are saved in `%APPDATA%\Game Manager\game-settings.json`; **Reset to
+detected** removes them.
 
 Right-click a game in the library for **Play** and **Add to Favorites** (or Remove from
 Favorites); the **Favorites** entry of the filter above the list shows only those games. Favorites
@@ -19,7 +22,8 @@ are saved in `game-settings.json` too.
 The game panel also shows the game's **graphics APIs** (DirectX 8–12, OpenGL, Vulkan): from
 PCGamingWiki's API table when the wiki has the game (looked up once, when you select it, and cached
 in `%LOCALAPPDATA%\Game Manager\cache`), otherwise read from the game's files, which can list APIs
-the game does not use. Hover over them to see where they come from.
+the game does not use. Hover over them to see where they come from. When several are shown, choose
+the one the game runs on in Game settings.
 
 **PCGamingWiki** opens the game's [PCGamingWiki](https://www.pcgamingwiki.com) page (fixes,
 settings, save locations) in your browser: by store id for Steam and GOG games, otherwise a wiki

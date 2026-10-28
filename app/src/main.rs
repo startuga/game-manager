@@ -3,9 +3,9 @@
 mod edit;
 mod library;
 
-use edit::{EditDraft, EditField};
+use edit::{EditChoice, EditDraft, EditField};
 use gm_core::custom::NewGame;
-use gm_core::graphics::{GraphicsInfo, GraphicsSource};
+use gm_core::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +28,8 @@ const ROW_WIDTH: f64 = SIDEBAR_WIDTH - 56.0;
 /// The game menu's size, to keep it inside the window.
 const MENU_WIDTH: f64 = 240.0;
 const MENU_HEIGHT: f64 = 92.0;
+/// The tooltip of a bitness or graphics API the user chose.
+const CHOSEN: &str = "Chosen in Game settings";
 /// "Game" glyph from Segoe Fluent Icons, shown while an icon loads or when a game has none.
 const GAME_GLYPH: &str = "\u{E7FC}";
 
@@ -72,6 +74,9 @@ enum Message {
     SettingsExpanded(bool),
     /// A Game settings field of the selected game changed.
     EditField(EditField, String),
+    /// An item of a Game settings drop-down was picked; `None` (the list losing its selection
+    /// while it changes) keeps the choice.
+    EditChoice(EditChoice, Option<usize>),
     /// Opens the file dialog for the launch program or the game program field.
     BrowseEdit(EditField),
     /// The program picked for a field; `None` when the dialog was cancelled.
@@ -420,12 +425,13 @@ impl GameManager {
             .into()
     }
 
-    /// The game's graphics APIs, with where they come from as a tooltip; "Checking…" while they
-    /// are looked up, nothing when none was found.
+    /// The game's graphics API chosen in Game settings, else the detected ones with where they
+    /// come from as a tooltip; "Checking…" while they are looked up, nothing when none was found.
     fn graphics_view(&self, game: &Game) -> Option<View> {
-        let (text, tooltip) = match self.graphics.get(&game.id) {
-            Some(Some(info)) => {
-                let apis: Vec<&str> = info.apis.iter().map(|api| api.label()).collect();
+        let chosen = game.edits.as_ref().and_then(|edits| edits.graphics_api);
+        let (text, tooltip) = match (chosen, self.graphics.get(&game.id)) {
+            (Some(api), _) => (api.label().to_owned(), CHOSEN.to_owned()),
+            (None, Some(Some(info))) => {
                 let source = match &info.source {
                     GraphicsSource::PcGamingWiki { page } => {
                         format!("Graphics APIs from PCGamingWiki ({page})")
@@ -434,10 +440,15 @@ impl GameManager {
                                                   may include APIs the game does not use"
                         .to_owned(),
                 };
-                (apis.join(", "), source)
+                let tooltip = if info.apis.len() > 1 {
+                    format!("{source}. Choose the one the game runs on in Game settings.")
+                } else {
+                    source
+                };
+                (api_list(&info.apis), tooltip)
             }
-            Some(None) => return None,
-            None => (
+            (None, Some(None)) => return None,
+            (None, None) => (
                 "Checking graphics APIs…".to_owned(),
                 "Looking on PCGamingWiki, then in the game's files".to_owned(),
             ),
@@ -644,11 +655,20 @@ impl GameManager {
             .opacity(0.7)
             .vertical_alignment(VerticalAlignment::Center)
             .margin(Thickness::new(12.0, 0.0, 0.0, 0.0));
+        let arch_chosen = game
+            .edits
+            .as_ref()
+            .is_some_and(|edits| edits.arch.is_some());
         let arch = game.arch.map(|arch| {
             let text = TextBlock::new()
                 .text(arch.label())
                 .opacity(0.7)
                 .vertical_alignment(VerticalAlignment::Center);
+            let text: View = if arch_chosen {
+                text.tooltip(CHOSEN)
+            } else {
+                text.into()
+            };
             KeyedView::new("arch", text)
         });
         let graphics = self
@@ -723,6 +743,35 @@ impl GameManager {
 
         // Arguments reach a program, or a Steam game as launch options; other store links
         // cannot take any.
+        // "As detected" names what was detected; a chosen bitness has replaced the detected one.
+        let detected_arch = match (draft.start.arch, game.arch) {
+            (Some(_), _) => "As detected".to_owned(),
+            (None, Some(arch)) => format!("As detected: {}", arch.label()),
+            (None, None) => "As detected: unknown".to_owned(),
+        };
+        let detected_api = match self.graphics.get(&game.id) {
+            Some(Some(info)) => format!("As detected: {}", api_list(&info.apis)),
+            Some(None) => "As detected: none found".to_owned(),
+            None => "As detected: checking…".to_owned(),
+        };
+        let drop_down =
+            |choice: EditChoice, title: &str, detected: String| {
+                let items =
+                    std::iter::once(detected).chain(choice.labels().into_iter().map(str::to_owned));
+                StackPanel::new().spacing(6.0).children((
+                    label(title),
+                    ComboBox::new()
+                        .items_source(items)
+                        .selected_index(draft.fields.choice_index(choice))
+                        .is_enabled(!busy)
+                        .on_selection_changed(context.callback(move |index: Option<usize>| {
+                            Message::EditChoice(choice, index)
+                        }))
+                        .min_width(240.0)
+                        .automation_name(title),
+                ))
+            };
+
         let launch_set = !draft.fields.launch.trim().is_empty();
         let args_enabled = launch_set || gm_core::accepts_args(&game.launch);
         let args_hint = if !args_enabled {
@@ -758,6 +807,19 @@ impl GameManager {
                 "Browse for the game program",
             ),
             hint("The game's own .exe: used for its bitness, Open folder and mods.".to_owned()),
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(24.0)
+                .margin(Thickness::new(0.0, 10.0, 0.0, 0.0))
+                .children((
+                    drop_down(EditChoice::Bitness, "Bitness", detected_arch),
+                    drop_down(EditChoice::GraphicsApi, "Graphics API", detected_api),
+                )),
+            hint(
+                "Mods such as ReShade and DXVK need the game's bitness and the one graphics API \
+                 it runs on."
+                    .to_owned(),
+            ),
             StackPanel::new()
                 .orientation(Orientation::Horizontal)
                 .spacing(12.0)
@@ -879,6 +941,14 @@ fn icon_label(symbol: Symbol, label: &str) -> View {
             TextBlock::new().text(label),
         ))
         .into()
+}
+
+/// "DirectX 11, DirectX 12".
+fn api_list(apis: &[GraphicsApi]) -> String {
+    apis.iter()
+        .map(|api| api.label())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl Component for GameManager {
@@ -1014,6 +1084,13 @@ impl GameManager {
                     self.edit = Some(draft);
                 }
             }
+            Message::EditChoice(choice, Some(index)) => {
+                if let Some(mut draft) = self.selected_draft() {
+                    draft.fields.choose(choice, index);
+                    self.edit = Some(draft);
+                }
+            }
+            Message::EditChoice(_, None) => {}
             Message::BrowseEdit(field) => {
                 let (Some(game), Some(draft)) = (self.selected_game(), self.selected_draft())
                 else {
