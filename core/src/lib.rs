@@ -7,6 +7,8 @@ pub mod ea;
 pub mod epic;
 mod error;
 pub mod gog;
+pub mod graphics;
+mod http;
 pub mod icon;
 mod json_file;
 mod launcher;

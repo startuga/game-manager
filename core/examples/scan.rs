@@ -3,18 +3,22 @@
 //! launched, where its icon comes from, which program the bitness was read from and the address
 //! of its PCGamingWiki page.
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
+//! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
+//! side (no cache; the wiki is asked about once a second).
 
 #![allow(
     clippy::expect_used,
     reason = "a developer tool: stopping with the reason is the right response to a failure"
 )]
 
+use gm_core::graphics::GraphicsApi;
 use gm_core::icon::IconExtractor;
 use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let verbose = args.iter().any(|arg| arg == "-v");
+    let graphics = args.iter().any(|arg| arg == "--graphics");
     let icon_dir = args
         .iter()
         .position(|arg| arg == "--icons")
@@ -44,6 +48,42 @@ fn main() {
     println!("{} games", report.games.len());
     for error in &report.errors {
         eprintln!("error: {error}");
+    }
+
+    if graphics {
+        let labels = |apis: &[GraphicsApi]| {
+            apis.iter()
+                .map(|api| api.label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        for game in &report.games {
+            let table = gm_core::pcgamingwiki::api_table(game);
+            let files = gm_core::graphics::from_files(game);
+            let wiki = match &table {
+                Ok(Some(table)) => format!(
+                    "{} [{}{}]",
+                    labels(&table.apis),
+                    table.page,
+                    if table.found_by_name { ", by name" } else { "" }
+                ),
+                Ok(None) => "-".to_owned(),
+                Err(error) => format!("error: {error}"),
+            };
+            let shown = match table {
+                Ok(Some(table)) => gm_core::graphics::choose(table, || files.clone()),
+                _ => files.clone(),
+            };
+            let shown = shown.map_or_else(
+                || "-".to_owned(),
+                |info| format!("{} ({:?})", labels(&info.apis), info.source),
+            );
+            let files = files.map_or_else(|| "-".to_owned(), |info| labels(&info.apis));
+            println!(
+                "{}\n    wiki: {wiki}\n    files: {files}\n    shown: {shown}",
+                game.name
+            );
+        }
     }
 
     if let Some(dir) = icon_dir {

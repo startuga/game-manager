@@ -32,6 +32,18 @@ pub enum Error {
         context: String,
         source: windows::core::Error,
     },
+    /// A web request was answered with something other than `200 OK`.
+    #[error("{url}: {}", http_status(.status))]
+    Http { url: String, status: u32 },
+    /// A web answer was not the JSON expected.
+    #[error("{url}: {source}")]
+    WebJson {
+        url: String,
+        source: serde_json::Error,
+    },
+    /// A web answer was far larger than expected.
+    #[error("{url}: the answer is too large")]
+    ResponseTooLarge { url: String },
     /// The folder for the app's files is unknown: this environment variable is not set.
     #[error("{0} is not set")]
     MissingEnvVar(&'static str),
@@ -79,6 +91,13 @@ impl Error {
     pub(crate) fn windows(context: impl fmt::Display) -> impl FnOnce(windows::core::Error) -> Self {
         let context = context.to_string();
         move |source| Self::Windows { context, source }
+    }
+}
+
+fn http_status(status: &u32) -> String {
+    match status {
+        429 => "the server is busy (HTTP 429); try again in a minute".to_owned(),
+        status => format!("HTTP {status}"),
     }
 }
 

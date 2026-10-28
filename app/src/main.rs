@@ -5,9 +5,10 @@ mod library;
 
 use edit::{EditDraft, EditField};
 use gm_core::custom::NewGame;
+use gm_core::graphics::{GraphicsInfo, GraphicsSource};
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -53,6 +54,8 @@ enum Message {
     /// The favorite flag of the game was saved (or not; then it is set back).
     FavoriteSaved(String, bool, Result<(), String>),
     WindowResized(WindowSize),
+    /// The graphics APIs of a game; `None` when none were found.
+    GraphicsDetected(String, Option<GraphicsInfo>),
     /// A game picked in the sidebar. `None` (e.g. the list losing its selection while filtered)
     /// keeps the current game in the main panel.
     Select(Option<String>),
@@ -118,6 +121,10 @@ struct GameManager {
     row_menu: Option<RowMenu>,
     /// The window's client size in DIPs, to keep the menu inside it.
     window_size: (f64, f64),
+    /// Graphics APIs by game id, once looked up (`None`: none found).
+    graphics: HashMap<String, Option<GraphicsInfo>>,
+    /// Games whose graphics APIs are being looked up.
+    graphics_pending: HashSet<String>,
     scanning: bool,
     error: Option<String>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
@@ -413,6 +420,53 @@ impl GameManager {
             .into()
     }
 
+    /// The game's graphics APIs, with where they come from as a tooltip; "Checking…" while they
+    /// are looked up, nothing when none was found.
+    fn graphics_view(&self, game: &Game) -> Option<View> {
+        let (text, tooltip) = match self.graphics.get(&game.id) {
+            Some(Some(info)) => {
+                let apis: Vec<&str> = info.apis.iter().map(|api| api.label()).collect();
+                let source = match &info.source {
+                    GraphicsSource::PcGamingWiki { page } => {
+                        format!("Graphics APIs from PCGamingWiki ({page})")
+                    }
+                    GraphicsSource::GameFiles => "Graphics APIs read from the game's files; they \
+                                                  may include APIs the game does not use"
+                        .to_owned(),
+                };
+                (apis.join(", "), source)
+            }
+            Some(None) => return None,
+            None => (
+                "Checking graphics APIs…".to_owned(),
+                "Looking on PCGamingWiki, then in the game's files".to_owned(),
+            ),
+        };
+        Some(
+            TextBlock::new()
+                .text(text)
+                .opacity(0.7)
+                .vertical_alignment(VerticalAlignment::Center)
+                .tooltip(tooltip),
+        )
+    }
+
+    /// Looks up the selected game's graphics APIs in the background, once per game.
+    fn request_graphics(&mut self, context: &ComponentContext<Self>) {
+        let Some(game) = self.selected_game() else {
+            return;
+        };
+        if self.graphics.contains_key(&game.id) || self.graphics_pending.contains(&game.id) {
+            return;
+        }
+        let game = game.clone();
+        self.graphics_pending.insert(game.id.clone());
+        context.spawn_background(move |_cancel| {
+            let info = gm_core::graphics::detect(&game);
+            Message::GraphicsDetected(game.id, info)
+        });
+    }
+
     /// The open right-click menu of a game, drawn by the app: windows-reactor attaches menus only
     /// to buttons, not as a right-click menu. Over the whole window, a transparent backdrop that
     /// closes the menu when clicked, and above it the menu at the pointer, kept inside the window.
@@ -597,6 +651,9 @@ impl GameManager {
                 .vertical_alignment(VerticalAlignment::Center);
             KeyedView::new("arch", text)
         });
+        let graphics = self
+            .graphics_view(game)
+            .map(|view| KeyedView::new("graphics", view));
         let actions = StackPanel::new()
             .orientation(Orientation::Horizontal)
             .spacing(12.0)
@@ -607,7 +664,8 @@ impl GameManager {
                     .chain(std::iter::once(KeyedView::new("wiki", wiki)))
                     .chain(remove)
                     .chain(std::iter::once(KeyedView::new("store", store)))
-                    .chain(arch),
+                    .chain(arch)
+                    .chain(graphics),
             );
 
         ScrollViewer::new()
@@ -836,6 +894,8 @@ impl Component for GameManager {
             selected: None,
             row_menu: None,
             window_size: (0.0, 0.0),
+            graphics: HashMap::new(),
+            graphics_pending: HashSet::new(),
             scanning: false,
             error: None,
             picking: false,
@@ -854,7 +914,23 @@ impl Component for GameManager {
     }
 
     fn update(&mut self, message: Message, context: &ComponentContext<Self>) {
+        self.handle(message, context);
+        // Whatever selected a game (a click, a scan, a game added), its APIs are looked up.
+        self.request_graphics(context);
+    }
+
+    fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
+        self.render(context)
+    }
+}
+
+impl GameManager {
+    fn handle(&mut self, message: Message, context: &ComponentContext<Self>) {
         match message {
+            Message::GraphicsDetected(id, info) => {
+                self.graphics_pending.remove(&id);
+                self.graphics.insert(id, info);
+            }
             Message::Scan => self.start_scan(context),
             Message::Scanned(games, errors) => {
                 self.scanning = false;
@@ -1134,7 +1210,7 @@ impl Component for GameManager {
         }
     }
 
-    fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
+    fn render(&self, context: &mut ViewContext<Self>) -> View {
         context.window_title("Game Manager");
         context.window_visuals(
             WindowVisuals::new()

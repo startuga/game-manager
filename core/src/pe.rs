@@ -1,5 +1,6 @@
-//! Reads a program's processor architecture from its PE (Portable Executable) header, the format
-//! of Windows `.exe` and `.dll` files. Plain file reads of a few hundred bytes, no Windows APIs.
+//! Reads a program's PE (Portable Executable) headers, the format of Windows `.exe` and `.dll`
+//! files: its processor architecture and the DLLs it imports. Plain file reads of a few kilobytes,
+//! no Windows APIs.
 
 use crate::Arch;
 use std::fs::File;
@@ -12,12 +13,18 @@ const MACHINE_ARM64: u16 = 0xAA64;
 const MACHINE_ARMNT: u16 = 0x01C4;
 const PE32_MAGIC: u16 = 0x10B;
 const PE32_PLUS_MAGIC: u16 = 0x20B;
-/// Index of the CLR (.NET) runtime header among the optional header's data directories.
+/// Indexes among the optional header's data directories.
+const IMPORT_DIRECTORY: usize = 1;
+const DELAY_IMPORT_DIRECTORY: usize = 13;
 const CLR_DIRECTORY: usize = 14;
 const COMIMAGE_FLAGS_ILONLY: u32 = 0x1;
 const COMIMAGE_FLAGS_32BITREQUIRED: u32 = 0x2;
 const COMIMAGE_FLAGS_32BITPREFERRED: u32 = 0x2_0000;
 const SECTION_HEADER_SIZE: usize = 40;
+/// More sections than any real program has; a larger count means a damaged file.
+const MAX_SECTIONS: usize = 96;
+/// More imported DLLs than any real program has.
+const MAX_DESCRIPTORS: usize = 1024;
 
 /// The architecture the program at `path` is built for, or `None` if it is not a readable PE file
 /// for a known processor.
@@ -25,18 +32,15 @@ pub fn architecture(path: &Path) -> Option<Arch> {
     read_architecture(&mut File::open(path).ok()?)
 }
 
+/// The DLLs the program at `path` imports, directly or delay-loaded, in lowercase
+/// (`d3d11.dll`), or `None` if it is not a readable PE file.
+pub(crate) fn imported_dlls(path: &Path) -> Option<Vec<String>> {
+    read_imported_dlls(&mut File::open(path).ok()?)
+}
+
 fn read_architecture(file: &mut (impl Read + Seek)) -> Option<Arch> {
-    let dos_header = read_at(file, 0, 64)?;
-    if !dos_header.starts_with(b"MZ") {
-        return None;
-    }
-    let pe_offset = u64::from(u32_at(&dos_header, 0x3C)?);
-    // "PE\0\0" followed by the 20-byte COFF file header.
-    let headers = read_at(file, pe_offset, 24)?;
-    if !headers.starts_with(b"PE\0\0") {
-        return None;
-    }
-    let arch = match u16_at(&headers, 4)? {
+    let headers = Headers::read(file)?;
+    let arch = match headers.machine {
         MACHINE_I386 => Arch::X86,
         MACHINE_AMD64 => Arch::X64,
         MACHINE_ARM64 => Arch::Arm64,
@@ -47,56 +51,148 @@ fn read_architecture(file: &mut (impl Read + Seek)) -> Option<Arch> {
     if arch != Arch::X86 {
         return Some(arch);
     }
-    let section_count = usize::from(u16_at(&headers, 6)?);
-    let optional_size = usize::from(u16_at(&headers, 20)?);
-    let optional_offset = pe_offset + 24;
-    let optional = read_at(file, optional_offset, optional_size)?;
-    let sections_offset = optional_offset + optional_size as u64;
-    let any_cpu = clr_flags(file, &optional, sections_offset, section_count).is_some_and(|flags| {
-        flags & COMIMAGE_FLAGS_ILONLY != 0
-            && flags & (COMIMAGE_FLAGS_32BITREQUIRED | COMIMAGE_FLAGS_32BITPREFERRED) == 0
-    });
+    let any_cpu = headers
+        .image(file)
+        .and_then(|image| clr_flags(file, &image))
+        .is_some_and(|flags| {
+            flags & COMIMAGE_FLAGS_ILONLY != 0
+                && flags & (COMIMAGE_FLAGS_32BITREQUIRED | COMIMAGE_FLAGS_32BITPREFERRED) == 0
+        });
     Some(if any_cpu { Arch::AnyCpu } else { arch })
 }
 
 /// The `Flags` of a .NET program's CLR header, or `None` for a native program.
-fn clr_flags(
-    file: &mut (impl Read + Seek),
-    optional: &[u8],
-    sections_offset: u64,
-    section_count: usize,
-) -> Option<u32> {
-    let directories = match u16_at(optional, 0)? {
-        PE32_MAGIC => 96,
-        PE32_PLUS_MAGIC => 112,
-        _ => return None,
-    };
-    let directory_count = u32_at(optional, directories - 4)? as usize;
-    if directory_count <= CLR_DIRECTORY {
-        return None;
-    }
-    let rva = u64::from(u32_at(optional, directories + CLR_DIRECTORY * 8)?);
-    if rva == 0 || section_count > 96 {
-        return None;
-    }
-    // The CLR header is addressed in memory (RVA): find the section holding it on disk.
-    let sections = read_at(file, sections_offset, section_count * SECTION_HEADER_SIZE)?;
-    let offset = sections
-        .as_chunks::<SECTION_HEADER_SIZE>()
-        .0
-        .iter()
-        .find_map(|section| {
-            let virtual_size = u64::from(u32_at(section, 8)?);
-            let address = u64::from(u32_at(section, 12)?);
-            let raw_size = u64::from(u32_at(section, 16)?);
-            let raw_offset = u64::from(u32_at(section, 20)?);
-            let size = virtual_size.max(raw_size);
-            (address..address + size)
-                .contains(&rva)
-                .then(|| raw_offset + (rva - address))
-        })?;
+fn clr_flags(file: &mut (impl Read + Seek), image: &Image) -> Option<u32> {
+    let offset = image.offset(image.directory(CLR_DIRECTORY)?)?;
     // Flags follow the header size (4), runtime version (4) and metadata directory (8).
     u32_at(&read_at(file, offset + 16, 4)?, 0)
+}
+
+fn read_imported_dlls(file: &mut (impl Read + Seek)) -> Option<Vec<String>> {
+    let image = Headers::read(file)?.image(file)?;
+    let mut dlls = Vec::new();
+    // Each table is a list of fixed-size descriptors ending with an empty one; the DLL name's RVA
+    // is at `name_at` in a descriptor.
+    for (directory, size, name_at) in [(IMPORT_DIRECTORY, 20, 12), (DELAY_IMPORT_DIRECTORY, 32, 4)]
+    {
+        let Some(start) = image.directory(directory).and_then(|rva| image.offset(rva)) else {
+            continue;
+        };
+        for index in 0..MAX_DESCRIPTORS {
+            let Some(descriptor) = read_at(file, start + (index * size) as u64, size) else {
+                break;
+            };
+            if descriptor.iter().all(|&byte| byte == 0) {
+                break;
+            }
+            // Delay-load tables from old linkers hold addresses, not RVAs (attribute bit 0 clear).
+            if directory == DELAY_IMPORT_DIRECTORY && u32_at(&descriptor, 0)? & 1 == 0 {
+                break;
+            }
+            let name = u32_at(&descriptor, name_at)
+                .and_then(|rva| image.offset(rva))
+                .and_then(|offset| read_name(file, offset));
+            dlls.extend(name);
+        }
+    }
+    dlls.sort();
+    dlls.dedup();
+    Some(dlls)
+}
+
+/// A null-terminated ASCII name at `offset`, in lowercase.
+fn read_name(file: &mut (impl Read + Seek), offset: u64) -> Option<String> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    // DLL names are short; the name may end near the end of the file, so read what is there.
+    let mut bytes = Vec::new();
+    file.by_ref().take(256).read_to_end(&mut bytes).ok()?;
+    let len = bytes.iter().position(|&byte| byte == 0)?;
+    let name = std::str::from_utf8(bytes.get(..len)?).ok()?;
+    (!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+/// The COFF file header: the machine type and where the optional header and sections are.
+struct Headers {
+    machine: u16,
+    optional_offset: u64,
+    optional_size: usize,
+    section_count: usize,
+}
+
+impl Headers {
+    fn read(file: &mut (impl Read + Seek)) -> Option<Self> {
+        let dos_header = read_at(file, 0, 64)?;
+        if !dos_header.starts_with(b"MZ") {
+            return None;
+        }
+        let pe_offset = u64::from(u32_at(&dos_header, 0x3C)?);
+        // "PE\0\0" followed by the 20-byte COFF file header.
+        let headers = read_at(file, pe_offset, 24)?;
+        if !headers.starts_with(b"PE\0\0") {
+            return None;
+        }
+        Some(Self {
+            machine: u16_at(&headers, 4)?,
+            optional_offset: pe_offset + 24,
+            optional_size: usize::from(u16_at(&headers, 20)?),
+            section_count: usize::from(u16_at(&headers, 6)?),
+        })
+    }
+
+    /// The optional header and the section table.
+    fn image(&self, file: &mut (impl Read + Seek)) -> Option<Image> {
+        if self.section_count > MAX_SECTIONS {
+            return None;
+        }
+        let optional = read_at(file, self.optional_offset, self.optional_size)?;
+        let sections_offset = self.optional_offset + self.optional_size as u64;
+        let sections = read_at(
+            file,
+            sections_offset,
+            self.section_count * SECTION_HEADER_SIZE,
+        )?;
+        Some(Image { optional, sections })
+    }
+}
+
+struct Image {
+    optional: Vec<u8>,
+    sections: Vec<u8>,
+}
+
+impl Image {
+    /// The RVA of data directory `index`; `None` when the program has none.
+    fn directory(&self, index: usize) -> Option<u32> {
+        let directories = match u16_at(&self.optional, 0)? {
+            PE32_MAGIC => 96,
+            PE32_PLUS_MAGIC => 112,
+            _ => return None,
+        };
+        let count = u32_at(&self.optional, directories - 4)? as usize;
+        if count <= index {
+            return None;
+        }
+        u32_at(&self.optional, directories + index * 8).filter(|&rva| rva != 0)
+    }
+
+    /// Where the data at an RVA (an address in memory) is in the file: in the section holding it.
+    fn offset(&self, rva: u32) -> Option<u64> {
+        let rva = u64::from(rva);
+        self.sections
+            .as_chunks::<SECTION_HEADER_SIZE>()
+            .0
+            .iter()
+            .find_map(|section| {
+                let virtual_size = u64::from(u32_at(section, 8)?);
+                let address = u64::from(u32_at(section, 12)?);
+                let raw_size = u64::from(u32_at(section, 16)?);
+                let raw_offset = u64::from(u32_at(section, 20)?);
+                let size = virtual_size.max(raw_size);
+                (address..address + size)
+                    .contains(&rva)
+                    .then(|| raw_offset + (rva - address))
+            })
+    }
 }
 
 fn read_at(file: &mut (impl Read + Seek), offset: u64, len: usize) -> Option<Vec<u8>> {
@@ -124,6 +220,26 @@ mod tests {
     use std::io::Cursor;
     use std::path::PathBuf;
 
+    fn put16(file: &mut [u8], at: usize, value: u16) {
+        file[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put32(file: &mut [u8], at: usize, value: u32) {
+        file[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// Where `pe_file` puts the optional header, the data directories and the section table.
+    fn layout(magic: u16) -> (usize, usize, usize) {
+        let optional_offset = 64 + 24;
+        let optional_size = if magic == PE32_PLUS_MAGIC { 240 } else { 224 };
+        let directories = if magic == PE32_PLUS_MAGIC { 112 } else { 96 };
+        (
+            optional_offset,
+            optional_offset + directories,
+            optional_offset + optional_size,
+        )
+    }
+
     /// A minimal PE file: DOS header, PE headers, one section and, for .NET, a CLR header.
     fn pe_file(machine: u16, magic: u16, clr_flags: Option<u32>) -> Vec<u8> {
         let pe_offset = 64usize;
@@ -134,12 +250,6 @@ mod tests {
         let clr_offset = 0x400usize;
         let mut file = vec![0u8; clr_offset + 72];
 
-        let put16 = |file: &mut Vec<u8>, at: usize, value: u16| {
-            file[at..at + 2].copy_from_slice(&value.to_le_bytes());
-        };
-        let put32 = |file: &mut Vec<u8>, at: usize, value: u32| {
-            file[at..at + 4].copy_from_slice(&value.to_le_bytes());
-        };
         file[..2].copy_from_slice(b"MZ");
         put32(&mut file, 0x3C, pe_offset as u32);
         file[pe_offset..pe_offset + 4].copy_from_slice(b"PE\0\0");
@@ -229,6 +339,66 @@ mod tests {
         truncated.truncate(70);
         assert_eq!(arch_of(truncated), None);
         assert_eq!(architecture(Path::new(r"C:\does\not\exist.exe")), None);
+    }
+
+    /// A PE file importing `imports` and delay-loading `delayed`. Its one section maps RVA 0x2000
+    /// to file offset 0x400: import descriptors at RVA 0x2000, delay-load ones at 0x2200, names
+    /// from 0x2800.
+    fn pe_with_imports(magic: u16, imports: &[&str], delayed: &[&str]) -> Vec<u8> {
+        let mut file = pe_file(MACHINE_AMD64, magic, None);
+        file.resize(0x1400, 0);
+        let (_, directories, sections) = layout(magic);
+        put32(&mut file, sections + 8, 0x1000);
+        put32(&mut file, sections + 12, 0x2000);
+        put32(&mut file, sections + 16, 0x1000);
+        put32(&mut file, sections + 20, 0x400);
+        let file_offset = |rva: usize| rva - 0x2000 + 0x400;
+        let mut name_rva = 0x2800;
+        let mut put_name = |file: &mut Vec<u8>, name: &str| {
+            let at = file_offset(name_rva);
+            file[at..at + name.len()].copy_from_slice(name.as_bytes());
+            let rva = name_rva as u32;
+            name_rva += name.len() + 1;
+            rva
+        };
+        put32(&mut file, directories + IMPORT_DIRECTORY * 8, 0x2000);
+        for (i, name) in imports.iter().enumerate() {
+            let rva = put_name(&mut file, name);
+            put32(&mut file, file_offset(0x2000 + i * 20) + 12, rva);
+        }
+        put32(&mut file, directories + DELAY_IMPORT_DIRECTORY * 8, 0x2200);
+        for (i, name) in delayed.iter().enumerate() {
+            let rva = put_name(&mut file, name);
+            let at = file_offset(0x2200 + i * 32);
+            put32(&mut file, at, 1); // RVA-based
+            put32(&mut file, at + 4, rva);
+        }
+        file
+    }
+
+    #[test]
+    fn reads_imported_and_delay_loaded_dlls() {
+        for magic in [PE32_MAGIC, PE32_PLUS_MAGIC] {
+            let file = pe_with_imports(magic, &["KERNEL32.dll", "d3d11.dll"], &["D3D12.dll"]);
+            assert_eq!(
+                read_imported_dlls(&mut Cursor::new(file)).unwrap(),
+                ["d3d11.dll", "d3d12.dll", "kernel32.dll"]
+            );
+        }
+        // No import tables at all: no DLLs, but still a PE file.
+        let plain = pe_file(MACHINE_AMD64, PE32_PLUS_MAGIC, None);
+        assert_eq!(
+            read_imported_dlls(&mut Cursor::new(plain)),
+            Some(Vec::new())
+        );
+        assert_eq!(read_imported_dlls(&mut Cursor::new(b"MZ".to_vec())), None);
+
+        let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let notepad = imported_dlls(&windows.join(r"System32\notepad.exe")).unwrap();
+        // user32 is imported directly, advapi32 delay-loaded (and some imports are `.drv`).
+        assert!(notepad.contains(&"user32.dll".to_owned()), "{notepad:?}");
+        assert!(notepad.contains(&"advapi32.dll".to_owned()), "{notepad:?}");
+        assert!(notepad.iter().all(|dll| *dll == dll.to_lowercase()));
     }
 
     #[test]

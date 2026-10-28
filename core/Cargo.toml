@@ -15,14 +15,15 @@ thiserror = { workspace = true }
 # Win32 features are named after C headers: launcher (shellapi, winuser), icons (wincodec,
 # shlobj_core, shlwapi, combaseapi, objbase, objidlbase, wtypes, wtypesbase, ocidl, windef),
 # EA resources (libloaderapi, minwindef), version info (winver), shortcuts (shobjidl_core, objidl,
-# coml2api), Xbox packages and their architecture (WinRT Management_Deployment, ApplicationModel,
-# System).
+# coml2api), web requests (winhttp), Xbox packages and their architecture (WinRT
+# Management_Deployment, ApplicationModel, System).
 windows = { workspace = true, features = [
     "shellapi", "winuser",
     "wincodec", "shlobj_core", "shlwapi", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
     "libloaderapi", "minwindef",
     "winver",
     "shobjidl_core", "objidl", "coml2api",
+    "winhttp",
     "Management_Deployment", "ApplicationModel", "System",
 ] }
 windows-registry = { workspace = true }
