@@ -30,7 +30,8 @@ pub(crate) fn read(lnk: &Path) -> Result<Option<Shortcut>> {
     let _com = ComGuard::new();
     // SAFETY: COM is initialized on this thread while `_com` lives, which outlasts `link`.
     let link: IShellLinkW =
-        unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.map_err(error)?;
+        unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER as u32) }
+            .map_err(error)?;
     let file = HSTRING::from(lnk.as_os_str());
     // SAFETY: `file` is a null-terminated wide string that outlives the call.
     unsafe {
@@ -42,8 +43,8 @@ pub(crate) fn read(lnk: &Path) -> Result<Option<Shortcut>> {
     .map_err(error)?;
 
     let target = read_text(|buffer, len| {
-        // SAFETY: `buffer` is writable for `len` units; the find data is optional (null).
-        unsafe { link.GetPath(buffer, len, std::ptr::null_mut(), 0) }
+        // SAFETY: `buffer` is writable for `len` units; the find data is optional (none).
+        unsafe { link.GetPath(buffer, len, None, 0) }
     })
     .map_err(error)?;
     let args = read_text(|buffer, len| {
@@ -137,7 +138,7 @@ pub(crate) mod tests {
         // null-terminated wide string that outlives its call.
         unsafe {
             let link: IShellLinkW =
-                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER as u32).unwrap();
             link.SetPath(&HSTRING::from(target.as_os_str()))
                 .ok()
                 .unwrap();
@@ -150,7 +151,7 @@ pub(crate) mod tests {
             let file = HSTRING::from(lnk.as_os_str());
             link.cast::<IPersistFile>()
                 .unwrap()
-                .Save(file.as_ptr(), true)
+                .Save(Some(file.as_ptr()), true)
                 .ok()
                 .unwrap();
         }

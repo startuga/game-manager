@@ -30,8 +30,9 @@ impl IconExtractor {
     pub fn new() -> Result<Self> {
         let com = ComGuard::new();
         // SAFETY: COM is initialized on this thread for the lifetime of `_com`.
-        let factory =
-            unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
+        let factory = unsafe {
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER as u32)?
+        };
         Ok(Self { factory, _com: com })
     }
 
@@ -52,22 +53,19 @@ impl IconExtractor {
         // SAFETY: no initial data, so the stream starts empty.
         let stream =
             unsafe { SHCreateMemStream(None) }.ok_or_else(windows::core::Error::from_thread)?;
-        // SAFETY: a null vendor means "any encoder", as WIC documents.
-        let encoder = unsafe {
-            self.factory
-                .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())
-        }?;
+        // SAFETY: no vendor means "any encoder", as WIC documents.
+        let encoder = unsafe { self.factory.CreateEncoder(&GUID_ContainerFormatPng, None) }?;
         // SAFETY: `stream` is the live stream created above.
         unsafe { encoder.Initialize(&stream, WICBitmapEncoderNoCache) }.ok()?;
         let mut frame: Option<IWICBitmapFrameEncode> = None;
         let mut options: Option<IPropertyBag2> = None;
         // SAFETY: both out-pointers are valid locals.
-        unsafe { encoder.CreateNewFrame(&mut frame, &mut options) }.ok()?;
+        unsafe { encoder.CreateNewFrame(&mut frame, Some(&raw mut options)) }.ok()?;
         let frame = frame.ok_or_else(windows::core::Error::empty)?;
         // SAFETY: `options` is the property bag CreateNewFrame returned with this frame.
         unsafe { frame.Initialize(options.as_ref()) }.ok()?;
-        // SAFETY: `bitmap` is live; a null rectangle means the whole bitmap.
-        unsafe { frame.WriteSource(&bitmap, std::ptr::null()) }.ok()?;
+        // SAFETY: `bitmap` is live; no rectangle means the whole bitmap.
+        unsafe { frame.WriteSource(&bitmap, None) }.ok()?;
         // SAFETY: the frame was initialized and written.
         unsafe { frame.Commit() }.ok()?;
         // SAFETY: the encoder's only frame was committed.

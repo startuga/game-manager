@@ -3,13 +3,15 @@
 
 use crate::{Error, Result};
 use windows::Win32::{
-    HINTERNET, INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-    WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle,
-    WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
+    HINTERNET, INTERNET_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+    WinHttpSendRequest, WinHttpSetTimeouts,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
+/// `INTERNET_DEFAULT_HTTPS_PORT`, which windows-rs generates only with WinINet's header.
+const HTTPS_PORT: INTERNET_PORT = 443;
 /// Name resolution, connect, send and receive timeouts.
 const TIMEOUT_MS: i32 = 10_000;
 /// Larger answers are refused; a wiki page's text is far smaller.
@@ -48,10 +50,8 @@ pub(crate) fn get(host: &str, path: &str) -> Result<Vec<u8>> {
         .map_err(failed)?;
     let host_name = HSTRING::from(host);
     // SAFETY: a live session handle and a valid wide string.
-    let connection = Handle::new(unsafe {
-        WinHttpConnect(session.0, &host_name, INTERNET_DEFAULT_HTTPS_PORT as u16, 0)
-    })
-    .map_err(failed)?;
+    let connection = Handle::new(unsafe { WinHttpConnect(session.0, &host_name, HTTPS_PORT, 0) })
+        .map_err(failed)?;
     let object = HSTRING::from(path);
     // SAFETY: a live connection handle and valid wide strings; a null version, referrer and
     // accept-type list mean HTTP/1.1, none and any.
@@ -62,7 +62,7 @@ pub(crate) fn get(host: &str, path: &str) -> Result<Vec<u8>> {
             &object,
             PCWSTR::null(),
             PCWSTR::null(),
-            None,
+            std::ptr::null_mut(),
             WINHTTP_FLAG_SECURE as u32,
         )
     })
@@ -72,14 +72,14 @@ pub(crate) fn get(host: &str, path: &str) -> Result<Vec<u8>> {
         .ok()
         .map_err(failed)?;
     // SAFETY: the request was sent; the reserved argument must be null.
-    unsafe { WinHttpReceiveResponse(request.0, std::ptr::null()) }
+    unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }
         .ok()
         .map_err(failed)?;
 
     let mut status = 0u32;
     let mut size = size_of::<u32>() as u32;
     // SAFETY: with WINHTTP_QUERY_FLAG_NUMBER the status is written as a u32 into `status`, whose
-    // size `size` gives.
+    // size `size` gives; a null index means the first header.
     unsafe {
         WinHttpQueryHeaders(
             request.0,
@@ -87,7 +87,7 @@ pub(crate) fn get(host: &str, path: &str) -> Result<Vec<u8>> {
             PCWSTR::null(),
             Some((&raw mut status).cast()),
             &mut size,
-            None,
+            std::ptr::null_mut(),
         )
     }
     .ok()
