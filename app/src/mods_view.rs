@@ -20,19 +20,21 @@ pub(crate) enum ModDialog {
 }
 
 /// The DXVK settings being edited in their dialog.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct DxvkSettings {
     pub variant: DxvkVariant,
     pub config: DxvkConfig,
 }
 
 /// A change in the DXVK settings dialog; `None` (a list losing its selection) changes nothing.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum DxvkSettingsEdit {
     Variant(Option<usize>),
     Hdr(bool),
     MaxFrameRate(Option<f64>),
     Hud(Option<usize>),
+    /// The HDR-mod config picked; `Some(None)` is "None".
+    HdrModConfig(Option<Option<String>>),
 }
 
 impl DxvkSettings {
@@ -52,6 +54,7 @@ impl DxvkSettings {
                     self.config.hud = hud;
                 }
             }
+            DxvkSettingsEdit::HdrModConfig(Some(config)) => self.config.hdr_mod_config = config,
             _ => {}
         }
     }
@@ -68,6 +71,21 @@ impl GameManager {
                 Some(Some(info)) if info.apis.len() == 1 => info.apis.first().copied(),
                 _ => None,
             })
+    }
+
+    /// Lists HDR-mod's configs in the background, once, while DXVK settings show HDR-mod.
+    pub(crate) fn request_hdr_mod_configs(&mut self, context: &ComponentContext<Self>) {
+        let shown = matches!(
+            &self.mod_dialog,
+            Some(ModDialog::Settings(settings)) if settings.variant == DxvkVariant::HdrMod
+        );
+        if !shown || self.hdr_mod_configs.is_some() || self.hdr_mod_configs_pending {
+            return;
+        }
+        self.hdr_mod_configs_pending = true;
+        context.spawn_background(|_cancel| {
+            Message::HdrModConfigsLoaded(dxvk::hdr_mod_configs().map_err(|e| e.to_string()))
+        });
     }
 
     /// Any dialog is open: WinUI shows one at a time.
@@ -188,13 +206,19 @@ impl GameManager {
                     .tooltip("Uninstall DXVK"),
             ));
 
+        // The HDR-mod config an HDR-mod install brings.
+        let with_config = state
+            .and_then(|state| state.config.hdr_mod_config.as_deref())
+            .filter(|_| variant == DxvkVariant::HdrMod)
+            .map(|name| format!(" with config {}", dxvk::config_label(name)))
+            .unwrap_or_default();
         let hint = if working {
             "Working… Windows asks for administrator rights when the game's folder needs them."
                 .to_owned()
         } else {
             match (installed, &target) {
                 (Some(installed), _) => format!(
-                    "{} in {}. Reinstall gets the latest {} build.",
+                    "{} in {}. Reinstall gets the latest {} build{with_config}.",
                     installed
                         .files
                         .iter()
@@ -205,7 +229,7 @@ impl GameManager {
                     variant.name()
                 ),
                 (None, Ok(target)) => format!(
-                    "Installs the latest {} build: {}, into {}.",
+                    "Installs the latest {} build{with_config}: {}, into {}.",
                     variant.name(),
                     target.summary(),
                     shown_path(game, &target.folder)
@@ -240,7 +264,7 @@ impl GameManager {
                 .primary_button_text("Save")
                 .close_button_text("Cancel")
                 .default_button(ContentDialogButton::Primary)
-                .content(dxvk_settings_form(settings, context)),
+                .content(self.dxvk_settings_form(settings, context)),
             _ => {
                 let this_game = self.selected_game().map(|game| {
                     match dxvk::target(game, self.dxvk_api(game)) {
@@ -262,29 +286,33 @@ impl GameManager {
             }
         }
     }
-}
 
-fn dxvk_settings_form(settings: &DxvkSettings, context: &ViewContext<GameManager>) -> View {
-    let edited = |edit: DxvkSettingsEdit| Message::DxvkSettingsEdited(edit);
-    let variant = DxvkVariant::ALL
-        .iter()
-        .position(|&variant| variant == settings.variant);
-    let hud = Hud::ALL.iter().position(|&hud| hud == settings.config.hud);
-    StackPanel::new()
-        .spacing(16.0)
-        .min_width(420.0)
-        .children((
-            RadioButtons::new()
-                .header("Version")
-                .items_source(DxvkVariant::ALL.map(DxvkVariant::label))
-                .selected_index(variant)
-                .on_selection_changed(context.callback(move |index: Option<usize>| {
-                    edited(DxvkSettingsEdit::Variant(index))
-                })),
+    fn dxvk_settings_form(&self, settings: &DxvkSettings, context: &ViewContext<Self>) -> View {
+        let edited = |edit: DxvkSettingsEdit| Message::DxvkSettingsEdited(edit);
+        let variant = DxvkVariant::ALL
+            .iter()
+            .position(|&variant| variant == settings.variant);
+        let hud = Hud::ALL.iter().position(|&hud| hud == settings.config.hud);
+        let mut rows: Vec<View> =
+            vec![
+                RadioButtons::new()
+                    .header("Version")
+                    .items_source(DxvkVariant::ALL.map(DxvkVariant::label))
+                    .selected_index(variant)
+                    .on_selection_changed(context.callback(move |index: Option<usize>| {
+                        edited(DxvkSettingsEdit::Variant(index))
+                    }))
+                    .into(),
+            ];
+        if settings.variant == DxvkVariant::HdrMod {
+            rows.push(self.hdr_mod_config_picker(settings, context));
+        }
+        rows.extend([
             ToggleSwitch::new()
                 .header("HDR")
                 .is_on(settings.config.hdr)
-                .on_toggled(context.callback(move |on: bool| edited(DxvkSettingsEdit::Hdr(on)))),
+                .on_toggled(context.callback(move |on: bool| edited(DxvkSettingsEdit::Hdr(on))))
+                .into(),
             NumberBox::new()
                 .header("Frame-rate limit (0 = none)")
                 .minimum(0.0)
@@ -292,18 +320,22 @@ fn dxvk_settings_form(settings: &DxvkSettings, context: &ViewContext<GameManager
                 .value(f64::from(settings.config.max_frame_rate))
                 .on_value_changed(context.callback(move |value: Option<f64>| {
                     edited(DxvkSettingsEdit::MaxFrameRate(value))
-                })),
-            StackPanel::new().spacing(6.0).children((
-                TextBlock::new().text("HUD"),
-                ComboBox::new()
-                    .items_source(Hud::ALL.map(Hud::label))
-                    .selected_index(hud)
-                    .min_width(240.0)
-                    .automation_name("HUD")
-                    .on_selection_changed(context.callback(move |index: Option<usize>| {
-                        edited(DxvkSettingsEdit::Hud(index))
-                    })),
-            )),
+                }))
+                .into(),
+            StackPanel::new()
+                .spacing(6.0)
+                .children((
+                    TextBlock::new().text("HUD"),
+                    ComboBox::new()
+                        .items_source(Hud::ALL.map(Hud::label))
+                        .selected_index(hud)
+                        .min_width(240.0)
+                        .automation_name("HUD")
+                        .on_selection_changed(context.callback(move |index: Option<usize>| {
+                            edited(DxvkSettingsEdit::Hud(index))
+                        })),
+                ))
+                .into(),
             TextBlock::new()
                 .text(
                     "The version is used by the next Install or Reinstall. The other settings \
@@ -311,9 +343,77 @@ fn dxvk_settings_form(settings: &DxvkSettings, context: &ViewContext<GameManager
                 )
                 .font_size(12.0)
                 .opacity(0.7)
-                .text_wrapping(TextWrapping::Wrap),
-        ))
-        .into()
+                .text_wrapping(TextWrapping::Wrap)
+                .into(),
+        ]);
+        StackPanel::new()
+            .spacing(16.0)
+            .min_width(420.0)
+            .children(rows)
+            .into()
+    }
+
+    /// HDR-mod's own configs for the game's API: "None", then each in the latest HDR-mod build.
+    fn hdr_mod_config_picker(&self, settings: &DxvkSettings, context: &ViewContext<Self>) -> View {
+        let api = self.selected_game().and_then(|game| self.dxvk_api(game));
+        let names: Vec<String> = match &self.hdr_mod_configs {
+            Some(Ok(names)) => dxvk::configs_for(names, api)
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let (first, note) = match (&self.hdr_mod_configs, api) {
+            (_, None) => ("None", Blocked::NoApi.to_string()),
+            (None, _) => ("Loading the HDR-mod configs…", String::new()),
+            (Some(Err(error)), _) => ("None", error.clone()),
+            (Some(Ok(_)), Some(api)) if names.is_empty() => (
+                "None",
+                format!("HDR-mod has no configs for {}.", api.label()),
+            ),
+            (Some(Ok(_)), Some(_)) => (
+                "None",
+                "0 is the safest; higher numbers upgrade more render targets for HDR and may \
+                 cause visual issues or crashes."
+                    .to_owned(),
+            ),
+        };
+        let selected = settings
+            .config
+            .hdr_mod_config
+            .as_ref()
+            .and_then(|chosen| names.iter().position(|name| name == chosen))
+            .map_or(0, |index| index + 1);
+        let items: Vec<String> = std::iter::once(first.to_owned())
+            .chain(names.iter().map(|name| dxvk::config_label(name)))
+            .collect();
+        let picker = ComboBox::new()
+            .items_source(items)
+            .selected_index(selected)
+            .is_enabled(!names.is_empty())
+            .min_width(240.0)
+            .automation_name("HDR-mod config")
+            .on_selection_changed(context.callback(move |index: Option<usize>| {
+                let choice = index.map(|index| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|index| names.get(index).cloned())
+                });
+                Message::DxvkSettingsEdited(DxvkSettingsEdit::HdrModConfig(choice))
+            }));
+        StackPanel::new()
+            .spacing(6.0)
+            .children((
+                TextBlock::new().text("HDR-mod config"),
+                picker,
+                TextBlock::new()
+                    .text(note)
+                    .font_size(12.0)
+                    .opacity(0.7)
+                    .text_wrapping(TextWrapping::Wrap),
+            ))
+            .into()
+    }
 }
 
 /// `path` inside the install folder when it can be shown that way ("bin\x64").

@@ -124,6 +124,8 @@ enum Message {
     ShowDxvkInfo,
     ShowDxvkSettings,
     DxvkSettingsEdited(DxvkSettingsEdit),
+    /// HDR-mod's own configs in its latest build, or what failed.
+    HdrModConfigsLoaded(Result<Vec<String>, String>),
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -170,6 +172,10 @@ struct GameManager {
     /// The game whose mod is being installed, uninstalled or set up; one job at a time.
     mod_job: Option<String>,
     mod_dialog: Option<ModDialog>,
+    /// HDR-mod's own configs, listed once the settings dialog shows HDR-mod (`Err`: what failed,
+    /// tried again when the dialog opens again).
+    hdr_mod_configs: Option<Result<Vec<String>, String>>,
+    hdr_mod_configs_pending: bool,
 }
 
 impl GameManager {
@@ -1009,6 +1015,8 @@ impl Component for GameManager {
             mods_open: false,
             mod_job: None,
             mod_dialog: None,
+            hdr_mod_configs: None,
+            hdr_mod_configs_pending: false,
         };
         // The last scan's games show at once while the fresh scan runs.
         context.spawn_background(|_cancel| {
@@ -1025,6 +1033,8 @@ impl Component for GameManager {
         self.handle(message, context);
         // Whatever selected a game (a click, a scan, a game added), its APIs are looked up.
         self.request_graphics(context);
+        // Whatever showed HDR-mod in DXVK settings, its configs are listed.
+        self.request_hdr_mod_configs(context);
     }
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
@@ -1163,20 +1173,30 @@ impl GameManager {
                     variant: state.variant,
                     config: state.config,
                 }));
+                // A list that failed (offline) is asked for again.
+                if matches!(self.hdr_mod_configs, Some(Err(_))) {
+                    self.hdr_mod_configs = None;
+                }
             }
             Message::DxvkSettingsEdited(edit) => {
                 if let Some(ModDialog::Settings(settings)) = &mut self.mod_dialog {
                     settings.edit(edit);
                 }
             }
+            Message::HdrModConfigsLoaded(configs) => {
+                self.hdr_mod_configs_pending = false;
+                self.hdr_mod_configs = Some(configs);
+            }
             Message::ModDialogClosed(result) => {
                 if let Some(ModDialog::Settings(settings)) = self.mod_dialog.take()
                     && result == ContentDialogResult::Primary
                     && let Some(game) = self.selected_game().cloned()
                 {
+                    let api = self.dxvk_api(&game);
                     self.mod_job = Some(game.id.clone());
                     context.spawn_background(move |_cancel| {
-                        let saved = dxvk::save_settings(&game, settings.variant, settings.config);
+                        let saved =
+                            dxvk::save_settings(&game, api, settings.variant, settings.config);
                         Message::ModJobDone(saved.map_err(|e| e.to_string()))
                     });
                 }

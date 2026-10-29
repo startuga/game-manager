@@ -27,6 +27,7 @@ use serde_json::Value;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 const API_URL: &str = "https://api.github.com/repos/doitsujin/dxvk";
 const HDR_MOD_API_URL: &str = "https://api.github.com/repos/EndlesslyFlowering/dxvk";
@@ -115,7 +116,7 @@ impl Hud {
 }
 
 /// The DXVK settings written to `dxvk.conf`; all off means no file.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DxvkConfig {
     /// `dxgi.enableHDR`.
@@ -123,20 +124,26 @@ pub struct DxvkConfig {
     /// `dxgi.maxFrameRate` and `d3d9.maxFrameRate`; 0 is no limit.
     pub max_frame_rate: u32,
     pub hud: Hud,
+    /// One of the HDR-mod build's own configs (`dxvk_d3d9_3_unsafer.conf`), which starts
+    /// `dxvk.conf` when an HDR-mod build is installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hdr_mod_config: Option<String>,
 }
 
 impl DxvkConfig {
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    /// The `dxvk.conf` for these settings.
-    pub fn text(&self) -> String {
+    /// The `dxvk.conf` for these settings, starting with `hdr_mod` (an HDR-mod config's name and
+    /// text) when given; `None` when there is nothing to write.
+    pub fn text(&self, hdr_mod: Option<(&str, &str)>) -> Option<String> {
         let mut lines = vec![
             "# Written by Game Manager from this game's DXVK settings; saving them again replaces \
              this file."
                 .to_owned(),
         ];
+        if let Some((name, text)) = hdr_mod {
+            lines.push(format!("# HDR-mod config: {name}"));
+            lines.extend(text.lines().map(str::to_owned));
+            lines.push(String::new());
+        }
         if self.hdr {
             lines.push("dxgi.enableHDR = True".to_owned());
         }
@@ -147,7 +154,45 @@ impl DxvkConfig {
         if let Some(hud) = self.hud.value() {
             lines.push(format!("dxvk.hud = {hud}"));
         }
-        lines.join("\r\n") + "\r\n"
+        (lines.len() > 1).then(|| lines.join("\r\n") + "\r\n")
+    }
+}
+
+/// HDR-mod's configs for Direct3D 8 and 9, and for 10 and 11, start with these.
+const D3D9_CONFIGS: &str = "dxvk_d3d9_";
+const D3D11_CONFIGS: &str = "dxvk_d3d11_and_d3d10_";
+
+fn config_prefix(api: GraphicsApi) -> Option<&'static str> {
+    match api {
+        GraphicsApi::DirectX8 | GraphicsApi::DirectX9 => Some(D3D9_CONFIGS),
+        GraphicsApi::DirectX10 | GraphicsApi::DirectX11 => Some(D3D11_CONFIGS),
+        _ => None,
+    }
+}
+
+/// The HDR-mod configs among `names` for a game on `api`.
+pub fn configs_for(names: &[String], api: Option<GraphicsApi>) -> Vec<&str> {
+    let Some(prefix) = api.and_then(config_prefix) else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.to_ascii_lowercase().starts_with(prefix))
+        .collect()
+}
+
+/// "3 – unsafer" for `dxvk_d3d9_3_unsafer.conf`, "1 – 2nd safest" for
+/// `dxvk_d3d11_and_d3d10_1_2nd_safest.conf`.
+pub fn config_label(name: &str) -> String {
+    let stem = name.strip_suffix(".conf").unwrap_or(name);
+    let rest = [D3D11_CONFIGS, D3D9_CONFIGS]
+        .iter()
+        .find_map(|prefix| stem.strip_prefix(prefix))
+        .unwrap_or(stem);
+    match rest.split_once('_') {
+        Some((level, words)) => format!("{level} – {}", words.replace('_', " ")),
+        None => rest.replace('_', " "),
     }
 }
 
@@ -375,8 +420,8 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         }
         files.push(((*dll).to_owned(), source));
     }
-    if !state.config.is_empty() {
-        files.push((CONFIG_FILE.to_owned(), staged_config(&state.config)?));
+    if let Some(text) = config_text(&state.config, &cache, Some(api))? {
+        files.push((CONFIG_FILE.to_owned(), staged_config(&text)?));
     }
     let plan = plan(state.installed.as_ref(), &target.folder, &files)?;
     apply(&plan.ops)?;
@@ -405,8 +450,14 @@ pub fn uninstall(game: &Game) -> Result<ModsFile> {
     })
 }
 
-/// Saves the game's DXVK settings; when DXVK is installed, its `dxvk.conf` follows them.
-pub fn save_settings(game: &Game, variant: DxvkVariant, config: DxvkConfig) -> Result<ModsFile> {
+/// Saves the game's DXVK settings; when DXVK is installed, its `dxvk.conf` follows them (`api`
+/// is the game's, to check an HDR-mod config against).
+pub fn save_settings(
+    game: &Game,
+    api: Option<GraphicsApi>,
+    variant: DxvkVariant,
+    config: DxvkConfig,
+) -> Result<ModsFile> {
     let state = state(game)?;
     let mut installed = state.installed;
     if let Some(record) = installed.as_mut().filter(|_| config != state.config) {
@@ -423,10 +474,9 @@ pub fn save_settings(game: &Game, variant: DxvkVariant, config: DxvkConfig) -> R
             backups: config_backups,
             ..record.clone()
         };
-        let new = if config.is_empty() {
-            Vec::new()
-        } else {
-            vec![(CONFIG_FILE.to_owned(), staged_config(&config)?)]
+        let new = match config_text(&config, &build_dir(&record.version)?, api)? {
+            Some(text) => vec![(CONFIG_FILE.to_owned(), staged_config(&text)?)],
+            None => Vec::new(),
         };
         let plan = plan(Some(&previous), &record.folder, &new)?;
         apply(&plan.ops)?;
@@ -455,31 +505,110 @@ fn drop_default(dxvk: &mut Option<DxvkState>) {
     }
 }
 
-/// `dxvk.conf` for `config`, written where the copy (possibly as administrator) reads it.
-fn staged_config(config: &DxvkConfig) -> Result<PathBuf> {
+/// The `dxvk.conf` for `config` with the build in `build`: an HDR-mod build (one with
+/// `configs`) starts it with the chosen config, which must be in the build and for the game's
+/// API. `None` when there is nothing to write.
+fn config_text(
+    config: &DxvkConfig,
+    build: &Path,
+    api: Option<GraphicsApi>,
+) -> Result<Option<String>> {
+    let hdr_mod = match &config.hdr_mod_config {
+        Some(name) if build.join(CONFIGS).is_dir() => {
+            check_config(name, api)?;
+            let file = build.join(CONFIGS).join(name);
+            let text = fs::read_to_string(&file).map_err(|_| {
+                Error::NotInstallable(format!(
+                    "This HDR-mod build has no {name}: choose another config in DXVK settings."
+                ))
+            })?;
+            Some((name.as_str(), text))
+        }
+        Some(_) if !build.is_dir() => {
+            return Err(Error::NotInstallable(
+                "The installed DXVK build is no longer in Game Manager's cache: reinstall it to \
+                 use the HDR-mod config."
+                    .to_owned(),
+            ));
+        }
+        _ => None,
+    };
+    Ok(config.text(hdr_mod.as_ref().map(|(name, text)| (*name, text.as_str()))))
+}
+
+/// An HDR-mod config is for Direct3D 8 and 9 or for 10 and 11; it must be the game's.
+fn check_config(name: &str, api: Option<GraphicsApi>) -> Result<()> {
+    let names = [name.to_owned()];
+    if !configs_for(&names, api).is_empty() {
+        return Ok(());
+    }
+    Err(Error::NotInstallable(match api {
+        Some(api) => format!(
+            "The HDR-mod config {name} is not for {}: choose another in DXVK settings.",
+            api.label()
+        ),
+        None => Blocked::NoApi.to_string(),
+    }))
+}
+
+/// The latest HDR-mod build's own configs (`dxvk_d3d9_0_safest.conf` …), downloading the build
+/// when it is not cached yet. Blocking.
+pub fn hdr_mod_configs() -> Result<Vec<String>> {
+    let build = cached_build(&latest(DxvkVariant::HdrMod)?)?;
+    let mut names: Vec<String> = fs::read_dir(build.join(CONFIGS))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.to_ascii_lowercase().ends_with(".conf"))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    Ok(names)
+}
+
+/// `text` as `dxvk.conf`, written where the copy (possibly as administrator) reads it.
+fn staged_config(text: &str) -> Result<PathBuf> {
     let dir = json_file::local_file("mods")?.join("staging");
     fs::create_dir_all(&dir).map_err(Error::io(&dir))?;
     let file = dir.join(CONFIG_FILE);
-    fs::write(&file, config.text()).map_err(Error::io(&file))?;
+    fs::write(&file, text).map_err(Error::io(&file))?;
     Ok(file)
 }
 
-/// The build's folder in the cache, holding `x32` and `x64`: downloaded and unpacked the first
-/// time.
-fn cached_build(build: &Build) -> Result<PathBuf> {
-    let root = json_file::local_file("mods")?.join("dxvk");
-    let version: String = build
-        .version
+/// The cache folder's layout: `x32`, `x64`, and `configs` (HDR-mod's own `.conf` files). A
+/// folder without this number in its `.format` file is downloaded again.
+const CACHE_FORMAT: &str = "2";
+const FORMAT_FILE: &str = ".format";
+const CONFIGS: &str = "configs";
+
+/// Where a version's build is cached.
+fn build_dir(version: &str) -> Result<PathBuf> {
+    let version: String = version
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || ".-_".contains(*c))
         .collect();
-    let dir = root.join(version);
-    if [Bits::X32, Bits::X64]
-        .iter()
-        .any(|bits| dir.join(bits.folder()).is_dir())
-    {
+    Ok(json_file::local_file("mods")?.join("dxvk").join(version))
+}
+
+/// One download into the cache at a time (an install, and the settings dialog listing HDR-mod's
+/// configs, may both ask), as they share its work folder.
+static BUILD_LOCK: Mutex<()> = Mutex::new(());
+
+/// The build's folder in the cache, holding `x32`, `x64` and, for HDR-mod, `configs`:
+/// downloaded and unpacked the first time.
+fn cached_build(build: &Build) -> Result<PathBuf> {
+    let _lock = BUILD_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = build_dir(&build.version)?;
+    let complete =
+        fs::read_to_string(dir.join(FORMAT_FILE)).is_ok_and(|format| format.trim() == CACHE_FORMAT);
+    if complete {
         return Ok(dir);
     }
+    let Some(root) = dir.parent() else {
+        return Err(Error::NoModBuild(dir));
+    };
     let work = root.join("download");
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(Error::io(&work))?;
@@ -506,9 +635,41 @@ fn cached_build(build: &Build) -> Result<PathBuf> {
     if !found {
         return Err(Error::NoModBuild(archive));
     }
+    keep_configs(&unpacked, &kept.join(CONFIGS))?;
+    let format = kept.join(FORMAT_FILE);
+    fs::write(&format, CACHE_FORMAT).map_err(Error::io(&format))?;
+    // A folder of an older layout is replaced.
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(Error::io(&dir))?;
+    }
     fs::rename(&kept, &dir).map_err(Error::io(&dir))?;
     let _ = fs::remove_dir_all(&work);
     Ok(dir)
+}
+
+/// Copies the `.conf` files of an unpacked build into `configs`, except those inside its `x32` and
+/// `x64` folders (HDR-mod ships its configs at the top). Upstream builds have none.
+fn keep_configs(unpacked: &Path, configs: &Path) -> Result<()> {
+    let mut folders = vec![(unpacked.to_path_buf(), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if path.is_dir() {
+                if depth < 3 && name != "x32" && name != "x64" {
+                    folders.push((path, depth + 1));
+                }
+            } else if name.ends_with(".conf") {
+                fs::create_dir_all(configs).map_err(Error::io(configs))?;
+                let to = configs.join(entry.file_name());
+                fs::copy(&path, &to).map_err(Error::io(&to))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A folder called `name` under `root` that holds DLLs (`dxvk-3.1.1\x64`, or `x64` at the top).
@@ -685,13 +846,14 @@ mod tests {
 
     #[test]
     fn writes_dxvk_conf_from_the_settings() {
-        assert!(DxvkConfig::default().is_empty());
+        assert_eq!(DxvkConfig::default().text(None), None);
         let config = DxvkConfig {
             hdr: true,
             max_frame_rate: 60,
             hud: Hud::Fps,
+            hdr_mod_config: None,
         };
-        let text = config.text();
+        let text = config.text(None).unwrap();
         assert!(text.starts_with("# Written by Game Manager"));
         for line in [
             "dxgi.enableHDR = True",
@@ -705,8 +867,93 @@ mod tests {
             hud: Hud::Full,
             ..DxvkConfig::default()
         }
-        .text();
+        .text(None)
+        .unwrap();
         assert!(hud_only.contains("dxvk.hud = full") && !hud_only.contains("HDR"));
+
+        // An HDR-mod config comes first, as it is; then our settings.
+        let hdr_mod = "#safest\nd3d9.enableSwapChainUpgrade = true\n";
+        let text = config
+            .text(Some(("dxvk_d3d9_0_safest.conf", hdr_mod)))
+            .unwrap();
+        let config_at = text.find("d3d9.enableSwapChainUpgrade = true\r\n").unwrap();
+        assert!(text.contains("# HDR-mod config: dxvk_d3d9_0_safest.conf\r\n#safest\r\n"));
+        assert!(config_at < text.find("dxvk.hud = fps").unwrap(), "{text}");
+    }
+
+    #[test]
+    fn hdr_mod_configs_follow_the_api() {
+        let names: Vec<String> = [
+            "dxvk_d3d11_and_d3d10_0_safest.conf",
+            "dxvk_d3d11_and_d3d10_6_fully_experimental.conf",
+            "dxvk_d3d9_1_2nd_safest.conf",
+            "dxvk_d3d9_3_unsafer.conf",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            configs_for(&names, Some(DirectX9)),
+            ["dxvk_d3d9_1_2nd_safest.conf", "dxvk_d3d9_3_unsafer.conf"]
+        );
+        assert_eq!(configs_for(&names, Some(DirectX8)).len(), 2);
+        assert_eq!(
+            configs_for(&names, Some(DirectX11)),
+            [
+                "dxvk_d3d11_and_d3d10_0_safest.conf",
+                "dxvk_d3d11_and_d3d10_6_fully_experimental.conf"
+            ]
+        );
+        assert_eq!(configs_for(&names, Some(DirectX10)).len(), 2);
+        assert!(configs_for(&names, Some(DirectX12)).is_empty());
+        assert!(configs_for(&names, None).is_empty());
+
+        assert_eq!(config_label("dxvk_d3d9_3_unsafer.conf"), "3 – unsafer");
+        assert_eq!(
+            config_label("dxvk_d3d11_and_d3d10_1_2nd_safest.conf"),
+            "1 – 2nd safest"
+        );
+        assert_eq!(
+            config_label("dxvk_d3d11_and_d3d10_6_fully_experimental.conf"),
+            "6 – fully experimental"
+        );
+
+        assert!(check_config("dxvk_d3d9_3_unsafer.conf", Some(DirectX9)).is_ok());
+        let wrong = check_config("dxvk_d3d9_3_unsafer.conf", Some(DirectX11)).unwrap_err();
+        assert!(wrong.to_string().contains("not for DirectX 11"), "{wrong}");
+    }
+
+    #[test]
+    fn dxvk_conf_uses_the_config_of_hdr_mod_builds_only() {
+        let dir = temp_dir("dxvk-conf");
+        let (hdr_mod, upstream) = (dir.join("hdr-mod"), dir.join("upstream"));
+        fs::create_dir_all(hdr_mod.join(CONFIGS)).unwrap();
+        fs::create_dir_all(upstream.join("x64")).unwrap();
+        fs::write(
+            hdr_mod.join(CONFIGS).join("dxvk_d3d9_0_safest.conf"),
+            "d3d9.enableSwapChainUpgrade = true\n",
+        )
+        .unwrap();
+        let config = DxvkConfig {
+            hdr_mod_config: Some("dxvk_d3d9_0_safest.conf".into()),
+            ..DxvkConfig::default()
+        };
+        let text = config_text(&config, &hdr_mod, Some(DirectX9))
+            .unwrap()
+            .unwrap();
+        assert!(text.contains("d3d9.enableSwapChainUpgrade = true"));
+        // An upstream build has no configs: nothing else to write, so no file.
+        assert_eq!(
+            config_text(&config, &upstream, Some(DirectX9)).unwrap(),
+            None
+        );
+        // A config the build lacks, or one for another API, stops it.
+        let missing = DxvkConfig {
+            hdr_mod_config: Some("dxvk_d3d9_9_gone.conf".into()),
+            ..DxvkConfig::default()
+        };
+        assert!(config_text(&missing, &hdr_mod, Some(DirectX9)).is_err());
+        assert!(config_text(&config, &hdr_mod, Some(DirectX11)).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -736,6 +983,44 @@ mod tests {
         seven_zip(&dir, &["a", "-tgzip", "dxvk-3.1.1.tar.gz", "dxvk.tar"]);
         seven_zip::extract(&dir.join("dxvk-3.1.1.tar.gz"), &dir.join("unpacked")).unwrap();
         assert!(find_build_folder(&dir.join("unpacked"), "x64").is_some());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn keeps_the_configs_of_an_hdr_mod_archive() {
+        let dir = temp_dir("dxvk-hdr-mod");
+        let release = dir.join("release");
+        fs::create_dir_all(release.join(r"normal\x64")).unwrap();
+        fs::write(release.join(r"normal\x64\d3d11.dll"), b"").unwrap();
+        fs::write(release.join(r"normal\x64\dxvk.conf"), b"not a config").unwrap();
+        for name in [
+            "dxvk_d3d9_0_safest.conf",
+            "dxvk_d3d11_and_d3d10_0_safest.conf",
+        ] {
+            fs::write(release.join(name), b"#safest").unwrap();
+        }
+        seven_zip(&release, &["a", "-t7z", r"..\hdr-mod.7z", "*"]);
+        seven_zip::extract(&dir.join("hdr-mod.7z"), &dir.join("unpacked")).unwrap();
+
+        assert_eq!(
+            find_build_folder(&dir.join("unpacked"), "x64"),
+            Some(dir.join(r"unpacked\normal\x64"))
+        );
+        keep_configs(&dir.join("unpacked"), &dir.join(CONFIGS)).unwrap();
+        let mut kept: Vec<String> = fs::read_dir(dir.join(CONFIGS))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        kept.sort();
+        // Not the dxvk.conf inside the build folder.
+        assert_eq!(
+            kept,
+            [
+                "dxvk_d3d11_and_d3d10_0_safest.conf",
+                "dxvk_d3d9_0_safest.conf"
+            ]
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }
