@@ -190,19 +190,21 @@ impl GameSettings {
 /// The shipped configuration: `games.json` in the running program's folder, or in its parent
 /// (where examples and tests find it). No file means no defaults.
 pub fn load_defaults() -> Result<GameDefaults> {
-    match defaults_file() {
+    match shipped_file(Path::new(DEFAULTS_FILE)) {
         Some(file) => json_file::load(&file),
         None => Ok(GameDefaults::default()),
     }
 }
 
-fn defaults_file() -> Option<PathBuf> {
+/// A file shipped next to the app (`games.json`, `7-Zip\7z.exe`): in the running program's
+/// folder, or in its parent (where examples and tests find it).
+pub(crate) fn shipped_file(name: &Path) -> Option<PathBuf> {
     let program = std::env::current_exe().ok()?;
     program
         .ancestors()
         .skip(1)
         .take(2)
-        .map(|dir| dir.join(DEFAULTS_FILE))
+        .map(|dir| dir.join(name))
         .find(|file| file.is_file())
 }
 

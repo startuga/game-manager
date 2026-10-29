@@ -25,13 +25,26 @@ in `%LOCALAPPDATA%\Game Manager\cache`), otherwise read from the game's files, w
 the game does not use. Hover over them to see where they come from. When several are shown, choose
 the one the game runs on in Game settings.
 
+The **Mods** expander installs mods into the game's folder. The first is
+[DXVK](https://github.com/doitsujin/dxvk), which runs Direct3D 8–11 games on Vulkan: **Install DXVK**
+downloads the latest build and copies the DLLs for the game's bitness and graphics API next to its
+program (choose them in Game settings when they are unknown or several APIs were found). The
+version link opens the page that build came from, **Info** explains DXVK, ⚙ chooses **Stable**
+(GitHub releases) or **Development** (the latest master build, via nightly.link) and the HDR,
+frame-rate limit and HUD settings written to `dxvk.conf`, and ✕ uninstalls it. Files of the game
+that DXVK replaces are kept as `<name>.gm-backup` and put back on uninstall. When a game is in a
+protected folder (such as `C:\Program Files`), Windows asks for administrator rights. What is
+installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are cached in
+`%LOCALAPPDATA%\Game Manager\mods`.
+
 **PCGamingWiki** opens the game's [PCGamingWiki](https://www.pcgamingwiki.com) page (fixes,
 settings, save locations) in your browser: by store id for Steam and GOG games, otherwise a wiki
 search for the game's name (rename the game in Game settings if the search misses it).
 
 When a store's Play action starts a launcher, the game's own program comes from the shipped
 `config/games.json` (known games, e.g. Cyberpunk 2077's `bin\x64\Cyberpunk2077.exe`) unless you set
-one. The build copies `games.json` next to `app.exe`; keep it there when you move the app.
+one. The build copies `games.json` and the `7-Zip` folder next to `app.exe`; keep them there when
+you move the app.
 
 To start fast, the app caches the last scanned library and the extracted game icons in
 `%LOCALAPPDATA%\Game Manager\cache`. Deleting that folder is always safe: it is rebuilt on the next
@@ -73,4 +86,6 @@ cargo run -p app
 - `app/` – the WinUI 3 window (top bar, library sidebar, game panel).
 - `core/` (crate `gm-core`) – store scanners, icon extraction and launching; no UI code.
 - `config/games.json` – per-game knowledge used by the scanners (no game-specific data in code).
+- `tools/7-Zip` – the 7-Zip command line (`7z.exe`, `7z.dll`) that unpacks downloaded mods.
+  7-Zip is © Igor Pavlov, licensed under the GNU LGPL; see `tools/7-Zip/License.txt`.
 - `CLAUDE.md` – conventions and notes used when developing with Claude Code.

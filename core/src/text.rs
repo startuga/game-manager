@@ -51,6 +51,30 @@ pub(crate) fn percent_encode(text: &str) -> String {
         .collect()
 }
 
+/// The text `percent_encode` encoded; `None` for a broken `%XX` or bytes that are not UTF-8.
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        if byte == b'%' {
+            let hex = std::str::from_utf8(after.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = after.get(2..)?;
+        } else {
+            bytes.push(byte);
+            rest = after;
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// FNV-1a, 64-bit: a small hash that stays the same across Rust versions and computers.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 /// Trimmed, non-empty text of the first child element called `name` (namespaces ignored).
 pub(crate) fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Option<&'a str> {
     node.children()
@@ -58,4 +82,21 @@ pub(crate) fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Optio
         .text()
         .map(str::trim)
         .filter(|t| !t.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_encoding_round_trips() {
+        let text =
+            r#"[{"Copy":{"from":"C:\\Game Manager\\d3d9.dll","to":"C:\\Jogos\\Ação\\d3d9.dll"}}]"#;
+        let encoded = percent_encode(text);
+        assert!(!encoded.contains([' ', '"', '\\']));
+        assert_eq!(percent_decode(&encoded).as_deref(), Some(text));
+        assert_eq!(percent_decode("a%2"), None);
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("%FF"), None);
+    }
 }

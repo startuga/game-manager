@@ -44,6 +44,31 @@ pub enum Error {
     /// A web answer was far larger than expected.
     #[error("{url}: the answer is too large")]
     ResponseTooLarge { url: String },
+    /// An address that is not `https://host/…`.
+    #[error("{0} is not an https address")]
+    InvalidUrl(String),
+    /// A program that ships next to Game Manager is missing.
+    #[error("{} is missing: it ships in Game Manager's folder", .0.display())]
+    ToolMissing(PathBuf),
+    /// 7-Zip could not unpack an archive; `code` is its exit code.
+    #[error("7-Zip could not unpack {} (exit code {code})", .archive.display())]
+    Extract { archive: PathBuf, code: i32 },
+    /// The user said No when Windows asked for administrator rights.
+    #[error("Administrator rights were refused, so the game's folder was not changed.")]
+    ElevationRefused,
+    /// The copy of Game Manager running as administrator failed; `code` is its exit code, the
+    /// HRESULT of what failed.
+    #[error("Changing the game's folder as administrator failed: {}", hresult_message(.code))]
+    Elevated { code: u32 },
+    /// A release list or build list answered with nothing to download.
+    #[error("{url} lists no build to download")]
+    NoRelease { url: String },
+    /// A downloaded mod has no build for Windows in it.
+    #[error("{} holds no 32 or 64-bit Windows build", .0.display())]
+    NoModBuild(PathBuf),
+    /// The mod cannot be installed in this game; the text says why.
+    #[error("{0}")]
+    NotInstallable(String),
     /// The folder for the app's files is unknown: this environment variable is not set.
     #[error("{0} is not set")]
     MissingEnvVar(&'static str),
@@ -92,6 +117,10 @@ impl Error {
         let context = context.to_string();
         move |source| Self::Windows { context, source }
     }
+}
+
+fn hresult_message(code: &u32) -> String {
+    windows::core::HRESULT(*code as i32).message()
 }
 
 fn http_status(status: &u32) -> String {

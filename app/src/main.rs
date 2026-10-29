@@ -2,12 +2,15 @@
 
 mod edit;
 mod library;
+mod mods_view;
 
 use edit::{EditChoice, EditDraft, EditField};
 use gm_core::custom::NewGame;
 use gm_core::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
+use gm_core::mods::{ModsFile, dxvk};
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
+use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -107,6 +110,22 @@ enum Message {
     RemoveClosed(ContentDialogResult),
     /// The id of the custom game that was removed.
     CustomGameRemoved(Result<String, String>),
+    /// `mods.json`, read at start.
+    ModsLoaded(Result<ModsFile, String>),
+    /// The Mods expander was opened or closed.
+    ModsExpanded(bool),
+    /// Installs DXVK in the selected game, or reinstalls it.
+    InstallDxvk,
+    UninstallDxvk,
+    /// A mod was installed, uninstalled or set up: `mods.json` as saved, or what failed.
+    ModJobDone(Result<ModsFile, String>),
+    /// Opens the web page a mod was downloaded from.
+    OpenModPage(String),
+    ShowDxvkInfo,
+    ShowDxvkSettings,
+    DxvkSettingsEdited(DxvkSettingsEdit),
+    /// The Info or settings dialog closed: `Primary` is the settings' Save.
+    ModDialogClosed(ContentDialogResult),
 }
 
 /// A game's right-click menu: which game, and where the pointer was (window DIPs).
@@ -144,6 +163,13 @@ struct GameManager {
     edit: Option<EditDraft>,
     /// Game settings are being saved or reset.
     saving: bool,
+    /// `mods.json`: each game's mods, their settings and what is installed.
+    mods: ModsFile,
+    /// The Mods expander is open (kept while switching games).
+    mods_open: bool,
+    /// The game whose mod is being installed, uninstalled or set up; one job at a time.
+    mod_job: Option<String>,
+    mod_dialog: Option<ModDialog>,
 }
 
 impl GameManager {
@@ -694,9 +720,14 @@ impl GameManager {
                 StackPanel::new()
                     .spacing(28.0)
                     .margin(Thickness::uniform(32.0))
-                    .children((header, actions, self.game_settings(game, context))),
+                    .children((
+                        header,
+                        actions,
+                        self.game_settings(game, context),
+                        self.mods_expander(game, context),
+                    )),
             )
-            .into()
+            .content_dialog(self.mod_dialog_view(context))
     }
 
     /// The Game settings expander: name, launch program, arguments and game program.
@@ -974,10 +1005,17 @@ impl Component for GameManager {
             settings_open: false,
             edit: None,
             saving: false,
+            mods: ModsFile::default(),
+            mods_open: false,
+            mod_job: None,
+            mod_dialog: None,
         };
         // The last scan's games show at once while the fresh scan runs.
         context.spawn_background(|_cancel| {
             Message::SnapshotLoaded(gm_core::snapshot::load().unwrap_or_default())
+        });
+        context.spawn_background(|_cancel| {
+            Message::ModsLoaded(gm_core::mods::load().map_err(|e| format!("Mods: {e}")))
         });
         this.start_scan(context);
         this
@@ -1078,6 +1116,71 @@ impl GameManager {
                 self.error = gm_core::launch(&page).err().map(|e| e.to_string());
             }
             Message::SettingsExpanded(open) => self.settings_open = open,
+            Message::ModsLoaded(Ok(mods)) => self.mods = mods,
+            Message::ModsLoaded(Err(e)) => self.error = Some(e),
+            Message::ModsExpanded(open) => self.mods_open = open,
+            Message::InstallDxvk => {
+                let Some(game) = self.selected_game() else {
+                    return;
+                };
+                let Some(api) = self.dxvk_api(game) else {
+                    return;
+                };
+                let game = game.clone();
+                self.mod_job = Some(game.id.clone());
+                context.spawn_background(move |_cancel| {
+                    Message::ModJobDone(dxvk::install(&game, api).map_err(|e| e.to_string()))
+                });
+            }
+            Message::UninstallDxvk => {
+                let Some(game) = self.selected_game().cloned() else {
+                    return;
+                };
+                self.mod_job = Some(game.id.clone());
+                context.spawn_background(move |_cancel| {
+                    Message::ModJobDone(dxvk::uninstall(&game).map_err(|e| e.to_string()))
+                });
+            }
+            Message::ModJobDone(done) => {
+                self.mod_job = None;
+                match done {
+                    Ok(mods) => self.mods = mods,
+                    Err(e) => self.error = Some(e),
+                }
+            }
+            Message::OpenModPage(page) => {
+                self.error = gm_core::launch(&Launch::Uri(page))
+                    .err()
+                    .map(|e| e.to_string());
+            }
+            Message::ShowDxvkInfo => self.mod_dialog = Some(ModDialog::Info),
+            Message::ShowDxvkSettings => {
+                let Some(game) = self.selected_game() else {
+                    return;
+                };
+                let state = self.mods.dxvk(&game.id).cloned().unwrap_or_default();
+                self.mod_dialog = Some(ModDialog::Settings(DxvkSettings {
+                    variant: state.variant,
+                    config: state.config,
+                }));
+            }
+            Message::DxvkSettingsEdited(edit) => {
+                if let Some(ModDialog::Settings(settings)) = &mut self.mod_dialog {
+                    settings.edit(edit);
+                }
+            }
+            Message::ModDialogClosed(result) => {
+                if let Some(ModDialog::Settings(settings)) = self.mod_dialog.take()
+                    && result == ContentDialogResult::Primary
+                    && let Some(game) = self.selected_game().cloned()
+                {
+                    self.mod_job = Some(game.id.clone());
+                    context.spawn_background(move |_cancel| {
+                        let saved = dxvk::save_settings(&game, settings.variant, settings.config);
+                        Message::ModJobDone(saved.map_err(|e| e.to_string()))
+                    });
+                }
+            }
             Message::EditField(field, value) => {
                 if let Some(mut draft) = self.selected_draft() {
                     draft.fields.set(field, value);
@@ -1356,6 +1459,13 @@ impl GameManager {
 }
 
 fn main() -> ExitCode {
+    // Started as administrator to change a protected game folder: do that, show no window, and
+    // exit with the result (0, or the HRESULT of what failed).
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some(gm_core::mods::FILE_OPS_ARG) {
+        let code = gm_core::mods::run_encoded(&args.next().unwrap_or_default());
+        std::process::exit(code as i32);
+    }
     match App::run_component::<GameManager>(()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

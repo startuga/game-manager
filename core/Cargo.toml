@@ -16,7 +16,8 @@ thiserror = { workspace = true }
 # shlobj_core, shlwapi, combaseapi, objbase, objidlbase, wtypes, wtypesbase, ocidl, windef),
 # EA resources (libloaderapi, minwindef), version info (winver), shortcuts (shobjidl_core, objidl,
 # coml2api), web requests (winhttp), Xbox packages and their architecture (WinRT
-# Management_Deployment, ApplicationModel, System).
+# Management_Deployment, ApplicationModel, System), mod files as administrator and 7-Zip (synchapi,
+# processthreadsapi, handleapi, winbase, winerror).
 windows = { workspace = true, features = [
     "shellapi", "winuser",
     "wincodec", "shlobj_core", "shlwapi", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
@@ -25,5 +26,6 @@ windows = { workspace = true, features = [
     "shobjidl_core", "objidl", "coml2api",
     "winhttp",
     "Management_Deployment", "ApplicationModel", "System",
+    "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror",
 ] }
 windows-registry = { workspace = true }

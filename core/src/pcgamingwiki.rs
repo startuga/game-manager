@@ -16,7 +16,6 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 const SITE: &str = "https://www.pcgamingwiki.com";
-const HOST: &str = "www.pcgamingwiki.com";
 /// Time between two requests to the wiki's API.
 const REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 /// When the last request was made, shared by every thread.
@@ -76,11 +75,9 @@ fn request(path: &str) -> Result<Value> {
         }
         *last = Some(Instant::now());
     }
-    let body = http::get(HOST, path)?;
-    serde_json::from_slice(&body).map_err(|source| Error::WebJson {
-        url: format!("{SITE}{path}"),
-        source,
-    })
+    let url = format!("{SITE}{path}");
+    let body = http::get(&url)?;
+    serde_json::from_slice(&body).map_err(|source| Error::WebJson { url, source })
 }
 
 /// `{"idlookup":[{"title":{"Page":"…"}}]}`; an empty list when the wiki does not know the id.

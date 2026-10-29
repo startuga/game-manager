@@ -6,6 +6,7 @@
 //! when they change.
 
 use crate::com::ComGuard;
+use crate::text::fnv1a;
 use crate::{Game, IconRef, json_file};
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -208,13 +209,6 @@ impl IconCache {
             }
         }
     }
-}
-
-/// FNV-1a, 64-bit: a small hash that stays the same across Rust versions and computers.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }
 
 fn is_image_file(path: &std::path::Path) -> bool {
