@@ -1,3 +1,9 @@
+//! Game Manager's window: a WinUI 3 app built with windows-reactor (Elm style: `Message`s go
+//! through `update`, `render` draws the state). Top bar, library sidebar and the selected game's
+//! panel with its Game settings and Mods expanders; `mods_view.rs` holds the Mods expander,
+//! `edit.rs` and `library.rs` the UI-free logic. Started with `--file-ops`, it is the copy that
+//! changes a protected game folder as administrator, and shows no window.
+
 #![windows_subsystem = "windows"]
 
 mod edit;

@@ -11,10 +11,16 @@
 //!   chain for HDR: `dxvk_v<dxvk>-HDR-mod-v<mod>.7z` (not the `-gplasync` builds some releases
 //!   add).
 //!
-//! All hold an `x32` and an `x64` folder of DLLs, kept in
-//! `%LOCALAPPDATA%\Game Manager\mods\dxvk\<version>`. Which DLLs a game needs depends on its API
-//! (DXVK's README): Direct3D 8 `d3d8` + `d3d9`, 9 `d3d9`, 10 `d3d10core` + `d3d11` + `dxgi`, 11
-//! `d3d11` + `dxgi`. DXVK does not do Direct3D 12 (VKD3D-Proton does), OpenGL or Vulkan.
+//! GitHub's API allows 60 anonymous requests an hour, plenty for a click each.
+//!
+//! All hold an `x32` and an `x64` folder of DLLs (HDR-mod's are in `normal\`, with its own HDR
+//! configs, `dxvk_d3d9_<n>_<name>.conf` and `dxvk_d3d11_and_d3d10_<n>_<name>.conf`, at the
+//! top), kept in `%LOCALAPPDATA%\Game Manager\mods\dxvk\<version>` with `configs` and a
+//! `.format` file (`CACHE_FORMAT`; bump it when the layout changes).
+//!
+//! Which DLLs a game needs depends on its API (DXVK's README): Direct3D 8 `d3d8` + `d3d9`, 9
+//! `d3d9`, 10 `d3d10core` + `d3d11` + `dxgi`, 11 `d3d11` + `dxgi`. DXVK does not do Direct3D 12
+//! (VKD3D-Proton does), OpenGL or Vulkan.
 //!
 //! Settings go into `dxvk.conf` next to the program, which DXVK reads from the game's working
 //! directory: the program's folder for nearly every launch.

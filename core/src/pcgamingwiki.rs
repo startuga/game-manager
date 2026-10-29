@@ -1,11 +1,15 @@
 //! PCGamingWiki (fixes, settings, save locations, technical data):
 //!
 //! - **Links** to a game's page, opened in the browser, need no request. Steam and GOG games use
-//!   the wiki's id redirects, which go straight to the article. Other games use the wiki search,
-//!   which opens the article when the name is its title and the results otherwise.
+//!   the wiki's id redirects, which go straight to the article without a Cloudflare check (an id
+//!   the wiki does not know shows "No such AppID"). Other games use the wiki search, which opens
+//!   the article when the name is its title and the results otherwise, behind Cloudflare's
+//!   "confirm you are human" check in a fresh browser.
 //! - **The API table** (`{{API}}`: Direct3D, OpenGL and Vulkan versions) is read through the
-//!   wiki's API without an account. Requests carry a descriptive User-Agent and are spaced one
-//!   second apart, as the wiki asks (at most 60 a minute).
+//!   wiki's API without an account: `idlookup`, `opensearch` and `parse&prop=wikitext`. Requests
+//!   carry a descriptive User-Agent and are spaced one second apart, as the wiki asks (at most 60
+//!   a minute; HTTP 429 blocks for a minute). The wiki's structured data (`cargoquery`) needs a
+//!   bot-password login since August 2026, hence the wikitext.
 
 use crate::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
 use crate::text::percent_encode;
