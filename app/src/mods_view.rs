@@ -137,7 +137,8 @@ impl GameManager {
         let row = Grid::new()
             .columns([
                 GridLength::Pixel(70.0),
-                GridLength::Pixel(150.0),
+                // HDR-mod versions are long (3.1-HDR-mod-v0.3.4).
+                GridLength::Auto.min(150.0),
                 GridLength::Auto,
                 GridLength::Star(1.0),
                 GridLength::Auto,

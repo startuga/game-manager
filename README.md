@@ -30,8 +30,9 @@ The **Mods** expander installs mods into the game's folder. The first is
 downloads the latest build and copies the DLLs for the game's bitness and graphics API next to its
 program (choose them in Game settings when they are unknown or several APIs were found). The
 version link opens the page that build came from, **Info** explains DXVK, ⚙ chooses **Stable**
-(GitHub releases) or **Development** (the latest master build, via nightly.link) and the HDR,
-frame-rate limit and HUD settings written to `dxvk.conf`, and ✕ uninstalls it. Files of the game
+(GitHub releases), **Development** (the latest master build, via nightly.link) or **HDR-mod**
+([EndlesslyFlowering's fork](https://github.com/EndlesslyFlowering/dxvk) for HDR, GitHub releases)
+and the HDR, frame-rate limit and HUD settings written to `dxvk.conf`, and ✕ uninstalls it. Files of the game
 that DXVK replaces are kept as `<name>.gm-backup` and put back on uninstall. When a game is in a
 protected folder (such as `C:\Program Files`), Windows asks for administrator rights. What is
 installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are cached in

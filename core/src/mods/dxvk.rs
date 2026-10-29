@@ -1,13 +1,17 @@
 //! DXVK (https://github.com/doitsujin/dxvk): Direct3D 8, 9, 10 and 11 on Vulkan, installed as
-//! the game's Direct3D DLLs next to its program. Two variants:
+//! the game's Direct3D DLLs next to its program. Three variants:
 //!
 //! - **Stable**: the latest GitHub release, `dxvk-<version>.tar.gz`.
 //! - **Development**: the latest successful build of master by the `artifacts.yml` workflow.
 //!   GitHub gives workflow artifacts only to signed-in users, so it is downloaded through
 //!   nightly.link (`/actions/runs/<run>/<artifact>.zip`); the artifact is named after the commit,
 //!   so GitHub's API is asked for the run and its artifact first.
+//! - **HDR-mod**: the latest release of EndlesslyFlowering's fork
+//!   (https://github.com/EndlesslyFlowering/dxvk), which can upgrade render targets and the swap
+//!   chain for HDR: `dxvk_v<dxvk>-HDR-mod-v<mod>.7z` (not the `-gplasync` builds some releases
+//!   add).
 //!
-//! Both hold an `x32` and an `x64` folder of DLLs, kept in
+//! All hold an `x32` and an `x64` folder of DLLs, kept in
 //! `%LOCALAPPDATA%\Game Manager\mods\dxvk\<version>`. Which DLLs a game needs depends on its API
 //! (DXVK's README): Direct3D 8 `d3d8` + `d3d9`, 9 `d3d9`, 10 `d3d10core` + `d3d11` + `dxgi`, 11
 //! `d3d11` + `dxgi`. DXVK does not do Direct3D 12 (VKD3D-Proton does), OpenGL or Vulkan.
@@ -25,6 +29,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const API_URL: &str = "https://api.github.com/repos/doitsujin/dxvk";
+const HDR_MOD_API_URL: &str = "https://api.github.com/repos/EndlesslyFlowering/dxvk";
 const CONFIG_FILE: &str = "dxvk.conf";
 
 /// What the Info dialog says about DXVK.
@@ -38,6 +43,9 @@ It can:
 It needs a GPU driver with Vulkan 1.3. Borderless fullscreen works better than exclusive \
 fullscreen.
 
+The HDR-mod variant (a fork by EndlesslyFlowering) can also upgrade the game's render targets and \
+output for HDR; its authors discourage using it online.
+
 ⚠ Games with anti-cheat may ban players who use DXVK.
 ⚠ Overlays (Steam, NVIDIA, RTSS) may conflict with it.";
 
@@ -46,15 +54,21 @@ pub enum DxvkVariant {
     #[default]
     Stable,
     Development,
+    HdrMod,
 }
 
 impl DxvkVariant {
-    pub const ALL: [DxvkVariant; 2] = [DxvkVariant::Stable, DxvkVariant::Development];
+    pub const ALL: [DxvkVariant; 3] = [
+        DxvkVariant::Stable,
+        DxvkVariant::Development,
+        DxvkVariant::HdrMod,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             DxvkVariant::Stable => "Stable",
             DxvkVariant::Development => "Development",
+            DxvkVariant::HdrMod => "HDR-mod",
         }
     }
 
@@ -63,6 +77,7 @@ impl DxvkVariant {
         match self {
             DxvkVariant::Stable => "Stable (GitHub releases)",
             DxvkVariant::Development => "Development (latest master build, via nightly.link)",
+            DxvkVariant::HdrMod => "HDR-mod (EndlesslyFlowering's fork for HDR, GitHub releases)",
         }
     }
 }
@@ -151,7 +166,7 @@ pub struct DxvkState {
 /// A DXVK build to download.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Build {
-    /// `3.1.1`, or `master-0cfe089` for a development build.
+    /// `3.1.1`, `master-0cfe089` for a development build, or `3.1-HDR-mod-v0.3.4`.
     pub version: String,
     /// The release page, or the commit it was built from.
     pub page: String,
@@ -164,7 +179,11 @@ pub fn latest(variant: DxvkVariant) -> Result<Build> {
     match variant {
         DxvkVariant::Stable => {
             let url = format!("{API_URL}/releases/latest");
-            stable_build(&get_json(&url)?).ok_or(Error::NoRelease { url })
+            release_build(&get_json(&url)?, is_stable_asset).ok_or(Error::NoRelease { url })
+        }
+        DxvkVariant::HdrMod => {
+            let url = format!("{HDR_MOD_API_URL}/releases/latest");
+            release_build(&get_json(&url)?, is_hdr_mod_asset).ok_or(Error::NoRelease { url })
         }
         DxvkVariant::Development => {
             let url = format!(
@@ -193,13 +212,24 @@ fn get_json(url: &str) -> Result<Value> {
     })
 }
 
-/// `releases/latest`: the release's `dxvk-<version>.tar.gz` (not the Linux `dxvk-native-…`).
-fn stable_build(release: &Value) -> Option<Build> {
+/// The release's Windows build: `dxvk-<version>.tar.gz`, not the Linux `dxvk-native-…`.
+fn is_stable_asset(name: &str, version: &str) -> bool {
+    name == format!("dxvk-{version}.tar.gz")
+}
+
+/// The release's HDR-mod build: `dxvk_v<version>.7z`, not the `-gplasync` one.
+fn is_hdr_mod_asset(name: &str, _version: &str) -> bool {
+    name.starts_with("dxvk_") && name.ends_with(".7z") && !name.contains("gplasync")
+}
+
+/// `releases/latest`: the asset `is_asset(name, version)` picks, the version being the tag
+/// without its `v`.
+fn release_build(release: &Value, is_asset: fn(&str, &str) -> bool) -> Option<Build> {
     let version = release["tag_name"].as_str()?.trim_start_matches('v');
     let asset = release["assets"].as_array()?.iter().find(|asset| {
         asset["name"]
             .as_str()
-            .is_some_and(|name| name == format!("dxvk-{version}.tar.gz"))
+            .is_some_and(|name| is_asset(name, version))
     })?;
     Some(Build {
         version: version.to_owned(),
@@ -595,7 +625,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            stable_build(&release),
+            release_build(&release, is_stable_asset),
             Some(Build {
                 version: "3.1.1".into(),
                 page: "https://github.com/doitsujin/dxvk/releases/tag/v3.1.1".into(),
@@ -605,9 +635,28 @@ mod tests {
             })
         );
         assert_eq!(
-            stable_build(&serde_json::json!({ "message": "Not Found" })),
+            release_build(
+                &serde_json::json!({ "message": "Not Found" }),
+                is_stable_asset
+            ),
             None
         );
+
+        // HDR-mod: the plain build, not the gplasync one.
+        let hdr_mod: Value = serde_json::from_str(
+            r#"{ "tag_name": "v3.0.2-HDR-mod-v0.3.4", "html_url": "https://github.com/EndlesslyFlowering/dxvk/releases/tag/v3.0.2-HDR-mod-v0.3.4",
+                 "assets": [
+                   { "name": "dxvk_v3.0.2-HDR-mod-v0.3.4-gplasync-1.7z", "browser_download_url": "https://x/gplasync" },
+                   { "name": "dxvk_v3.0.2-HDR-mod-v0.3.4.7z", "browser_download_url": "https://github.com/EndlesslyFlowering/dxvk/releases/download/v3.0.2-HDR-mod-v0.3.4/dxvk_v3.0.2-HDR-mod-v0.3.4.7z" } ] }"#,
+        )
+        .unwrap();
+        let build = release_build(&hdr_mod, is_hdr_mod_asset).unwrap();
+        assert_eq!(build.version, "3.0.2-HDR-mod-v0.3.4");
+        assert_eq!(build.file_name, "dxvk_v3.0.2-HDR-mod-v0.3.4.7z");
+        assert!(build.url.ends_with("/dxvk_v3.0.2-HDR-mod-v0.3.4.7z"));
+        // Upstream's rule finds nothing in the fork's release, and the other way round.
+        assert_eq!(release_build(&hdr_mod, is_stable_asset), None);
+        assert_eq!(release_build(&release, is_hdr_mod_asset), None);
 
         let runs: Value = serde_json::from_str(
             r#"{ "total_count": 453, "workflow_runs": [ { "id": 40694781188,
