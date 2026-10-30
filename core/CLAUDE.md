@@ -22,6 +22,8 @@ holds the rules and facts that span them.
 - **Mods**:
   - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`).
   - `mods/dxvk.rs` (Stable, Development, HDR-mod).
+  - `mods/laa.rs` (Large Address Aware for 32-bit programs: status, enable, restore; the patched
+    program is recorded in `mods.json` under `laa`).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--nvidia-ops`).
   - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
@@ -108,3 +110,13 @@ holds the rules and facts that span them.
     - `cargo test -p gm-core live_profile_round_trip -- --ignored` checks this on an NVIDIA PC.
     - `app.exe --nvidia-ops <percent-encoded plan>` can be run directly.
   - Many games' predefined profiles already hold NVIDIA's "Auto".
+- **Large Address Aware**:
+  - **The flag**: bit `0x0020` of the COFF Characteristics (PE offset + 22); only x86 PE32 programs
+    are patched.
+  - **The checksum** (optional header + 64) is the folded 16-bit word sum without the field, plus
+    the file's length (`pe::checksum`). It reproduces the stored checksum of Windows' own programs
+    exactly. It is kept valid when a program has one; 0 stays 0.
+  - **Steam's DRM wrapper** (SteamStub) adds a `.bind` section (Tomb Raider: Legend's `trl.exe`).
+    A changed program may not start, so the app warns but still patches.
+  - **Updates**: a game update replaces the patched program, and the old backup is then stale and
+    removed.

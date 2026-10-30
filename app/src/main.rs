@@ -14,11 +14,12 @@ mod mods_view;
 use edit::{EditChoice, EditDraft, EditField};
 use gm_core::custom::NewGame;
 use gm_core::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
+use gm_core::mods::laa::{self, Laa};
 use gm_core::mods::{ModsFile, dxvk};
 use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
-use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog};
+use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -136,6 +137,13 @@ enum Message {
     HdrModConfigsLoaded(Result<Vec<String>, String>),
     /// A game's NVIDIA driver profile, read for DXVK settings (`None`: no NVIDIA driver).
     NvidiaLoaded(String, Result<Option<ProfileState>, String>),
+    /// A 32-bit game's Large Address Aware status.
+    LaaLoaded(String, Result<Laa, String>),
+    /// Marks the selected game's program Large Address Aware.
+    EnableLaa,
+    /// Puts the selected game's original program back.
+    RestoreLaa,
+    ShowLaaInfo,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -179,8 +187,11 @@ struct GameManager {
     mods: ModsFile,
     /// The Mods expander is open (kept while switching games).
     mods_open: bool,
-    /// The game whose mod is being installed, uninstalled or set up; one job at a time.
-    mod_job: Option<String>,
+    /// The game and mod being installed, uninstalled or set up; one job at a time.
+    mod_job: Option<(String, ModKind)>,
+    /// 32-bit games' Large Address Aware status by id, once read.
+    laa: HashMap<String, Result<Laa, String>>,
+    laa_pending: HashSet<String>,
     mod_dialog: Option<ModDialog>,
     /// HDR-mod's own configs, listed once the settings dialog shows HDR-mod (`Err`: what failed,
     /// tried again when the dialog opens again).
@@ -1026,6 +1037,8 @@ impl Component for GameManager {
             mods: ModsFile::default(),
             mods_open: false,
             mod_job: None,
+            laa: HashMap::new(),
+            laa_pending: HashSet::new(),
             mod_dialog: None,
             hdr_mod_configs: None,
             hdr_mod_configs_pending: false,
@@ -1048,6 +1061,8 @@ impl Component for GameManager {
         self.request_graphics(context);
         // Whatever showed HDR-mod in DXVK settings, its configs are listed.
         self.request_hdr_mod_configs(context);
+        // A 32-bit game's LAA status, whenever it is unknown.
+        self.request_laa(context);
     }
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
@@ -1066,6 +1081,8 @@ impl GameManager {
             Message::Scanned(games, errors) => {
                 self.scanning = false;
                 self.games = games;
+                // A program may have changed (an update, or another one chosen).
+                self.laa.clear();
                 self.error = (!errors.is_empty()).then(|| errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
@@ -1139,7 +1156,11 @@ impl GameManager {
                 self.error = gm_core::launch(&page).err().map(|e| e.to_string());
             }
             Message::SettingsExpanded(open) => self.settings_open = open,
-            Message::ModsLoaded(Ok(mods)) => self.mods = mods,
+            Message::ModsLoaded(Ok(mods)) => {
+                self.mods = mods;
+                // The LAA status depends on what mods.json says was patched.
+                self.laa.clear();
+            }
             Message::ModsLoaded(Err(e)) => self.error = Some(e),
             Message::ModsExpanded(open) => self.mods_open = open,
             Message::InstallDxvk => {
@@ -1150,7 +1171,7 @@ impl GameManager {
                     return;
                 };
                 let game = game.clone();
-                self.mod_job = Some(game.id.clone());
+                self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
                 context.spawn_background(move |_cancel| {
                     Message::ModJobDone(dxvk::install(&game, api).map_err(|e| e.to_string()))
                 });
@@ -1159,13 +1180,14 @@ impl GameManager {
                 let Some(game) = self.selected_game().cloned() else {
                     return;
                 };
-                self.mod_job = Some(game.id.clone());
+                self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
                 context.spawn_background(move |_cancel| {
                     Message::ModJobDone(dxvk::uninstall(&game).map_err(|e| e.to_string()))
                 });
             }
             Message::ModJobDone(done) => {
                 self.mod_job = None;
+                self.laa.clear();
                 match done {
                     Ok(mods) => self.mods = mods,
                     Err(e) => {
@@ -1185,6 +1207,26 @@ impl GameManager {
                     .map(|e| e.to_string());
             }
             Message::ShowDxvkInfo => self.mod_dialog = Some(ModDialog::Info),
+            Message::ShowLaaInfo => self.mod_dialog = Some(ModDialog::LaaInfo),
+            Message::LaaLoaded(id, status) => {
+                self.laa_pending.remove(&id);
+                self.laa.insert(id, status);
+            }
+            Message::EnableLaa | Message::RestoreLaa => {
+                let Some(game) = self.selected_game().cloned() else {
+                    return;
+                };
+                let enable = matches!(message, Message::EnableLaa);
+                self.mod_job = Some((game.id.clone(), ModKind::Laa));
+                context.spawn_background(move |_cancel| {
+                    let done = if enable {
+                        laa::enable(&game)
+                    } else {
+                        laa::restore(&game)
+                    };
+                    Message::ModJobDone(done.map_err(|e| e.to_string()))
+                });
+            }
             Message::ShowDxvkSettings => {
                 let Some(game) = self.selected_game() else {
                     return;
@@ -1230,7 +1272,7 @@ impl GameManager {
                     && let Some(game) = self.selected_game().cloned()
                 {
                     let api = self.dxvk_api(&game);
-                    self.mod_job = Some(game.id.clone());
+                    self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
                     context.spawn_background(move |_cancel| {
                         let saved = dxvk::save_settings(
                             &game,

@@ -1,10 +1,11 @@
 //! Reads a program's PE (Portable Executable) headers, the format of Windows `.exe` and `.dll`
-//! files: its processor architecture and the DLLs it imports. Plain file reads of a few kilobytes,
-//! no Windows APIs.
+//! files: its processor architecture, the DLLs it imports, its section names and whether it is
+//! Large Address Aware. Plain file reads of a few kilobytes, no Windows APIs. It can also mark a
+//! 32-bit program Large Address Aware, with a valid checksum.
 
 use crate::Arch;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const MACHINE_I386: u16 = 0x014C;
@@ -25,6 +26,82 @@ const SECTION_HEADER_SIZE: usize = 40;
 const MAX_SECTIONS: usize = 96;
 /// More imported DLLs than any real program has.
 const MAX_DESCRIPTORS: usize = 1024;
+/// `IMAGE_FILE_LARGE_ADDRESS_AWARE` in the COFF header's Characteristics: a 32-bit program may
+/// use 4 GB on 64-bit Windows instead of 2.
+const LARGE_ADDRESS_AWARE: u16 = 0x0020;
+/// Where the checksum is in the optional header (the same for PE32 and PE32+).
+const CHECKSUM_AT: usize = 64;
+
+/// Whether the program at `path` is Large Address Aware, or `None` if it is not a readable PE
+/// file.
+pub(crate) fn large_address_aware(path: &Path) -> Option<bool> {
+    let headers = Headers::read(&mut File::open(path).ok()?)?;
+    Some(headers.characteristics & LARGE_ADDRESS_AWARE != 0)
+}
+
+/// The names of the program's sections (`.text`, `.rsrc`, Steam's DRM wrapper adds `.bind`).
+pub(crate) fn section_names(path: &Path) -> Option<Vec<String>> {
+    let mut file = File::open(path).ok()?;
+    let image = Headers::read(&mut file)?.image(&mut file)?;
+    let names = image.sections.as_chunks::<SECTION_HEADER_SIZE>().0.iter();
+    Some(
+        names
+            .map(|section| {
+                let name = &section[..8];
+                let len = name
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(name.len());
+                String::from_utf8_lossy(&name[..len]).into_owned()
+            })
+            .collect(),
+    )
+}
+
+/// Marks the 32-bit x86 program in `bytes` Large Address Aware and, when it has a checksum,
+/// computes it again (a checksum of 0 stays 0: Windows checks it only for drivers and system
+/// files). `None` when `bytes` are not an x86 PE32 program.
+pub(crate) fn set_large_address_aware(bytes: &mut [u8]) -> Option<()> {
+    let headers = Headers::read(&mut Cursor::new(&*bytes))?;
+    let optional = usize::try_from(headers.optional_offset).ok()?;
+    if headers.machine != MACHINE_I386 || u16_at(bytes, optional)? != PE32_MAGIC {
+        return None;
+    }
+    let characteristics = usize::try_from(headers.pe_offset).ok()? + 22;
+    let flags = headers.characteristics | LARGE_ADDRESS_AWARE;
+    bytes
+        .get_mut(characteristics..characteristics + 2)?
+        .copy_from_slice(&flags.to_le_bytes());
+    let checksum_at = optional + CHECKSUM_AT;
+    if u32_at(bytes, checksum_at)? != 0 {
+        let sum = checksum(bytes, checksum_at);
+        bytes
+            .get_mut(checksum_at..checksum_at + 4)?
+            .copy_from_slice(&sum.to_le_bytes());
+    }
+    Some(())
+}
+
+/// The PE checksum, as Windows' `CheckSumMappedFile` computes it: the file's 16-bit words, with
+/// the checksum field at `at` counted as zero, added with each carry folded back in, plus the
+/// file's length.
+pub(crate) fn checksum(bytes: &[u8], at: usize) -> u32 {
+    let field = at..at + 4;
+    let byte = |index: usize| -> u64 {
+        if field.contains(&index) {
+            0
+        } else {
+            bytes.get(index).copied().map_or(0, u64::from)
+        }
+    };
+    let mut sum: u64 = 0;
+    for index in (0..bytes.len()).step_by(2) {
+        sum += byte(index) | (byte(index + 1) << 8);
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    (sum as u32).wrapping_add(bytes.len() as u32)
+}
 
 /// The architecture the program at `path` is built for, or `None` if it is not a readable PE file
 /// for a known processor.
@@ -111,9 +188,12 @@ fn read_name(file: &mut (impl Read + Seek), offset: u64) -> Option<String> {
     (!name.is_empty()).then(|| name.to_ascii_lowercase())
 }
 
-/// The COFF file header: the machine type and where the optional header and sections are.
+/// The COFF file header: the machine type, the characteristics and where the optional header and
+/// sections are.
 struct Headers {
+    pe_offset: u64,
     machine: u16,
+    characteristics: u16,
     optional_offset: u64,
     optional_size: usize,
     section_count: usize,
@@ -132,7 +212,9 @@ impl Headers {
             return None;
         }
         Some(Self {
+            pe_offset,
             machine: u16_at(&headers, 4)?,
+            characteristics: u16_at(&headers, 22)?,
             optional_offset: pe_offset + 24,
             optional_size: usize::from(u16_at(&headers, 20)?),
             section_count: usize::from(u16_at(&headers, 6)?),
@@ -404,6 +486,52 @@ pub(crate) mod tests {
         assert!(notepad.contains(&"user32.dll".to_owned()), "{notepad:?}");
         assert!(notepad.contains(&"advapi32.dll".to_owned()), "{notepad:?}");
         assert!(notepad.iter().all(|dll| *dll == dll.to_lowercase()));
+    }
+
+    #[test]
+    fn marks_x86_programs_large_address_aware() {
+        // A program without a checksum keeps none.
+        let mut file = pe_file(MACHINE_I386, PE32_MAGIC, None);
+        set_large_address_aware(&mut file).unwrap();
+        let headers = Headers::read(&mut Cursor::new(&file)).unwrap();
+        assert_ne!(headers.characteristics & LARGE_ADDRESS_AWARE, 0);
+        let at = headers.optional_offset as usize + CHECKSUM_AT;
+        assert_eq!(u32_at(&file, at), Some(0));
+        // Only 32-bit x86 programs.
+        let mut x64 = pe_file(MACHINE_AMD64, PE32_PLUS_MAGIC, None);
+        assert_eq!(set_large_address_aware(&mut x64), None);
+        assert_eq!(set_large_address_aware(&mut b"MZ".to_vec()), None);
+
+        // Windows' own 32-bit Notepad: its stored checksum is the one computed here, it stays
+        // valid once patched, and only the flag and the checksum change.
+        let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let notepad = windows.join(r"SysWOW64\notepad.exe");
+        if !notepad.is_file() {
+            return;
+        }
+        let original = std::fs::read(&notepad).unwrap();
+        let headers = Headers::read(&mut Cursor::new(&original)).unwrap();
+        let at = headers.optional_offset as usize + CHECKSUM_AT;
+        assert_eq!(Some(checksum(&original, at)), u32_at(&original, at));
+        let mut patched = original.clone();
+        set_large_address_aware(&mut patched).unwrap();
+        let after = Headers::read(&mut Cursor::new(&patched)).unwrap();
+        assert_ne!(after.characteristics & LARGE_ADDRESS_AWARE, 0);
+        assert_eq!(Some(checksum(&patched, at)), u32_at(&patched, at));
+        let flag = headers.pe_offset as usize + 22;
+        let changed = (0..original.len()).filter(|&i| original[i] != patched[i]);
+        assert!(
+            changed
+                .into_iter()
+                .all(|i| (flag..flag + 2).contains(&i) || (at..at + 4).contains(&i))
+        );
+
+        assert!(large_address_aware(&notepad).is_some());
+        assert!(
+            section_names(&notepad)
+                .unwrap()
+                .contains(&".text".to_owned())
+        );
     }
 
     #[test]

@@ -37,7 +37,12 @@ ones) and the HDR, frame-rate limit and HUD settings written to `dxvk.conf`, and
 On NVIDIA GPUs, DXVK settings also set the game's driver profile for HDR: **Vulkan/OpenGL Present
 Method** (Prefer layered on DXGI Swapchain) and its **flags** (Allow promoting DXVK to
 DXGI/DirectFlip, or Treat DXVK as Native), with **Reset to original** to put back what the
-profile had; they stay when DXVK is uninstalled. Files of the game
+profile had; they stay when DXVK is uninstalled.
+
+For 32-bit games, the Mods expander also shows **LAA** (Large Address Aware): whether the game's
+program may use 4 GB of memory instead of 2 GB, and **Enable LAA** to patch it (the original is
+kept as `<program>.gm-backup`, and ✕ puts it back). Programs wrapped by Steam's DRM get a warning,
+as a changed program may not start. Files of the game
 that DXVK replaces are kept as `<name>.gm-backup` and put back on uninstall. When a game is in a
 protected folder (such as `C:\Program Files`), Windows asks for administrator rights. What is
 installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are cached in

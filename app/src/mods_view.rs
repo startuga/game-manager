@@ -4,10 +4,11 @@
 //! while any dialog is open.
 
 use crate::{GameManager, Message, icon_label};
-use gm_core::Game;
 use gm_core::graphics::GraphicsApi;
 use gm_core::mods::dxvk::{self, Blocked, DxvkConfig, DxvkVariant, Hud};
+use gm_core::mods::laa::{LAA_INFO, LaaStatus};
 use gm_core::nvidia::{self, NvidiaChoice, PRESENT_FLAG_VALUES, PRESENT_METHODS, SettingState};
+use gm_core::{Arch, Game};
 use std::path::Path;
 use windows_reactor::*;
 
@@ -18,6 +19,27 @@ const UNINSTALL_GLYPH: &str = "\u{E711}";
 pub(crate) enum ModDialog {
     Info,
     Settings(DxvkSettings),
+    LaaInfo,
+}
+
+/// Which mod a job works on, so only its row shows "Working…".
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModKind {
+    Dxvk,
+    Laa,
+}
+
+/// The columns of every mod row, fixed so the rows line up: name, version or status, Info, the
+/// wide button, settings and uninstall.
+fn mod_columns() -> [GridLength; 6] {
+    [
+        GridLength::Pixel(70.0),
+        GridLength::Pixel(200.0),
+        GridLength::Pixel(72.0),
+        GridLength::Star(1.0),
+        GridLength::Pixel(56.0),
+        GridLength::Pixel(56.0),
+    ]
 }
 
 /// The DXVK settings being edited in their dialog.
@@ -117,6 +139,26 @@ impl GameManager {
         });
     }
 
+    /// Reads the selected 32-bit game's LAA status in the background, once (it is read again after
+    /// a scan, a mod job or `mods.json` loading, which clear it).
+    pub(crate) fn request_laa(&mut self, context: &ComponentContext<Self>) {
+        let Some(game) = self.selected_game() else {
+            return;
+        };
+        if game.arch != Some(Arch::X86)
+            || self.laa.contains_key(&game.id)
+            || self.laa_pending.contains(&game.id)
+        {
+            return;
+        }
+        let (game, mods) = (game.clone(), self.mods.clone());
+        self.laa_pending.insert(game.id.clone());
+        context.spawn_background(move |_cancel| {
+            let status = gm_core::mods::laa::status(&game, &mods).map_err(|e| e.to_string());
+            Message::LaaLoaded(game.id, status)
+        });
+    }
+
     /// Any dialog is open: WinUI shows one at a time.
     fn dialog_open(&self) -> bool {
         self.mod_dialog.is_some() || self.draft.is_some() || self.removing.is_some()
@@ -130,8 +172,153 @@ impl GameManager {
             .horizontal_content_alignment(HorizontalAlignment::Stretch)
             .automation_name("Mods")
             .header("Mods")
-            .content(self.dxvk_row(game, context))
+            .content(
+                StackPanel::new().spacing(16.0).children(
+                    std::iter::once(self.dxvk_row(game, context))
+                        .chain(self.laa_row(game, context))
+                        .collect::<Vec<_>>(),
+                ),
+            )
             .into()
+    }
+
+    /// LAA's row for a 32-bit game, in DXVK's columns (no settings): its status, Info, Enable LAA
+    /// and ✕, then what Enable does or what is done, and a warning for Steam's DRM wrapper.
+    fn laa_row(&self, game: &Game, context: &ViewContext<Self>) -> Option<View> {
+        if game.arch != Some(Arch::X86) {
+            return None;
+        }
+        let working = self
+            .mod_job
+            .as_ref()
+            .is_some_and(|(id, kind)| *id == game.id && *kind == ModKind::Laa);
+        let busy = self.mod_job.is_some()
+            || self.dialog_open()
+            || self.scanning
+            || self.saving
+            || self.picking;
+        let laa = self.laa.get(&game.id);
+        let status = match laa {
+            Some(Ok(laa)) => Some(laa.status),
+            _ => None,
+        };
+        let (label, mut hint) = match laa {
+            None => ("Checking…", "Reading the game's program…".to_owned()),
+            Some(Err(error)) => ("Unknown", error.clone()),
+            Some(Ok(laa)) => {
+                let exe = &laa.exe;
+                match laa.status {
+                    LaaStatus::Off => (
+                        "Off",
+                        format!(
+                            "Patches {exe} so the game can use 4 GB of memory instead of 2 GB; \
+                             the original is kept as {exe}.gm-backup."
+                        ),
+                    ),
+                    LaaStatus::Patched => (
+                        "On (patched)",
+                        format!("{exe} is patched; ✕ puts the original back."),
+                    ),
+                    LaaStatus::OnByDeveloper => (
+                        "On (by its developer)",
+                        format!("{exe} is already Large Address Aware."),
+                    ),
+                    LaaStatus::Updated => (
+                        "Off (game updated)",
+                        "The game's program changed since it was patched (an update): enable \
+                         LAA again."
+                            .to_owned(),
+                    ),
+                }
+            }
+        };
+        if let Some(Ok(laa)) = laa
+            && laa.steam_drm
+            && laa.status != LaaStatus::OnByDeveloper
+        {
+            hint.push_str(&format!(
+                " ⚠ {} has Steam's DRM wrapper: a patched copy may not start; ✕ puts the original \
+                 back.",
+                laa.exe
+            ));
+        }
+        if working {
+            hint = "Working… Windows asks for administrator rights when the game's folder needs \
+                    them."
+                .to_owned();
+        }
+        let can_enable = matches!(status, Some(LaaStatus::Off | LaaStatus::Updated));
+        let can_restore = matches!(status, Some(LaaStatus::Patched | LaaStatus::Updated));
+        let (symbol, button) = if can_enable || status.is_none() {
+            (Symbol::Add, "Enable LAA")
+        } else {
+            (Symbol::Accept, "LAA enabled")
+        };
+        let content = if working {
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(8.0)
+                .children((
+                    ProgressRing::new().is_active(true).width(16.0).height(16.0),
+                    TextBlock::new().text("Working…"),
+                ))
+                .into()
+        } else {
+            icon_label(symbol, button)
+        };
+        let gap = Thickness::new(8.0, 0.0, 0.0, 0.0);
+        let row = Grid::new().columns(mod_columns()).children((
+            TextBlock::new()
+                .text("LAA")
+                .font_weight(FontWeight::SEMI_BOLD)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0)
+                .tooltip("Large Address Aware"),
+            TextBlock::new()
+                .text(label)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(1),
+            Button::new()
+                .is_enabled(!self.dialog_open())
+                .on_click(context.message(Message::ShowLaaInfo))
+                .automation_name("LAA information")
+                .margin(gap)
+                .grid_column(2)
+                .content("Info"),
+            Button::new()
+                .is_enabled(!busy && can_enable)
+                .on_click(context.message(Message::EnableLaa))
+                .automation_name(button)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .margin(gap)
+                .grid_column(3)
+                .content(content),
+            Button::new()
+                .is_enabled(!busy && can_restore)
+                .on_click(context.message(Message::RestoreLaa))
+                .automation_name("Put the original program back")
+                .margin(gap)
+                .grid_column(5)
+                .content(
+                    FontIcon::new()
+                        .glyph(UNINSTALL_GLYPH)
+                        .foreground(ThemeBrush::SystemCritical),
+                )
+                .tooltip("Put the original program back"),
+        ));
+        Some(
+            StackPanel::new()
+                .spacing(8.0)
+                .children((
+                    row,
+                    TextBlock::new()
+                        .text(hint)
+                        .font_size(12.0)
+                        .opacity(0.7)
+                        .text_wrapping(TextWrapping::Wrap),
+                ))
+                .into(),
+        )
     }
 
     /// DXVK's row, and below it what Install does, what is installed, or why it can't be.
@@ -139,7 +326,10 @@ impl GameManager {
         let state = self.mods.dxvk(&game.id);
         let installed = state.and_then(|state| state.installed.as_ref());
         let variant = state.map_or(DxvkVariant::default(), |state| state.variant);
-        let working = self.mod_job.as_deref() == Some(game.id.as_str());
+        let working = self
+            .mod_job
+            .as_ref()
+            .is_some_and(|(id, kind)| *id == game.id && *kind == ModKind::Dxvk);
         let idle = self.mod_job.is_none() && !self.dialog_open();
         let busy = !idle || self.scanning || self.saving || self.picking;
         let api = self.dxvk_api(game);
@@ -181,59 +371,49 @@ impl GameManager {
             icon_label(symbol, label)
         };
         let gap = Thickness::new(8.0, 0.0, 0.0, 0.0);
-        let row = Grid::new()
-            .columns([
-                GridLength::Pixel(70.0),
-                // HDR-mod versions are long (3.1-HDR-mod-v0.3.4).
-                GridLength::Auto.min(150.0),
-                GridLength::Auto,
-                GridLength::Star(1.0),
-                GridLength::Auto,
-                GridLength::Auto,
-            ])
-            .children((
-                TextBlock::new()
-                    .text("DXVK")
-                    .font_weight(FontWeight::SEMI_BOLD)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .grid_column(0),
-                version,
-                Button::new()
-                    .is_enabled(!self.dialog_open())
-                    .on_click(context.message(Message::ShowDxvkInfo))
-                    .automation_name("DXVK information")
-                    .margin(gap)
-                    .grid_column(2)
-                    .content("Info"),
-                Button::new()
-                    .is_enabled(!busy && target.is_ok())
-                    .on_click(context.message(Message::InstallDxvk))
-                    .automation_name(label)
-                    .horizontal_alignment(HorizontalAlignment::Stretch)
-                    .margin(gap)
-                    .grid_column(3)
-                    .content(install_content),
-                Button::new()
-                    .is_enabled(idle)
-                    .on_click(context.message(Message::ShowDxvkSettings))
-                    .automation_name("DXVK settings")
-                    .margin(gap)
-                    .grid_column(4)
-                    .content(SymbolIcon::new().symbol(Symbol::Setting))
-                    .tooltip("DXVK settings"),
-                Button::new()
-                    .is_enabled(!busy && installed.is_some())
-                    .on_click(context.message(Message::UninstallDxvk))
-                    .automation_name("Uninstall DXVK")
-                    .margin(gap)
-                    .grid_column(5)
-                    .content(
-                        FontIcon::new()
-                            .glyph(UNINSTALL_GLYPH)
-                            .foreground(ThemeBrush::SystemCritical),
-                    )
-                    .tooltip("Uninstall DXVK"),
-            ));
+        let row = Grid::new().columns(mod_columns()).children((
+            TextBlock::new()
+                .text("DXVK")
+                .font_weight(FontWeight::SEMI_BOLD)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0),
+            version,
+            Button::new()
+                .is_enabled(!self.dialog_open())
+                .on_click(context.message(Message::ShowDxvkInfo))
+                .automation_name("DXVK information")
+                .margin(gap)
+                .grid_column(2)
+                .content("Info"),
+            Button::new()
+                .is_enabled(!busy && target.is_ok())
+                .on_click(context.message(Message::InstallDxvk))
+                .automation_name(label)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .margin(gap)
+                .grid_column(3)
+                .content(install_content),
+            Button::new()
+                .is_enabled(idle)
+                .on_click(context.message(Message::ShowDxvkSettings))
+                .automation_name("DXVK settings")
+                .margin(gap)
+                .grid_column(4)
+                .content(SymbolIcon::new().symbol(Symbol::Setting))
+                .tooltip("DXVK settings"),
+            Button::new()
+                .is_enabled(!busy && installed.is_some())
+                .on_click(context.message(Message::UninstallDxvk))
+                .automation_name("Uninstall DXVK")
+                .margin(gap)
+                .grid_column(5)
+                .content(
+                    FontIcon::new()
+                        .glyph(UNINSTALL_GLYPH)
+                        .foreground(ThemeBrush::SystemCritical),
+                )
+                .tooltip("Uninstall DXVK"),
+        ));
 
         // The HDR-mod config an HDR-mod install brings.
         let with_config = state
@@ -282,12 +462,46 @@ impl GameManager {
             .into()
     }
 
-    /// DXVK's Info or settings dialog, while one is open.
+    /// DXVK's Info or settings dialog, or LAA's Info, while one is open.
     pub(crate) fn mod_dialog_view(&self, context: &ViewContext<Self>) -> ContentDialog {
         let dialog = ContentDialog::new()
             .is_open(self.mod_dialog.is_some())
             .on_closed(context.callback(Message::ModDialogClosed));
         match &self.mod_dialog {
+            Some(ModDialog::LaaInfo) => {
+                let this_game = self
+                    .selected_game()
+                    .and_then(|game| self.laa.get(&game.id))
+                    .map(|laa| match laa {
+                        Ok(laa) => format!(
+                            "For this game: {} {}.",
+                            laa.exe,
+                            match laa.status {
+                                LaaStatus::Off => "is not Large Address Aware",
+                                LaaStatus::Patched => "is patched by Game Manager",
+                                LaaStatus::OnByDeveloper =>
+                                    "is Large Address Aware by its developer",
+                                LaaStatus::Updated =>
+                                    "was replaced by an update since it was patched",
+                            }
+                        ),
+                        Err(error) => format!("For this game: {error}"),
+                    });
+                dialog
+                    .title("Large Address Aware (LAA)")
+                    .close_button_text("OK")
+                    .content(
+                        StackPanel::new().spacing(12.0).children((
+                            TextBlock::new()
+                                .text(LAA_INFO)
+                                .text_wrapping(TextWrapping::Wrap),
+                            TextBlock::new()
+                                .text(this_game.unwrap_or_default())
+                                .opacity(0.7)
+                                .text_wrapping(TextWrapping::Wrap),
+                        )),
+                    )
+            }
             Some(ModDialog::Settings(settings)) => dialog
                 .title("DXVK settings")
                 .primary_button_text("Save")

@@ -69,3 +69,10 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
       else what the profile holds now).
     - Reset to original sets both back; Save applies them through `dxvk::save_settings`.
     - Uninstalling DXVK leaves them.
+  - **Shared columns**: mod rows share `mod_columns()`, fixed widths, so each row's cells line up
+    with the others'.
+  - **The LAA row**: under DXVK, only for 32-bit games (`game.arch == X86`, the chosen bitness
+    counts), with no settings.
+    - Its status comes from `request_laa` (in `update`, like `request_graphics`; cleared after a
+      scan, a mod job or `ModsLoaded`).
+    - `mod_job` carries a `ModKind`, so only the working row shows "Working…".

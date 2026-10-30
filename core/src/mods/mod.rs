@@ -6,6 +6,7 @@
 //! and puts the game's files back. Reset to detected in Game settings does not touch it.
 
 pub mod dxvk;
+pub mod laa;
 
 use crate::elevate;
 pub use crate::elevate::FILE_OPS_ARG;
@@ -43,6 +44,11 @@ impl ModsFile {
     pub fn dxvk(&self, id: &str) -> Option<&dxvk::DxvkState> {
         self.games.get(id)?.dxvk.as_ref()
     }
+
+    /// The game's program as Game Manager patched it Large Address Aware, if it did.
+    pub fn laa(&self, id: &str) -> Option<&Installed> {
+        self.games.get(id)?.laa.as_ref()
+    }
 }
 
 /// One game's mods.
@@ -50,13 +56,16 @@ impl ModsFile {
 pub struct GameMods {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dxvk: Option<dxvk::DxvkState>,
+    /// The program patched Large Address Aware, and its original kept as a backup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub laa: Option<Installed>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GameMods {
     fn is_empty(&self) -> bool {
-        self.dxvk.is_none() && self.other.is_empty()
+        self.dxvk.is_none() && self.laa.is_none() && self.other.is_empty()
     }
 }
 
