@@ -69,6 +69,12 @@ pub enum Error {
     /// The mod cannot be installed in this game; the text says why.
     #[error("{0}")]
     NotInstallable(String),
+    /// An NVIDIA driver settings call failed; `status` is NVAPI's.
+    #[error(
+        "NVIDIA driver settings: could not {action}: {} (NVAPI {status})",
+        crate::nvidia::status_text(*.status)
+    )]
+    Nvapi { action: &'static str, status: i32 },
     /// The folder for the app's files is unknown: this environment variable is not set.
     #[error("{0} is not set")]
     MissingEnvVar(&'static str),

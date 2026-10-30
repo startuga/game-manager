@@ -23,7 +23,8 @@ holds the rules and facts that span them.
   - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`).
   - `mods/dxvk.rs` (Stable, Development, HDR-mod).
   - `seven_zip.rs` (the shipped 7-Zip).
-  - `elevate.rs` (`runas` + `--file-ops`).
+  - `elevate.rs` (`runas` + `--file-ops` / `--nvidia-ops`).
+  - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
   - `json_file.rs` (where files live, load/save).
@@ -93,3 +94,17 @@ holds the rules and facts that span them.
   some Epic folders grant Users full control. Mod file changes there run in
   `app.exe --file-ops <ops>`, started with `runas`. The ops go on the command line, so the
   elevated copy reads no file another program could change.
+- **NVAPI**: `nvapi64.dll` (System32 only) exports just `nvapi_QueryInterface`; functions are
+  fetched by the ids in NVIDIA's `nvapi_interface.h`.
+  - **Struct packing**: `NVDRS_SETTING_V1` is inside `#pragma pack(4)` in `nvapi.h`. Its value
+    unions are 4 100 bytes, so the struct is 12 320 bytes and its version `0x13020`. Assuming
+    8-byte alignment gave 0x13028 and the driver answered −9 (incompatible struct version).
+  - **Settings**: Present Method `0x20D690F8` and its flags `0x20324987`, from
+    nvidiaProfileInspector's `CustomSettingNames.xml`.
+  - **Reads and writes**: reading needs no rights, and neither does setting Present Method.
+    Writing the flags (`OGL_DX_PRESENT_DEBUG`) answers −137 without administrator rights, so
+    plans fall back to `app.exe --nvidia-ops <plan>` (the UAC prompt).
+    - A refused session is never saved: nothing is left.
+    - `cargo test -p gm-core live_profile_round_trip -- --ignored` checks this on an NVIDIA PC.
+    - `app.exe --nvidia-ops <percent-encoded plan>` can be run directly.
+  - Many games' predefined profiles already hold NVIDIA's "Auto".

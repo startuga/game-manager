@@ -40,6 +40,8 @@ games plus games added by hand, starts them, and installs mods (DXVK).
   - `-- -v` prints launch commands, icons, programs and wiki links.
   - `-- --graphics` prints the wiki's and the files' APIs, about 2 s a game.
   - `-- --icons <dir>` saves every icon as a PNG.
+  - `-- --nvidia` prints each game's NVIDIA driver profile with its Present Method and flags (read
+    only).
   - To verify bitness, compare a `program` with `GetBinaryTypeW` and `dumpbin /headers`. Parse
     scan lines from the right, as names can be wider than their column.
 - **Before finishing a change**: `cargo fmt`, `cargo clippy --all-targets` (no warnings),

@@ -1,8 +1,9 @@
 //! Game Manager's window: a WinUI 3 app built with windows-reactor (Elm style: `Message`s go
 //! through `update`, `render` draws the state). Top bar, library sidebar and the selected game's
 //! panel with its Game settings and Mods expanders; `mods_view.rs` holds the Mods expander,
-//! `edit.rs` and `library.rs` the UI-free logic. Started with `--file-ops`, it is the copy that
-//! changes a protected game folder as administrator, and shows no window.
+//! `edit.rs` and `library.rs` the UI-free logic. Started with `--file-ops` or `--nvidia-ops`, it
+//! is the copy that changes a protected game folder or NVIDIA driver settings as administrator,
+//! and shows no window.
 
 #![windows_subsystem = "windows"]
 
@@ -14,6 +15,7 @@ use edit::{EditChoice, EditDraft, EditField};
 use gm_core::custom::NewGame;
 use gm_core::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
 use gm_core::mods::{ModsFile, dxvk};
+use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
 use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog};
@@ -132,6 +134,8 @@ enum Message {
     DxvkSettingsEdited(DxvkSettingsEdit),
     /// HDR-mod's own configs in its latest build, or what failed.
     HdrModConfigsLoaded(Result<Vec<String>, String>),
+    /// A game's NVIDIA driver profile, read for DXVK settings (`None`: no NVIDIA driver).
+    NvidiaLoaded(String, Result<Option<ProfileState>, String>),
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -182,6 +186,8 @@ struct GameManager {
     /// tried again when the dialog opens again).
     hdr_mod_configs: Option<Result<Vec<String>, String>>,
     hdr_mod_configs_pending: bool,
+    /// The selected game's NVIDIA driver profile, read when DXVK settings open.
+    nvidia_profile: Option<Result<Option<ProfileState>, String>>,
 }
 
 impl GameManager {
@@ -1023,6 +1029,7 @@ impl Component for GameManager {
             mod_dialog: None,
             hdr_mod_configs: None,
             hdr_mod_configs_pending: false,
+            nvidia_profile: None,
         };
         // The last scan's games show at once while the fresh scan runs.
         context.spawn_background(|_cancel| {
@@ -1161,7 +1168,15 @@ impl GameManager {
                 self.mod_job = None;
                 match done {
                     Ok(mods) => self.mods = mods,
-                    Err(e) => self.error = Some(e),
+                    Err(e) => {
+                        self.error = Some(e);
+                        // A job may have saved part of its work before it failed.
+                        context.spawn_background(|_cancel| {
+                            Message::ModsLoaded(
+                                gm_core::mods::load().map_err(|e| format!("Mods: {e}")),
+                            )
+                        });
+                    }
                 }
             }
             Message::OpenModPage(page) => {
@@ -1175,13 +1190,29 @@ impl GameManager {
                     return;
                 };
                 let state = self.mods.dxvk(&game.id).cloned().unwrap_or_default();
+                let (id, program) = (game.id.clone(), game.program.clone());
+                // The driver profile as it is now, for the NVIDIA section.
+                self.nvidia_profile = None;
+                if let Some(exe) = program.as_deref().and_then(Path::file_name) {
+                    let exe = exe.to_string_lossy().into_owned();
+                    context.spawn_background(move |_cancel| {
+                        let read = gm_core::nvidia::read(&exe).map_err(|e| e.to_string());
+                        Message::NvidiaLoaded(id, read)
+                    });
+                }
                 self.mod_dialog = Some(ModDialog::Settings(DxvkSettings {
                     variant: state.variant,
                     config: state.config,
+                    nvidia: state.nvidia,
                 }));
                 // A list that failed (offline) is asked for again.
                 if matches!(self.hdr_mod_configs, Some(Err(_))) {
                     self.hdr_mod_configs = None;
+                }
+            }
+            Message::NvidiaLoaded(id, read) => {
+                if self.selected.as_deref() == Some(id.as_str()) {
+                    self.nvidia_profile = Some(read);
                 }
             }
             Message::DxvkSettingsEdited(edit) => {
@@ -1201,8 +1232,13 @@ impl GameManager {
                     let api = self.dxvk_api(&game);
                     self.mod_job = Some(game.id.clone());
                     context.spawn_background(move |_cancel| {
-                        let saved =
-                            dxvk::save_settings(&game, api, settings.variant, settings.config);
+                        let saved = dxvk::save_settings(
+                            &game,
+                            api,
+                            settings.variant,
+                            settings.config,
+                            settings.nvidia,
+                        );
                         Message::ModJobDone(saved.map_err(|e| e.to_string()))
                     });
                 }
@@ -1485,12 +1521,16 @@ impl GameManager {
 }
 
 fn main() -> ExitCode {
-    // Started as administrator to change a protected game folder: do that, show no window, and
-    // exit with the result (0, or the HRESULT of what failed).
+    // Started as administrator to change a protected game folder or NVIDIA driver settings: do
+    // that, show no window, and exit with the result (0, or a code saying what failed).
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some(gm_core::mods::FILE_OPS_ARG) {
-        let code = gm_core::mods::run_encoded(&args.next().unwrap_or_default());
-        std::process::exit(code as i32);
+    let elevated: Option<fn(&str) -> u32> = match args.next().as_deref() {
+        Some(gm_core::mods::FILE_OPS_ARG) => Some(gm_core::mods::run_encoded),
+        Some(gm_core::nvidia::NVIDIA_OPS_ARG) => Some(gm_core::nvidia::run_encoded),
+        _ => None,
+    };
+    if let Some(run) = elevated {
+        std::process::exit(run(&args.next().unwrap_or_default()) as i32);
     }
     match App::run_component::<GameManager>(()) {
         Ok(()) => ExitCode::SUCCESS,

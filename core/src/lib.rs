@@ -14,6 +14,7 @@ pub mod icon;
 mod json_file;
 mod launcher;
 pub mod mods;
+pub mod nvidia;
 pub mod pcgamingwiki;
 pub mod pe;
 mod seven_zip;

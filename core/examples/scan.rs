@@ -5,6 +5,8 @@
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 //! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
 //! side (no cache; the wiki is asked about once a second), and the API chosen in its settings.
+//! `--nvidia` prints each game's NVIDIA driver profile and its Vulkan/OpenGL Present Method and
+//! flags (read only).
 
 #![allow(
     clippy::expect_used,
@@ -19,6 +21,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let verbose = args.iter().any(|arg| arg == "-v");
     let graphics = args.iter().any(|arg| arg == "--graphics");
+    let nvidia = args.iter().any(|arg| arg == "--nvidia");
     let icon_dir = args
         .iter()
         .position(|arg| arg == "--icons")
@@ -48,6 +51,45 @@ fn main() {
     println!("{} games", report.games.len());
     for error in &report.errors {
         eprintln!("error: {error}");
+    }
+
+    if nvidia {
+        use gm_core::nvidia::{SettingState, flags_label, method_label};
+        let show = |setting: SettingState, label: fn(u32) -> String| match setting {
+            SettingState {
+                user_value: Some(value),
+                ..
+            } => format!("{} (user)", label(value)),
+            SettingState {
+                value: Some(value), ..
+            } => format!("{} (NVIDIA)", label(value)),
+            _ => "global".to_owned(),
+        };
+        for game in &report.games {
+            let Some(exe) = game
+                .program
+                .as_deref()
+                .and_then(|program| program.file_name())
+            else {
+                continue;
+            };
+            let exe = exe.to_string_lossy();
+            match gm_core::nvidia::read(&exe) {
+                Ok(Some(state)) => println!(
+                    "{:<50} {:<28} {:<45} method: {}, flags: {}",
+                    game.name,
+                    exe,
+                    state.profile.as_deref().unwrap_or("-"),
+                    show(state.method, method_label),
+                    show(state.flags, flags_label)
+                ),
+                Ok(None) => {
+                    println!("no NVIDIA driver");
+                    break;
+                }
+                Err(error) => println!("{:<50} {exe}: {error}", game.name),
+            }
+        }
     }
 
     if graphics {

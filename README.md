@@ -33,7 +33,11 @@ version link opens the page that build came from, **Info** explains DXVK, ⚙ ch
 (GitHub releases), **Development** (the latest master build, via nightly.link) or **HDR-mod**
 ([EndlesslyFlowering's fork](https://github.com/EndlesslyFlowering/dxvk) for HDR, GitHub releases;
 pick one of its HDR configs for the game's Direct3D version, from 0 – safest to the experimental
-ones) and the HDR, frame-rate limit and HUD settings written to `dxvk.conf`, and ✕ uninstalls it. Files of the game
+ones) and the HDR, frame-rate limit and HUD settings written to `dxvk.conf`, and ✕ uninstalls it.
+On NVIDIA GPUs, DXVK settings also set the game's driver profile for HDR: **Vulkan/OpenGL Present
+Method** (Prefer layered on DXGI Swapchain) and its **flags** (Allow promoting DXVK to
+DXGI/DirectFlip, or Treat DXVK as Native), with **Reset to original** to put back what the
+profile had; they stay when DXVK is uninstalled. Files of the game
 that DXVK replaces are kept as `<name>.gm-backup` and put back on uninstall. When a game is in a
 protected folder (such as `C:\Program Files`), Windows asks for administrator rights. What is
 installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are cached in

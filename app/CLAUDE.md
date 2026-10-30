@@ -60,4 +60,12 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
   - In the Bitness and Graphics API drop-downs, item 0 is "As detected: …".
 - **Mods**:
   - One job runs at a time (`mod_job`), and `mods.json` is replaced by what each job returns.
+    After a failed job it is read again, since a job may have saved part of its work.
   - DXVK's API is `dxvk_api`: the one chosen in Game settings, else the only one detected.
+  - **DXVK settings' NVIDIA section** (for every variant): opening the dialog reads the game's
+    driver profile in the background (`NvidiaLoaded`, matched to the selected game; hidden when
+    there is no NVIDIA driver).
+    - The Present Method and flags drop-downs start with "Original: …" (the recorded original,
+      else what the profile holds now).
+    - Reset to original sets both back; Save applies them through `dxvk::save_settings`.
+    - Uninstalling DXVK leaves them.

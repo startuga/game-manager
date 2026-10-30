@@ -27,6 +27,7 @@
 
 use super::{Installed, ModsFile, apply, plan, update};
 use crate::graphics::GraphicsApi;
+use crate::nvidia::{self, NvidiaChoice, NvidiaOriginal};
 use crate::{Arch, Error, Game, Result, http, json_file, seven_zip};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -212,6 +213,13 @@ pub struct DxvkState {
     pub config: DxvkConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed: Option<Installed>,
+    /// The NVIDIA Present Method settings chosen for the game (for HDR with any variant); they
+    /// stay when DXVK is uninstalled.
+    #[serde(default, skip_serializing_if = "NvidiaChoice::is_original")]
+    pub nvidia: NvidiaChoice,
+    /// What the game's driver profile held before, while Game Manager has changed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvidia_original: Option<NvidiaOriginal>,
 }
 
 /// A DXVK build to download.
@@ -463,9 +471,10 @@ pub fn save_settings(
     api: Option<GraphicsApi>,
     variant: DxvkVariant,
     config: DxvkConfig,
+    nvidia: NvidiaChoice,
 ) -> Result<ModsFile> {
     let state = state(game)?;
-    let mut installed = state.installed;
+    let mut installed = state.installed.clone();
     if let Some(record) = installed.as_mut().filter(|_| config != state.config) {
         // Only dxvk.conf changes: plan it alone.
         let is_config = |name: &String| name.eq_ignore_ascii_case(CONFIG_FILE);
@@ -491,14 +500,47 @@ pub fn save_settings(
         record.files = files;
         record.backups = backups;
     }
+    let saved = update(&game.id, |mods| {
+        let dxvk = mods.dxvk.get_or_insert_with(Default::default);
+        dxvk.variant = variant;
+        dxvk.config = config;
+        dxvk.installed = installed;
+        drop_default(&mut mods.dxvk);
+    })?;
+    if nvidia == state.nvidia {
+        return Ok(saved);
+    }
+    // Saved apart, as soon as the driver has them, so the originals are never lost.
+    let original = apply_nvidia(game, nvidia, state.nvidia_original.as_ref())?;
     update(&game.id, |mods| {
-        mods.dxvk = Some(DxvkState {
-            variant,
-            config,
-            installed,
-        });
+        let dxvk = mods.dxvk.get_or_insert_with(Default::default);
+        dxvk.nvidia = nvidia;
+        dxvk.nvidia_original = original;
         drop_default(&mut mods.dxvk);
     })
+}
+
+/// Gives the game's driver profile the `wanted` Present Method settings; the originals to keep
+/// afterwards come back.
+fn apply_nvidia(
+    game: &Game,
+    wanted: NvidiaChoice,
+    original: Option<&NvidiaOriginal>,
+) -> Result<Option<NvidiaOriginal>> {
+    let exe = game
+        .program
+        .as_deref()
+        .and_then(Path::file_name)
+        .ok_or_else(|| Error::NotInstallable(Blocked::NoProgram.to_string()))?
+        .to_string_lossy();
+    let now = nvidia::read(&exe)?.ok_or(Error::Nvapi {
+        action: "find the NVIDIA driver",
+        status: nvidia::NVIDIA_DEVICE_NOT_FOUND,
+    })?;
+    let new_profile = format!("{} (Game Manager)", game.name);
+    let (plan, original) = nvidia::plan(&exe, &new_profile, &now, wanted, original);
+    nvidia::run(&plan)?;
+    Ok(original)
 }
 
 /// Nothing to keep: no install and default settings.
@@ -885,6 +927,32 @@ mod tests {
         let config_at = text.find("d3d9.enableSwapChainUpgrade = true\r\n").unwrap();
         assert!(text.contains("# HDR-mod config: dxvk_d3d9_0_safest.conf\r\n#safest\r\n"));
         assert!(config_at < text.find("dxvk.hud = fps").unwrap(), "{text}");
+    }
+
+    #[test]
+    fn nvidia_choices_are_saved_with_the_game() {
+        let state = DxvkState {
+            nvidia: NvidiaChoice {
+                present_method: Some(1),
+                present_flags: Some(0x0008_0004),
+            },
+            nvidia_original: Some(NvidiaOriginal {
+                profile: "Sifu".into(),
+                created_profile: false,
+                method: None,
+                flags: Some(8),
+            }),
+            ..DxvkState::default()
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["nvidia"]["presentMethod"], 1);
+        assert_eq!(json["nvidia"]["presentFlags"], 0x0008_0004);
+        assert_eq!(json["nvidiaOriginal"]["profile"], "Sifu");
+        assert_eq!(json["nvidiaOriginal"]["flags"], 8);
+        assert_eq!(serde_json::from_value::<DxvkState>(json).unwrap(), state);
+        // Untouched settings write nothing.
+        let json = serde_json::to_value(DxvkState::default()).unwrap();
+        assert!(json.get("nvidia").is_none() && json.get("nvidiaOriginal").is_none());
     }
 
     #[test]

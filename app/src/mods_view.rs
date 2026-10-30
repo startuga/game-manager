@@ -7,6 +7,7 @@ use crate::{GameManager, Message, icon_label};
 use gm_core::Game;
 use gm_core::graphics::GraphicsApi;
 use gm_core::mods::dxvk::{self, Blocked, DxvkConfig, DxvkVariant, Hud};
+use gm_core::nvidia::{self, NvidiaChoice, PRESENT_FLAG_VALUES, PRESENT_METHODS, SettingState};
 use std::path::Path;
 use windows_reactor::*;
 
@@ -24,6 +25,7 @@ pub(crate) enum ModDialog {
 pub(crate) struct DxvkSettings {
     pub variant: DxvkVariant,
     pub config: DxvkConfig,
+    pub nvidia: NvidiaChoice,
 }
 
 /// A change in the DXVK settings dialog; `None` (a list losing its selection) changes nothing.
@@ -35,6 +37,26 @@ pub(crate) enum DxvkSettingsEdit {
     Hud(Option<usize>),
     /// The HDR-mod config picked; `Some(None)` is "None".
     HdrModConfig(Option<Option<String>>),
+    /// NVIDIA's Present Method and its flags: item 0 is "Original", then their values.
+    PresentMethod(Option<usize>),
+    PresentFlags(Option<usize>),
+    /// Both NVIDIA settings back to "Original".
+    ResetNvidia,
+}
+
+/// The value at a drop-down's `index` among `values`, after "Original" (0, `None`).
+fn choice(values: &[(u32, &str)], index: usize) -> Option<u32> {
+    index
+        .checked_sub(1)
+        .and_then(|index| values.get(index))
+        .map(|(value, _)| *value)
+}
+
+/// The drop-down's index of `value` among `values`, after "Original" (0).
+fn choice_index(values: &[(u32, &str)], value: Option<u32>) -> usize {
+    value
+        .and_then(|value| values.iter().position(|(known, _)| *known == value))
+        .map_or(0, |index| index + 1)
 }
 
 impl DxvkSettings {
@@ -55,6 +77,13 @@ impl DxvkSettings {
                 }
             }
             DxvkSettingsEdit::HdrModConfig(Some(config)) => self.config.hdr_mod_config = config,
+            DxvkSettingsEdit::PresentMethod(Some(index)) => {
+                self.nvidia.present_method = choice(&PRESENT_METHODS, index);
+            }
+            DxvkSettingsEdit::PresentFlags(Some(index)) => {
+                self.nvidia.present_flags = choice(&PRESENT_FLAG_VALUES, index);
+            }
+            DxvkSettingsEdit::ResetNvidia => self.nvidia = NvidiaChoice::default(),
             _ => {}
         }
     }
@@ -346,11 +375,136 @@ impl GameManager {
                 .text_wrapping(TextWrapping::Wrap)
                 .into(),
         ]);
+        rows.extend(self.nvidia_section(settings, context));
         StackPanel::new()
             .spacing(16.0)
             .min_width(420.0)
             .children(rows)
             .into()
+    }
+
+    /// NVIDIA's Present Method and its flags for the game's driver profile, which HDR with DXVK
+    /// needs on NVIDIA GPUs; nothing without an NVIDIA driver.
+    fn nvidia_section(&self, settings: &DxvkSettings, context: &ViewContext<Self>) -> Option<View> {
+        let game = self.selected_game()?;
+        let exe = game
+            .program
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned());
+        let original = self
+            .mods
+            .dxvk(&game.id)
+            .and_then(|state| state.nvidia_original.as_ref());
+        let (profile, note) = match (&exe, &self.nvidia_profile) {
+            (None, _) => (None, Blocked::NoProgram.to_string()),
+            (Some(_), None) => (None, "Reading the NVIDIA driver settings…".to_owned()),
+            (Some(_), Some(Ok(None))) => return None,
+            (Some(_), Some(Err(error))) => (None, error.clone()),
+            (Some(exe), Some(Ok(Some(profile)))) => {
+                let name = profile
+                    .profile
+                    .clone()
+                    .or_else(|| original.map(|original| original.profile.clone()))
+                    .unwrap_or_else(|| format!("a new profile, {} (Game Manager)", game.name));
+                (
+                    Some(profile),
+                    format!(
+                        "For HDR with DXVK on NVIDIA: Prefer layered on DXGI Swapchain, and Allow \
+                         promoting DXVK or Treat DXVK as Native. Saved in the driver profile of \
+                         {exe} ({name})."
+                    ),
+                )
+            }
+        };
+        // "Original" shows what was there before Game Manager changed it, else what is there now.
+        let original_label =
+            |recorded: Option<Option<u32>>, now: SettingState, label: fn(u32) -> String| {
+                let text = match (recorded, now) {
+                    (Some(Some(value)), _) => label(value),
+                    (Some(None), _) => "driver default".to_owned(),
+                    (
+                        None,
+                        SettingState {
+                            user_value: Some(value),
+                            ..
+                        },
+                    ) => label(value),
+                    (
+                        None,
+                        SettingState {
+                            value: Some(value), ..
+                        },
+                    ) => format!("{} (NVIDIA)", label(value)),
+                    (None, _) => "driver default".to_owned(),
+                };
+                format!("Original: {text}")
+            };
+        let now = profile.cloned().unwrap_or_default();
+        let enabled = profile.is_some();
+        let picker =
+            |values: &'static [(u32, &'static str)],
+             first: String,
+             chosen: Option<u32>,
+             name: &str,
+             edit: fn(Option<usize>) -> DxvkSettingsEdit| {
+                let items: Vec<String> = std::iter::once(first)
+                    .chain(values.iter().map(|(_, label)| (*label).to_owned()))
+                    .collect();
+                ComboBox::new()
+                    .items_source(items)
+                    .selected_index(choice_index(values, chosen))
+                    .is_enabled(enabled)
+                    .min_width(320.0)
+                    .automation_name(name)
+                    .on_selection_changed(context.callback(move |index: Option<usize>| {
+                        Message::DxvkSettingsEdited(edit(index))
+                    }))
+            };
+        Some(
+            StackPanel::new()
+                .spacing(6.0)
+                .children((
+                    TextBlock::new()
+                        .text("NVIDIA (HDR with DXVK)")
+                        .font_weight(FontWeight::SEMI_BOLD),
+                    TextBlock::new().text("Vulkan/OpenGL present method"),
+                    picker(
+                        &PRESENT_METHODS,
+                        original_label(
+                            original.map(|o| o.method),
+                            now.method,
+                            nvidia::method_label,
+                        ),
+                        settings.nvidia.present_method,
+                        "Vulkan/OpenGL present method",
+                        DxvkSettingsEdit::PresentMethod,
+                    ),
+                    TextBlock::new().text("Present method flags"),
+                    picker(
+                        &PRESENT_FLAG_VALUES,
+                        original_label(original.map(|o| o.flags), now.flags, nvidia::flags_label),
+                        settings.nvidia.present_flags,
+                        "Present method flags",
+                        DxvkSettingsEdit::PresentFlags,
+                    ),
+                    Button::new()
+                        .is_enabled(enabled && !settings.nvidia.is_original())
+                        .on_click(
+                            context.message(Message::DxvkSettingsEdited(
+                                DxvkSettingsEdit::ResetNvidia,
+                            )),
+                        )
+                        .automation_name("Reset NVIDIA settings to original")
+                        .content(icon_label(Symbol::Undo, "Reset to original")),
+                    TextBlock::new()
+                        .text(note)
+                        .font_size(12.0)
+                        .opacity(0.7)
+                        .text_wrapping(TextWrapping::Wrap),
+                ))
+                .into(),
+        )
     }
 
     /// HDR-mod's own configs for the game's API: "None", then each in the latest HDR-mod build.

@@ -1,7 +1,8 @@
-//! Runs file operations as administrator, for games in protected folders (`C:\Program Files`):
-//! Game Manager starts a copy of itself with `--file-ops <operations>` through the `runas` verb,
-//! which shows the UAC prompt, and waits for it. The operations travel on the command line, so the
-//! copy running as administrator reads nothing that another program could change in between.
+//! Runs work that needs administrator rights: file operations in protected game folders
+//! (`C:\Program Files`, `--file-ops`) and NVIDIA driver settings (`--nvidia-ops`). Game Manager
+//! starts a copy of itself with the argument and the encoded work through the `runas` verb, which
+//! shows the UAC prompt, and waits for it. The work travels on the command line, so the copy
+//! running as administrator reads nothing that another program could change in between.
 
 use crate::{Error, Result};
 use windows::Win32::{
@@ -13,11 +14,11 @@ use windows::core::{HSTRING, PCWSTR, WIN32_ERROR, w};
 /// The argument that makes `app.exe` run file operations instead of its window.
 pub const FILE_OPS_ARG: &str = "--file-ops";
 
-/// Runs this program as administrator with `--file-ops <encoded>` and waits for it to finish.
-pub(crate) fn run(encoded: &str) -> Result<()> {
+/// Runs this program as administrator with `<arg> <encoded>` and waits for it to finish.
+pub(crate) fn run(arg: &str, encoded: &str) -> Result<()> {
     let program = std::env::current_exe().map_err(Error::io("Game Manager"))?;
     let file = HSTRING::from(program.as_os_str());
-    let parameters = HSTRING::from(format!("{FILE_OPS_ARG} {encoded}"));
+    let parameters = HSTRING::from(format!("{arg} {encoded}"));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: (SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC) as u32,

@@ -248,7 +248,7 @@ pub(crate) fn apply(ops: &[FileOp]) -> Result<()> {
         run(ops)
     } else {
         let json = serde_json::to_string(ops).map_err(Error::json("file operations"))?;
-        elevate::run(&percent_encode(&json))
+        elevate::run(FILE_OPS_ARG, &percent_encode(&json))
     }
 }
 
