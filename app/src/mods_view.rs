@@ -337,19 +337,26 @@ impl GameManager {
             rows.push(self.hdr_mod_config_picker(settings, context));
         }
         rows.extend([
-            ToggleSwitch::new()
-                .header("HDR")
-                .is_on(settings.config.hdr)
-                .on_toggled(context.callback(move |on: bool| edited(DxvkSettingsEdit::Hdr(on))))
-                .into(),
-            NumberBox::new()
-                .header("Frame-rate limit (0 = none)")
-                .minimum(0.0)
-                .maximum(1000.0)
-                .value(f64::from(settings.config.max_frame_rate))
-                .on_value_changed(context.callback(move |value: Option<f64>| {
-                    edited(DxvkSettingsEdit::MaxFrameRate(value))
-                }))
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(32.0)
+                .children((
+                    ToggleSwitch::new()
+                        .header("HDR")
+                        .is_on(settings.config.hdr)
+                        .on_toggled(
+                            context.callback(move |on: bool| edited(DxvkSettingsEdit::Hdr(on))),
+                        ),
+                    NumberBox::new()
+                        .header("Frame-rate limit (0 = none)")
+                        .minimum(0.0)
+                        .maximum(1000.0)
+                        .value(f64::from(settings.config.max_frame_rate))
+                        .width(220.0)
+                        .on_value_changed(context.callback(move |value: Option<f64>| {
+                            edited(DxvkSettingsEdit::MaxFrameRate(value))
+                        })),
+                ))
                 .into(),
             StackPanel::new()
                 .spacing(6.0)
@@ -376,10 +383,23 @@ impl GameManager {
                 .into(),
         ]);
         rows.extend(self.nvidia_section(settings, context));
-        StackPanel::new()
-            .spacing(16.0)
-            .min_width(420.0)
-            .children(rows)
+        // The dialog does not scroll its content by itself: without this, what does not fit the
+        // window is cut off below the buttons. Its title and buttons take about 280 DIPs.
+        let height = match self.window_size.1 {
+            height if height > 0.0 => (height - 280.0).max(200.0),
+            _ => 480.0,
+        };
+        ScrollViewer::new()
+            .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
+            .max_height(height)
+            .content(
+                StackPanel::new()
+                    .spacing(16.0)
+                    .min_width(420.0)
+                    // Room for the scroll bar, so it never covers the controls.
+                    .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
+                    .children(rows),
+            )
             .into()
     }
 
