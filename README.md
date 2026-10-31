@@ -87,10 +87,17 @@ cargo run -p app
 | Command | What it does |
 |---|---|
 | `cargo run -p app` | Builds and starts the app |
+| `cargo build --release` | Builds the optimized app: `target\release\app.exe`, with `games.json` and `7-Zip\` next to it |
+| `cargo run -p app --release` | Builds the optimized app and starts it |
 | `cargo run -p gm-core --example scan -- -v` | Lists detected games and how each is launched, without the UI |
 | `cargo run -p gm-core --example scan -- --icons <folder>` | Saves every game's icon as a PNG |
 | `cargo test` | Runs all tests |
 | `cargo clippy --all-targets` | Lints (the project keeps zero warnings) |
+
+Release builds use link-time optimization, a single codegen unit and stripped symbols
+(`[profile.release]` in `Cargo.toml`), so they take longer than debug builds but give a smaller,
+faster `app.exe`. To run it from another folder, copy `app.exe`, `games.json` and the `7-Zip` folder
+together. A running `app.exe` cannot be replaced: close it before rebuilding.
 
 ## Project layout
 
