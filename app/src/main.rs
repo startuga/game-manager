@@ -177,6 +177,28 @@ enum Message {
     DeployShaders,
     /// Cancel or Escape in the ReShade panel.
     CloseReshadePanel,
+    /// Global Shaders' profiles, by name: load, start or end renaming (an empty name ends it),
+    /// the name typed, delete, and Save and New with the selection.
+    ProfileLoad(String),
+    ProfileRename(String),
+    ProfileRenameText(String),
+    ProfileRenamed,
+    ProfileDelete(String),
+    ProfileSave,
+    ProfileNew,
+    /// The profiles were saved, or what failed.
+    ProfilesSaved(Result<(), String>),
+    /// Zips the selected shaders onto the clipboard.
+    ExportShaders,
+    /// The ZIP on the clipboard, with what could not be downloaded; or what failed.
+    ShadersExported(Result<(PathBuf, Vec<String>), String>),
+    /// Chooses a ZIP of shaders to add to the user's own.
+    ImportShaders,
+    ImportPicked(Result<Option<PathBuf>, String>),
+    /// How many files the import gave, and the user's own effects now; or what failed.
+    ShadersImported(Result<(usize, Vec<String>), String>),
+    /// Opens the folder for the user's own shaders.
+    OpenCustomFolder,
     /// Every add-on, the user's choices and what is cached, or what failed.
     AddonLibraryLoaded(Result<AddonLibrary, String>),
     /// An add-on's switch in Global Addons: id, on.
@@ -1352,7 +1374,21 @@ impl GameManager {
             | Message::ShaderSearch(_)
             | Message::ShaderPackDownloaded(..)
             | Message::DeployShaders
-            | Message::CloseReshadePanel) => self.handle_shaders(message, context),
+            | Message::CloseReshadePanel
+            | Message::ProfileLoad(_)
+            | Message::ProfileRename(_)
+            | Message::ProfileRenameText(_)
+            | Message::ProfileRenamed
+            | Message::ProfileDelete(_)
+            | Message::ProfileSave
+            | Message::ProfileNew
+            | Message::ProfilesSaved(_)
+            | Message::ExportShaders
+            | Message::ShadersExported(_)
+            | Message::ImportShaders
+            | Message::ImportPicked(_)
+            | Message::ShadersImported(_)
+            | Message::OpenCustomFolder) => self.handle_shaders(message, context),
             message @ (Message::AddonLibraryLoaded(_)
             | Message::AddonSwitched(..)
             | Message::OpenAddonFolder

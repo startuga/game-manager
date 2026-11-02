@@ -27,14 +27,31 @@ the one the game runs on in Game settings.
 
 The **Enhancements** expander installs [ReShade](https://reshade.me), post-processing effects for
 games. **Install ReShade** copies ReShade as the game's graphics DLL (`d3d9.dll`, `dxgi.dll` or
-`opengl32.dll`), writes a `ReShade.ini` when the game has none, and adds ReShade's default effects
-(Standard effects and SweetFX) in `reshade-shaders`; press Home in the game for its overlay. ⚙
+`opengl32.dll`), writes a `ReShade.ini` when the game has none, and adds your Global Shaders and
+Global Addons (below) in `reshade-shaders` and next to its program; press Home in the game for its
+overlay. ⚙
 chooses **Stable** (reshade.me, with add-ons), **Development** (the latest main build, via
 nightly.link) or **No Addons** (reshade.me, for online games). Vulkan games, and games with DXVK,
 use ReShade's Vulkan layer instead: the same install for the whole computer that ReShade's own
 setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rights. Direct3D 8
 games need DXVK first. Reinstall keeps ReShade's settings; uninstalling removes ReShade with
 `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log` and the `reshade-shaders` folder.
+
+The top bar's **ReShade** button chooses what every game with ReShade gets:
+
+- **Global Shaders** lists 55 shader packs (after RHI's list) as Essential (Lilium's HDR shaders,
+  always in), Recommended, Custom Shaders (your own) and Extra. ▶ downloads a pack and lists its
+  effects, to pick single ones; search finds packs and effects. Profiles keep selections (Save,
+  New, rename, delete); **Export** zips the selected shaders onto the clipboard, to paste into
+  Discord or a folder, and **Import** adds a ZIP's shaders to your own (**Open Custom Folder**).
+  **Deploy** puts the selection into every game with ReShade. Packs are cached in
+  `%LOCALAPPDATA%\Game Manager\mods\reshade\packs` and updated when they change.
+- **Global Addons** lists ReShade's add-ons and a few more, and your own (`.addon32`/`.addon64`
+  files in the custom folder), each with an On/Off switch. Closing it puts the add-ons switched on
+  next to each game's program, for its bitness; games with the No Addons build get none.
+
+Your choices are saved in `%APPDATA%\Game Manager\reshade.json`, your own shaders and add-ons in
+`%APPDATA%\Game Manager\reshade\custom`.
 
 The **Mods** expander installs mods into the game's folder. The first is
 [DXVK](https://github.com/doitsujin/dxvk), which runs Direct3D 8–11 games on Vulkan: **Install DXVK**

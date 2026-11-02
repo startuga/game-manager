@@ -511,6 +511,69 @@ fn single_top_folder(root: &Path) -> PathBuf {
     }
 }
 
+/// Zips the shaders of `selection` (from the cache; packs not there are downloaded) as
+/// `%LOCALAPPDATA%\Game Manager\export\ReShade shaders.zip`, holding `reshade-shaders`, and
+/// returns it with what could not be had. Blocking.
+pub fn export(catalog: &Catalog, selection: &Selection) -> Result<(PathBuf, Vec<String>)> {
+    let dir = json_file::local_file("export")?;
+    let tree = dir.join("tree");
+    let _ = fs::remove_dir_all(&tree);
+    let staged = stage(catalog, selection, &tree, false)?;
+    let archive = dir.join("ReShade shaders.zip");
+    seven_zip::zip_folder(&tree.join(super::reshade::SHADERS_FOLDER), &archive)?;
+    let _ = fs::remove_dir_all(&tree);
+    Ok((archive, staged.failed))
+}
+
+/// Unpacks a ZIP of shaders (an export, or a pack) into the custom folder, below a folder named
+/// after it (`Shaders\<name>`, `Textures\<name>`), and returns how many files it gave. Blocking.
+pub fn import(archive: &Path) -> Result<usize> {
+    import_into(archive, &custom_dir()?, &json_file::local_file("import")?)
+}
+
+/// `import` into the custom folder `custom`, unpacking in `work`.
+fn import_into(archive: &Path, custom: &Path, work: &Path) -> Result<usize> {
+    let name: String = archive
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !r#"\/:*?"<>|"#.contains(*c))
+        .collect();
+    let name = if name.trim().is_empty() {
+        "Imported".to_owned()
+    } else {
+        name
+    };
+    let _ = fs::remove_dir_all(work);
+    let unpacked = work.join("unpacked");
+    seven_zip::extract(archive, &unpacked)?;
+    let kept = work.join("kept");
+    if lay_out(&Catalog::default(), &unpacked, &kept)? == 0 {
+        let _ = fs::remove_dir_all(work);
+        return Err(Error::NotInstallable(format!(
+            "{} holds no ReShade effects.",
+            archive.display()
+        )));
+    }
+    let mut copied = 0;
+    for top in [SHADERS, TEXTURES] {
+        let from = kept.join(top);
+        if from.is_dir() {
+            for relative in files_under(&from)? {
+                let target = custom.join(top).join(&name).join(&relative);
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).map_err(Error::io(parent))?;
+                }
+                fs::copy(from.join(&relative), &target).map_err(Error::io(&target))?;
+                copied += 1;
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(work);
+    Ok(copied)
+}
+
 /// The packs listed by name, for showing a selection ("Lilium HDR Shaders, SweetFX by CeeJay.dk").
 pub fn names(catalog: &Catalog, selection: &Selection) -> Vec<String> {
     selection
@@ -713,6 +776,37 @@ mod tests {
             lay_out(&catalog, &empty, &dir.join("empty-kept")).unwrap(),
             0
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_export_imports_into_the_custom_folder() {
+        let dir = temp_dir("shader-import");
+        // An export: reshade-shaders with Shaders and Textures.
+        let source = dir.join("src");
+        for file in [
+            r"reshade-shaders\Shaders\Mine.fx",
+            r"reshade-shaders\Textures\Lut.png",
+        ] {
+            let path = source.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, file).unwrap();
+        }
+        let archive = dir.join("My look.zip");
+        seven_zip::zip_folder(&source.join("reshade-shaders"), &archive).unwrap();
+        let custom = dir.join("custom");
+        assert_eq!(
+            import_into(&archive, &custom, &dir.join("work")).unwrap(),
+            2
+        );
+        assert!(custom.join(r"Shaders\My look\Mine.fx").exists());
+        assert!(custom.join(r"Textures\My look\Lut.png").exists());
+        assert_eq!(effects_in(&custom), [r"Shaders\My look\Mine.fx"]);
+        // Nothing usable in it.
+        fs::write(dir.join("readme.txt"), b"text").unwrap();
+        let empty = dir.join("empty.zip");
+        seven_zip::zip_folder(&dir.join("readme.txt"), &empty).unwrap();
+        assert!(import_into(&empty, &custom, &dir.join("work")).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 
