@@ -25,9 +25,12 @@ holds the rules and facts that span them.
   - `mods/dxvk.rs` (Stable, Development, HDR-mod).
   - `mods/laa.rs` (Large Address Aware for 32-bit programs: status, enable, restore; the patched
     program is recorded in `mods.json` under `laa`).
-  - `mods/reshade.rs` (Stable, Development, No Addons; the DLL, `ReShade.ini` and default
-    effects) and `mods/reshade_layer.rs` (ReShade's global Vulkan layer, shared with ReShade's
-    own setup).
+  - `mods/reshade.rs` (Stable, Development, No Addons; the DLL, `ReShade.ini`, the
+    `reshade-shaders` folder, `deploy`) and `mods/reshade_layer.rs` (ReShade's global Vulkan
+    layer, shared with ReShade's own setup).
+  - `mods/shader_packs.rs` (Global Shaders: the shipped `config/reshade-shaders.json`, the pack
+    cache, layout and staging) and `mods/reshade_settings.rs` (`reshade.json`: the selection,
+    add-ons and profiles).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).
   - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
@@ -59,12 +62,13 @@ holds the rules and facts that span them.
 
 ## Files
 - `json_file::user_file` → `%APPDATA%\Game Manager`: the user's `game-settings.json`,
-  `custom-games.json` and `mods.json`.
+  `custom-games.json`, `mods.json` and `reshade.json`, and their own shaders and add-ons in
+  `reshade\custom`.
   - They are loaded before saving, so an unreadable file is never overwritten, and unknown fields
     are kept.
 - `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete.
-- `build.rs` ships `games.json` and `7-Zip\` next to `app.exe`; `config::shipped_file` finds them
-  there or one folder up (examples, tests).
+- `build.rs` ships every `config/*.json` and `7-Zip\` next to `app.exe`; `config::shipped_file`
+  finds them there or one folder up (examples, tests).
 - **Format numbers**: bump the one whose layout changes.
   - `snapshot::VERSION`: the serde form of `Game`.
   - `icon::CACHE_FORMAT`.
@@ -145,3 +149,7 @@ holds the rules and facts that span them.
     `Apps=` line of paths split by commas, so a path with a comma can never match; it is left
     byte for byte except for the game's own entry. ReShade's setup removes the layer when the
     list ends empty, and so does Game Manager.
+  - **Shader packs**: GitHub's and GitLab's branch archives answer HEAD with an ETag, which tells whether a
+    pack changed. Some releases carry no files (PumboAutoHDR): use the branch archive.
+    `cargo test -p gm-core live_packs -- --ignored --nocapture` downloads every pack and reports
+    its effects.

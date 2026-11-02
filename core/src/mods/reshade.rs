@@ -22,16 +22,18 @@
 //!   Vulkan layer instead. Direct3D 8 needs d3d8to9 or DXVK, so it is refused without DXVK.
 //! - **`ReShade.ini`**, only when there is none: the shader paths, the overlay key (Home) and no
 //!   proxy DLL. ReShade saves its settings into it, so Reinstall keeps it once changed.
-//! - **Effects**: the packages ReShade's setup selects by default (`Enabled=1` or `Required=1` in
-//!   its `EffectPackages.ini`; today Standard effects and SweetFX), downloaded on each install
-//!   into `reshade-shaders\Shaders` and `\Textures`. Files already there that are not Game
-//!   Manager's are kept.
+//! - **Effects**: the user's Global Shaders (`shader_packs`, `reshade_settings`), laid out as
+//!   `reshade-shaders\Shaders` and `\Textures`. That folder is Game Manager's: a game's own one is
+//!   set aside as `reshade-shaders.gm-backup` on the first install and put back on uninstall,
+//!   and Reinstall or Deploy replaces the whole folder (`DeleteTree` then `CopyTree`, two short
+//!   operations a game). `deploy` brings a changed selection to every game with ReShade.
 //! - **In a protected folder**, `ReShade.ini`, `ReShadePreset.ini` and `ReShade.log` are created
 //!   and given to the user, as ReShade's setup does, so ReShade can save into them.
 //!
 //! Uninstall removes all of it: the DLL (putting the game's own back), `ReShade.ini`,
-//! `ReShadePreset.ini` and `ReShade.log` whoever wrote them, and the whole `reshade-shaders`
-//! folder. That is more than ReShade's setup removes (it keeps the preset and the textures).
+//! `ReShadePreset.ini` and `ReShade.log` whoever wrote them, and the `reshade-shaders` folder
+//! (putting a game's own back). That is more than ReShade's setup removes (it keeps the preset
+//! and the textures).
 //!
 //! An install that changes the Vulkan layer runs as one `ReshadeJob` in a copy of Game Manager
 //! started as administrator with `--reshade-ops`: the folder's files first, then the layer; a
@@ -39,8 +41,8 @@
 
 use super::reshade_layer::{self, LAYER_FILES, LayerChange, LayerStatus};
 use super::{
-    Build, FileOp, Installed, InstalledFile, ModsFile, files_under, folder_writable, get_json,
-    latest_run, plan, run_then, update,
+    BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, files_under, folder_writable,
+    get_json, latest_run, plan, reshade_settings, run_then, shader_packs, update, with_suffix,
 };
 use crate::graphics::GraphicsApi;
 use crate::text::{percent_decode, percent_encode};
@@ -49,7 +51,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,15 +59,13 @@ use std::sync::{Mutex, PoisonError};
 const HOME_PAGE: &str = "https://reshade.me/";
 const RELEASES_PAGE: &str = "https://reshade.me/releases";
 const API_URL: &str = "https://api.github.com/repos/crosire/reshade";
-const PACKAGES_URL: &str =
-    "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini";
 /// The development build's artifact.
 const SETUP_ARTIFACT: &str = "ReShade Setup";
 const CONFIG_FILE: &str = "ReShade.ini";
 /// The files ReShade saves into while the game runs.
 const SAVED_FILES: [&str; 3] = [CONFIG_FILE, "ReShadePreset.ini", "ReShade.log"];
 /// The effects' folder in the game's folder.
-const SHADERS_FOLDER: &str = "reshade-shaders";
+pub(crate) const SHADERS_FOLDER: &str = "reshade-shaders";
 
 /// The argument that makes `app.exe` run a `ReshadeJob` instead of its window.
 pub const RESHADE_OPS_ARG: &str = "--reshade-ops";
@@ -82,7 +81,8 @@ Variants:
 • No Addons: the latest release without add-on support, for online games whose anti-cheat \
 accepts ReShade.
 
-Install also adds ReShade's default effects (Standard effects and SweetFX) in reshade-shaders.
+Install also adds your Global Shaders (ReShade ▸ Global Shaders) in reshade-shaders; Deploy \
+there brings a new selection to every game with ReShade.
 
 Vulkan games, and games with DXVK, use ReShade's Vulkan layer: one install for the whole \
 computer, shared with ReShade's own setup; installing updates it for every game on its list.
@@ -147,9 +147,33 @@ pub struct ReshadeState {
     /// Set while the game uses ReShade's Vulkan layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<LayerUse>,
+    /// Game Manager's `reshade-shaders` folder in the game, while it is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<Effects>,
+}
+
+/// The `reshade-shaders` folder Game Manager put into a game.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Effects {
+    /// How many files it holds.
+    pub files: usize,
+    /// The game had a `reshade-shaders` of its own, kept as `reshade-shaders.gm-backup`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backup: bool,
 }
 
 impl ReshadeState {
+    /// Whether the game's `reshade-shaders` is Game Manager's: recorded as such, or (an earlier
+    /// version's record) holding the effect files it listed.
+    fn owns_effects(&self) -> bool {
+        self.effects.is_some()
+            || self
+                .installed
+                .as_ref()
+                .is_some_and(|installed| !split_effects(Some(installed)).0.is_empty())
+    }
+
     /// The DLL ReShade is installed as, when it is installed as one (not through the layer).
     pub fn dll(&self) -> Option<&str> {
         let installed = self.installed.as_ref().filter(|_| self.layer.is_none())?;
@@ -495,138 +519,6 @@ fn files_with_extension(folder: &Path, extension: &str) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// An effect package from ReShade's `EffectPackages.ini`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EffectPackage {
-    pub name: String,
-    pub url: String,
-    /// Where its shaders and textures go, relative to the game's folder
-    /// (`reshade-shaders\Shaders`).
-    shaders: PathBuf,
-    textures: PathBuf,
-    /// Effect files not to install (templates).
-    deny: Vec<String>,
-}
-
-/// The packages ReShade's setup selects by default (`Enabled=1` or `Required=1`) in
-/// `EffectPackages.ini`. The file comes from the web, so a package must install under
-/// `reshade-shaders` and come from an `https` address.
-fn default_packages(ini: &str) -> Vec<EffectPackage> {
-    let mut packages = Vec::new();
-    let mut fields: Vec<(String, String)> = Vec::new();
-    let mut take = |fields: &mut Vec<(String, String)>| {
-        let get = |key: &str| {
-            fields
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(key))
-                .map(|(_, value)| value.as_str())
-        };
-        let selected = get("Enabled") == Some("1") || get("Required") == Some("1");
-        let package = (|| {
-            let url = get("DownloadUrl").filter(|url| url.starts_with("https://"))?;
-            Some(EffectPackage {
-                name: get("PackageName").unwrap_or(url).to_owned(),
-                url: url.to_owned(),
-                shaders: shader_path(get("InstallPath")?)?,
-                textures: shader_path(
-                    get("TextureInstallPath").unwrap_or(r".\reshade-shaders\Textures"),
-                )?,
-                deny: get("DenyEffectFiles")
-                    .map(|files| {
-                        files
-                            .split(',')
-                            .map(|file| file.trim().to_owned())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            })
-        })();
-        if let Some(package) = package.filter(|_| selected) {
-            packages.push(package);
-        }
-        fields.clear();
-    };
-    for line in ini.trim_start_matches('\u{feff}').lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            take(&mut fields);
-        } else if let Some((key, value)) = line.split_once('=') {
-            fields.push((key.trim().to_owned(), value.trim().to_owned()));
-        }
-    }
-    take(&mut fields);
-    packages
-}
-
-/// `.\reshade-shaders\Shaders\OtisFX` as a path relative to the game's folder; `None` outside
-/// `reshade-shaders`.
-fn shader_path(path: &str) -> Option<PathBuf> {
-    let relative = PathBuf::from(path.trim_start_matches(r".\").replace('/', r"\"));
-    let mut parts = relative.components();
-    let first = parts.next()?;
-    let inside = first.as_os_str().eq_ignore_ascii_case(SHADERS_FOLDER)
-        && parts.all(|part| matches!(part, std::path::Component::Normal(_)));
-    inside.then_some(relative)
-}
-
-/// Downloads `packages` and lays their effects out under `tree` as they go into the game's
-/// folder (`tree\reshade-shaders\Shaders\…`). Blocking.
-fn stage_effects(packages: &[EffectPackage], tree: &Path, work: &Path) -> Result<()> {
-    for (index, package) in packages.iter().enumerate() {
-        let archive = work.join(format!("package-{index}.zip"));
-        http::download(&package.url, &archive)?;
-        let unpacked = work.join(format!("package-{index}"));
-        seven_zip::extract(&archive, &unpacked)?;
-        let shaders =
-            find_folder(&unpacked, "Shaders").ok_or_else(|| Error::NoModBuild(archive.clone()))?;
-        copy_effects(&shaders, &tree.join(&package.shaders), &package.deny)?;
-        if let Some(textures) = find_folder(&unpacked, "Textures") {
-            copy_effects(&textures, &tree.join(&package.textures), &[])?;
-        }
-    }
-    Ok(())
-}
-
-/// A folder called `name` under `root` (`SweetFX-master\Shaders`).
-fn find_folder(root: &Path, name: &str) -> Option<PathBuf> {
-    let mut folders = vec![(root.to_path_buf(), 0)];
-    while let Some((folder, depth)) = folders.pop() {
-        for entry in fs::read_dir(&folder).ok()?.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            if entry.file_name().eq_ignore_ascii_case(name) {
-                return Some(path);
-            }
-            if depth < 2 {
-                folders.push((path, depth + 1));
-            }
-        }
-    }
-    None
-}
-
-/// Copies the files under `from` to `to`, except those named in `deny`.
-fn copy_effects(from: &Path, to: &Path, deny: &[String]) -> Result<()> {
-    for relative in files_under(from)? {
-        let denied = relative.file_name().is_some_and(|name| {
-            deny.iter()
-                .any(|file| name.eq_ignore_ascii_case(file.as_str()))
-        });
-        if denied {
-            continue;
-        }
-        let target = to.join(&relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(Error::io(parent))?;
-        }
-        let source = from.join(&relative);
-        fs::copy(&source, &target).map_err(Error::io(&target))?;
-    }
-    Ok(())
-}
-
 /// The `ReShade.ini` Game Manager writes when the game has none, as ReShade's setup does.
 fn config_text() -> String {
     [
@@ -688,10 +580,11 @@ struct Prepared {
     job: ReshadeJob,
     installed: Installed,
     layer: Option<LayerUse>,
+    effects: Effects,
 }
 
 /// Where the install gets its files: the cached build, and the effects laid out as they go into
-/// the game's folder.
+/// the game's folder (a folder holding `reshade-shaders`).
 struct Sources<'a> {
     build: &'a Path,
     effects: &'a Path,
@@ -699,9 +592,80 @@ struct Sources<'a> {
     staging: &'a Path,
 }
 
+/// The operations that put the effects laid out in `effects` (a folder holding
+/// `reshade-shaders`) into `folder` over `previous`'s, and the record of them. Game Manager's
+/// earlier folder goes whole; a game's own one is set aside as `reshade-shaders.gm-backup`.
+fn effects_ops(
+    previous: &ReshadeState,
+    folder: &Path,
+    effects: &Path,
+) -> Result<(Vec<FileOp>, Effects)> {
+    let mut ops = Vec::new();
+    let old_folder = previous.installed.as_ref().map(|old| old.folder.as_path());
+    let here = old_folder == Some(folder);
+    let ours = previous.owns_effects();
+    let mut backup = here
+        && previous
+            .effects
+            .as_ref()
+            .is_some_and(|effects| effects.backup);
+    // An install in another folder (the program moved): its effects go there.
+    if let Some(old) = old_folder.filter(|_| ours && !here) {
+        ops.extend(effects_removal(previous, old));
+    }
+    let shaders = folder.join(SHADERS_FOLDER);
+    if shaders.exists() {
+        if ours && here {
+            ops.push(FileOp::DeleteTree {
+                path: shaders.clone(),
+            });
+        } else {
+            let aside = with_suffix(&shaders, BACKUP_SUFFIX);
+            if aside.exists() {
+                return Err(Error::NotInstallable(format!(
+                    "{} already exists: put it back or delete it first.",
+                    aside.display()
+                )));
+            }
+            ops.push(FileOp::Move {
+                from: shaders,
+                to: aside,
+            });
+            backup = true;
+        }
+    }
+    let files = files_under(&effects.join(SHADERS_FOLDER)).map_or(0, |files| files.len());
+    if files > 0 {
+        ops.push(FileOp::CopyTree {
+            from: effects.to_path_buf(),
+            to: folder.to_path_buf(),
+        });
+    }
+    Ok((ops, Effects { files, backup }))
+}
+
+/// The operations that remove the `reshade-shaders` folder from `folder`, and put back a game's
+/// own one Game Manager set aside.
+fn effects_removal(state: &ReshadeState, folder: &Path) -> Vec<FileOp> {
+    let shaders = folder.join(SHADERS_FOLDER);
+    let aside = with_suffix(&shaders, BACKUP_SUFFIX);
+    let mut ops = Vec::new();
+    if shaders.is_dir() {
+        ops.push(FileOp::DeleteTree {
+            path: shaders.clone(),
+        });
+    }
+    if state.effects.as_ref().is_some_and(|effects| effects.backup) && aside.is_dir() {
+        ops.push(FileOp::Move {
+            from: aside,
+            to: shaders,
+        });
+    }
+    ops
+}
+
 /// Plans installing `target` over `previous`. `sid` is the user's, when the folder is protected
-/// and ReShade's saved files must be given to them. Removes the effects already in the game's
-/// folder from `sources.effects`, so the copy skips them.
+/// and ReShade's saved files must be given to them.
 fn prepare(
     previous: &ReshadeState,
     target: &Target,
@@ -712,7 +676,8 @@ fn prepare(
 ) -> Result<Prepared> {
     let folder = &target.folder;
     let old = previous.installed.as_ref();
-    let (old_effects, old_files) = split_effects(old);
+    // The effects an earlier version recorded file by file go with their folder (`effects_ops`).
+    let (_, old_files) = split_effects(old);
     // Game Manager's file `name` in this folder, unchanged, which the plan below removes.
     let ours_here = |name: &str| {
         old.is_some_and(|old| old.folder == *folder)
@@ -737,43 +702,9 @@ fn prepare(
     let mut ops = plan.ops;
     let mut recorded = plan.files;
 
-    // Effects: Game Manager's unchanged ones go, then the new ones that have no file in the way.
-    let mut removed = HashSet::new();
-    if let Some(old) = old {
-        let names: Vec<String> = old_effects
-            .iter()
-            .filter(|file| file.is_at(&old.folder.join(&file.name)))
-            .map(|file| file.name.clone())
-            .collect();
-        if old.folder == *folder {
-            removed.extend(names.iter().map(|name| name.to_ascii_lowercase()));
-        }
-        if !names.is_empty() {
-            ops.push(FileOp::DeleteFiles {
-                folder: old.folder.clone(),
-                names,
-            });
-        }
-    }
-    let mut effects = Vec::new();
-    if sources.effects.is_dir() {
-        for relative in files_under(sources.effects)? {
-            let name = relative.to_string_lossy().into_owned();
-            let staged = sources.effects.join(&relative);
-            if folder.join(&relative).exists() && !removed.contains(&name.to_ascii_lowercase()) {
-                fs::remove_file(&staged).map_err(Error::io(&staged))?;
-            } else {
-                effects.push(InstalledFile::of(&name, &staged)?);
-            }
-        }
-    }
-    if !effects.is_empty() {
-        ops.push(FileOp::CopyTree {
-            from: sources.effects.to_path_buf(),
-            to: folder.clone(),
-        });
-    }
-    recorded.extend(effects);
+    // Effects: the whole reshade-shaders folder.
+    let (effect_ops, effects) = effects_ops(previous, folder, sources.effects)?;
+    ops.extend(effect_ops);
 
     // In a protected folder, ReShade's saved files are given to the user (created when missing).
     if let Some(sid) = sid {
@@ -832,6 +763,7 @@ fn prepare(
             backups: plan.backups,
         },
         layer: layer_use,
+        effects,
     })
 }
 
@@ -865,7 +797,7 @@ fn removal(state: &ReshadeState) -> Result<ReshadeJob> {
         let (_, files) = split_effects(Some(installed));
         ops = plan(Some(&files), folder, &[])?.ops;
         // So do ReShade's settings, preset and log, whoever wrote them (`plan` keeps changed
-        // files), and the whole effects folder.
+        // files), and the whole effects folder (a game's own one comes back).
         let saved: Vec<String> = SAVED_FILES
             .iter()
             .filter(|name| folder.join(name).is_file())
@@ -877,10 +809,7 @@ fn removal(state: &ReshadeState) -> Result<ReshadeJob> {
                 names: saved,
             });
         }
-        let effects = folder.join(SHADERS_FOLDER);
-        if effects.is_dir() {
-            ops.push(FileOp::DeleteTree { path: effects });
-        }
+        ops.extend(effects_removal(state, folder));
     }
     let layer = state
         .layer
@@ -899,23 +828,40 @@ fn state(game: &Game) -> Result<(ModsFile, ReshadeState)> {
     Ok((mods, state))
 }
 
-/// Installs the latest build of the game's ReShade variant for `api`, with the default effects,
+/// A fresh folder in Game Manager's staging area, for laying out what a job copies.
+fn fresh_staging(name: &str) -> Result<PathBuf> {
+    let staging = json_file::local_file("mods")?.join("staging").join(name);
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(Error::io(&staging))?;
+    Ok(staging)
+}
+
+/// Lays out the user's Global Shaders under `tree`. Blocking: downloads the packs not cached
+/// and those that changed.
+fn stage_global_shaders(tree: &Path) -> Result<shader_packs::Staged> {
+    let catalog = shader_packs::catalog()?;
+    let selection = reshade_settings::load()?.selection(&catalog);
+    shader_packs::stage(&catalog, &selection, tree, true)
+}
+
+/// The error for a job that did its work but left some of it out.
+fn incomplete(done: &str, failed: &[String]) -> Error {
+    Error::Incomplete(format!("{done}, but not all of it:\n{}", failed.join("\n")))
+}
+
+/// Installs the latest build of the game's ReShade variant for `api`, with the Global Shaders,
 /// replacing an earlier install, and returns `mods.json` as saved. Blocking: downloads, 7-Zip and
-/// file copies (as administrator when the folder or the Vulkan layer needs it).
+/// file copies (as administrator when the folder or the Vulkan layer needs it). Shader packs that
+/// cannot be downloaded are left out, and named in an `Error::Incomplete` after the install.
 pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let (mods, state) = state(game)?;
     let target = target(game, Some(api), dxvk_present(game, &mods))
         .map_err(|blocked| Error::NotInstallable(blocked.to_string()))?;
     let build = latest(state.variant)?;
     let cache = cached_build(state.variant, &build)?;
-    let staging = json_file::local_file("mods")?
-        .join("staging")
-        .join("reshade");
-    let _ = fs::remove_dir_all(&staging);
-    let (effects, work) = (staging.join("effects"), staging.join("download"));
-    fs::create_dir_all(&work).map_err(Error::io(&work))?;
-    let ini = String::from_utf8_lossy(&http::get(PACKAGES_URL)?).into_owned();
-    stage_effects(&default_packages(&ini), &effects, &work)?;
+    let staging = fresh_staging("reshade")?;
+    let effects = staging.join("effects");
+    let staged = stage_global_shaders(&effects)?;
     let sid = if folder_writable(&target.folder)? {
         None
     } else {
@@ -940,11 +886,20 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     if state.variant == ReshadeVariant::NoAddons {
         installed.version = format!("{} (no add-ons)", installed.version);
     }
-    update(&game.id, |mods| {
+    let saved = update(&game.id, |mods| {
         let reshade = mods.reshade.get_or_insert_with(Default::default);
         reshade.installed = Some(installed);
         reshade.layer = prepared.layer;
-    })
+        reshade.effects = Some(prepared.effects);
+    })?;
+    if staged.failed.is_empty() {
+        Ok(saved)
+    } else {
+        Err(incomplete(
+            "ReShade is installed with its shaders",
+            &staged.failed,
+        ))
+    }
 }
 
 /// Removes the game's ReShade (and its place on the Vulkan layer) and puts back the files it
@@ -956,9 +911,86 @@ pub fn uninstall(game: &Game) -> Result<ModsFile> {
         if let Some(reshade) = &mut mods.reshade {
             reshade.installed = None;
             reshade.layer = None;
+            reshade.effects = None;
         }
         drop_default(&mut mods.reshade);
     })
+}
+
+/// Brings the Global Shaders to every game where Game Manager installed ReShade, replacing each
+/// one's `reshade-shaders`, and returns `mods.json` as saved. Writable folders are changed
+/// directly, the protected ones together as administrator (one UAC prompt). `games` names them
+/// in messages. Blocking: downloads, 7-Zip and file copies. What could not be done is named in an
+/// `Error::Incomplete`, after the rest was saved.
+pub fn deploy(games: &[Game]) -> Result<ModsFile> {
+    let mods = super::load()?;
+    let staging = fresh_staging("reshade-deploy")?;
+    let effects = staging.join("effects");
+    let staged = stage_global_shaders(&effects)?;
+    let mut failed = staged.failed;
+    let name = |id: &str| {
+        games
+            .iter()
+            .find(|game| game.id == id)
+            .map_or_else(|| id.to_owned(), |game| game.name.clone())
+    };
+    let mut done = Vec::new();
+    let mut protected: Vec<(String, Vec<FileOp>, Effects)> = Vec::new();
+    for (id, entry) in &mods.games {
+        let Some(state) = &entry.reshade else {
+            continue;
+        };
+        let Some(installed) = state.installed.as_ref().filter(|i| i.folder.is_dir()) else {
+            continue;
+        };
+        let (ops, record) = match effects_ops(state, &installed.folder, &effects) {
+            Ok(planned) => planned,
+            Err(error) => {
+                failed.push(format!("{}: {error}", name(id)));
+                continue;
+            }
+        };
+        match super::all_writable(&ops) {
+            Ok(true) => match super::run(&ops) {
+                Ok(()) => done.push((id.clone(), record)),
+                Err(error) => failed.push(format!("{}: {error}", name(id))),
+            },
+            Ok(false) => protected.push((id.clone(), ops, record)),
+            Err(error) => failed.push(format!("{}: {error}", name(id))),
+        }
+    }
+    if !protected.is_empty() {
+        let ops: Vec<FileOp> = protected
+            .iter()
+            .flat_map(|(_, ops, _)| ops.iter().cloned())
+            .collect();
+        match super::apply(&ops) {
+            Ok(()) => done.extend(protected.into_iter().map(|(id, _, record)| (id, record))),
+            Err(error) => failed.extend(
+                protected
+                    .iter()
+                    .map(|(id, _, _)| format!("{}: {error}", name(id))),
+            ),
+        }
+    }
+    let _ = fs::remove_dir_all(&staging);
+    let mut saved = mods;
+    for (id, record) in done {
+        saved = update(&id, |mods| {
+            if let Some(reshade) = &mut mods.reshade {
+                // An earlier version's list of effect files is replaced by the folder's record.
+                if let Some(installed) = &mut reshade.installed {
+                    *installed = split_effects(Some(installed)).1;
+                }
+                reshade.effects = Some(record);
+            }
+        })?;
+    }
+    if failed.is_empty() {
+        Ok(saved)
+    } else {
+        Err(incomplete("The Global Shaders were deployed", &failed))
+    }
 }
 
 /// Saves the game's ReShade variant, used by the next Install or Reinstall.
@@ -1054,10 +1086,10 @@ mod tests {
     }
 
     /// `cargo test -p gm-core live_builds -- --ignored`: downloads each variant's latest build
-    /// into Game Manager's cache, and the default effects into a temp folder.
+    /// into Game Manager's cache.
     #[test]
     #[ignore = "downloads from reshade.me, GitHub and nightly.link"]
-    fn live_builds_and_effects_download() {
+    fn live_builds_download() {
         for variant in ReshadeVariant::ALL {
             let build = latest(variant).unwrap();
             let dir = cached_build(variant, &build).unwrap();
@@ -1070,26 +1102,6 @@ mod tests {
                 build.version, build.url
             );
         }
-        let ini = String::from_utf8_lossy(&http::get(PACKAGES_URL).unwrap()).into_owned();
-        let packages = default_packages(&ini);
-        assert!(!packages.is_empty());
-        let dir = temp_dir("reshade-effects");
-        stage_effects(&packages, &dir.join("tree"), &dir).unwrap();
-        let effects = files_under(&dir.join("tree")).unwrap();
-        println!(
-            "{} effect files from {:?}",
-            effects.len(),
-            packages
-                .iter()
-                .map(|package| &package.name)
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            effects
-                .iter()
-                .any(|file| file.extension().is_some_and(|ext| ext == "fx"))
-        );
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1134,39 +1146,6 @@ mod tests {
         );
         assert_eq!(appended_zip(b"MZ no zip here at all, nothing"), None);
         fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn picks_the_default_effect_packages() {
-        let ini = "\u{feff}[00]\r\nEnabled=1\r\nRequired=1\r\nPackageName=Standard effects\r\n\
-            InstallPath=.\\reshade-shaders\\Shaders\r\nTextureInstallPath=.\\reshade-shaders\\Textures\r\n\
-            DownloadUrl=https://github.com/crosire/reshade-shaders/archive/slim.zip\r\n\
-            [01]\r\nEnabled=1\r\nPackageName=SweetFX\r\nInstallPath=.\\reshade-shaders\\Shaders\r\n\
-            TextureInstallPath=.\\reshade-shaders\\Textures\r\n\
-            DownloadUrl=https://github.com/CeeJayDK/SweetFX/archive/master.zip\r\nDenyEffectFiles=Template.fx\r\n\
-            [02]\r\nPackageName=Legacy\r\nInstallPath=.\\reshade-shaders\\Shaders\r\n\
-            DownloadUrl=https://github.com/crosire/reshade-shaders/archive/legacy.zip\r\n\
-            [03]\r\nEnabled=1\r\nPackageName=Outside\r\nInstallPath=..\\..\\Windows\r\n\
-            DownloadUrl=https://example.com/x.zip\r\n\
-            [04]\r\nEnabled=1\r\nPackageName=Plain\r\nInstallPath=.\\reshade-shaders\\Shaders\r\n\
-            DownloadUrl=http://example.com/x.zip\r\n";
-        let packages = default_packages(ini);
-        let names: Vec<&str> = packages
-            .iter()
-            .map(|package| package.name.as_str())
-            .collect();
-        assert_eq!(names, ["Standard effects", "SweetFX"]);
-        assert_eq!(
-            packages[0].shaders,
-            PathBuf::from(r"reshade-shaders\Shaders")
-        );
-        assert_eq!(packages[1].deny, ["Template.fx"]);
-        assert_eq!(
-            shader_path(r".\reshade-shaders\Shaders\OtisFX"),
-            Some(PathBuf::from(r"reshade-shaders\Shaders\OtisFX"))
-        );
-        assert_eq!(shader_path(r".\reshade-shaders\..\x"), None);
-        assert_eq!(shader_path(r"C:\Windows"), None);
     }
 
     /// A fake cached build, effects and staging under `dir`.
@@ -1253,6 +1232,7 @@ mod tests {
             ReshadeState {
                 installed: Some(prepared.installed),
                 layer: prepared.layer,
+                effects: Some(prepared.effects),
                 ..ReshadeState::default()
             }
         };
@@ -1272,30 +1252,36 @@ mod tests {
             fs::read(folder.join(r"reshade-shaders\Shaders\LumaSharpen.fx")).unwrap(),
             b"luma"
         );
-        // The user's header is kept, and not recorded as Game Manager's.
+        // The game's own reshade-shaders is set aside whole; Game Manager's is in its place.
         assert_eq!(
             fs::read(folder.join(r"reshade-shaders\Shaders\ReShade.fxh")).unwrap(),
-            b"the user's header"
+            b"header"
         );
-        let names: Vec<&str> = first
-            .installed
-            .as_ref()
-            .unwrap()
-            .files
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect();
-        assert!(
-            !names.contains(&r"reshade-shaders\Shaders\ReShade.fxh"),
-            "{names:?}"
+        assert_eq!(
+            fs::read(folder.join(r"reshade-shaders.gm-backup\Shaders\Mine.fx")).unwrap(),
+            b"the user's"
         );
+        assert_eq!(
+            first.effects,
+            Some(Effects {
+                files: 3,
+                backup: true
+            })
+        );
+        assert!(first.installed.as_ref().unwrap().files.len() <= 2);
 
-        // Reinstalling replaces Game Manager's files and keeps the rest.
+        // Reinstalling replaces Game Manager's files and folder and keeps the game's.
         let second = install(&first);
         assert_eq!(second.installed, first.installed);
+        assert_eq!(second.effects, first.effects);
         assert_eq!(
             fs::read(folder.join("d3d9.dll.gm-backup")).unwrap(),
             b"the game's own d3d9"
+        );
+        assert!(
+            folder
+                .join(r"reshade-shaders.gm-backup\Shaders\Mine.fx")
+                .exists()
         );
 
         // ReShade ran and saved its settings, preset and log: Reinstall keeps them.
@@ -1307,15 +1293,47 @@ mod tests {
         assert_eq!(fs::read(folder.join(CONFIG_FILE)).unwrap(), saved);
         assert!(folder.join("ReShadePreset.ini").exists());
 
-        // Uninstalling removes all of ReShade, its settings and every effect included; the game's
-        // own files are as before.
+        // Uninstalling removes all of ReShade, its settings included, and puts the game's own
+        // reshade-shaders back: the folder is as before.
         run(&removal(&third).unwrap().ops).unwrap();
-        let without_effects: Vec<(String, Vec<u8>)> = before
-            .into_iter()
-            .filter(|(name, _)| !name.starts_with(SHADERS_FOLDER))
-            .collect();
-        assert_eq!(listing(&folder), without_effects);
-        assert!(!folder.join(SHADERS_FOLDER).exists());
+        assert_eq!(listing(&folder), before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn earlier_installs_and_a_backup_in_the_way() {
+        let dir = temp_dir("reshade-effects");
+        let folder = dir.join("game");
+        let effects = dir.join("effects");
+        fs::create_dir_all(folder.join(r"reshade-shaders\Shaders")).unwrap();
+        fs::write(folder.join(r"reshade-shaders\Shaders\Old.fx"), b"old").unwrap();
+        fs::create_dir_all(effects.join(r"reshade-shaders\Shaders")).unwrap();
+        fs::write(effects.join(r"reshade-shaders\Shaders\New.fx"), b"new").unwrap();
+        // An earlier version listed its effect files: the folder is Game Manager's.
+        let earlier = ReshadeState {
+            installed: Some(Installed {
+                folder: folder.clone(),
+                files: vec![
+                    InstalledFile::of(
+                        r"reshade-shaders\Shaders\Old.fx",
+                        &folder.join(r"reshade-shaders\Shaders\Old.fx"),
+                    )
+                    .unwrap(),
+                ],
+                ..Installed::default()
+            }),
+            ..ReshadeState::default()
+        };
+        assert!(earlier.owns_effects());
+        let (ops, record) = effects_ops(&earlier, &folder, &effects).unwrap();
+        assert!(!record.backup);
+        run(&ops).unwrap();
+        assert!(!folder.join(r"reshade-shaders\Shaders\Old.fx").exists());
+        assert!(folder.join(r"reshade-shaders\Shaders\New.fx").exists());
+        // Not Game Manager's, with a backup already there: refused.
+        fs::create_dir_all(folder.join("reshade-shaders.gm-backup")).unwrap();
+        let error = effects_ops(&ReshadeState::default(), &folder, &effects).unwrap_err();
+        assert!(error.to_string().contains("already exists"), "{error}");
         fs::remove_dir_all(dir).unwrap();
     }
 
