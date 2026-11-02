@@ -28,9 +28,9 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
   HDR-mod configs): the reactor suppresses the selection event its own write raises and applies
   `selected_index` again. `on_selection_changed` can still report `None` (the list losing its
   selection), so messages carry an `Option` and ignore `None`.
-- **Menus** attach only to `Button`/`DropDownButton`/`MenuBarItem`, and `AppContext::show_menu_at`
-  needs `App::run_with` + `open_component_window`, which never exits when the window closes. So
-  the right-click menu is drawn by the app:
+- **Menus** attach only to `Button`/`DropDownButton`/`MenuBarItem`, and nothing opens one at a
+  point (`AppContext::show_menu_at` went with the imperative `App` API). So the right-click menu
+  is drawn by the app:
   - Each row is a `Border` (transparent, `min_width(ROW_WIDTH)` so all of it is hit-testable)
     sending `RowPointer`.
   - `row_menu_view` adds a last root-grid layer: a transparent backdrop that closes the menu on
