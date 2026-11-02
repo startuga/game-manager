@@ -21,13 +21,17 @@
 //!   games with DXVK (found in `mods.json`, or by a DLL whose product name is "DXVK"), use the
 //!   Vulkan layer instead. Direct3D 8 needs d3d8to9 or DXVK, so it is refused without DXVK.
 //! - **`ReShade.ini`**, only when there is none: the shader paths, the overlay key (Home) and no
-//!   proxy DLL. ReShade saves its settings into it, so once changed it stays on uninstall.
+//!   proxy DLL. ReShade saves its settings into it, so Reinstall keeps it once changed.
 //! - **Effects**: the packages ReShade's setup selects by default (`Enabled=1` or `Required=1` in
 //!   its `EffectPackages.ini`; today Standard effects and SweetFX), downloaded on each install
 //!   into `reshade-shaders\Shaders` and `\Textures`. Files already there that are not Game
 //!   Manager's are kept.
 //! - **In a protected folder**, `ReShade.ini`, `ReShadePreset.ini` and `ReShade.log` are created
 //!   and given to the user, as ReShade's setup does, so ReShade can save into them.
+//!
+//! Uninstall removes all of it: the DLL (putting the game's own back), `ReShade.ini`,
+//! `ReShadePreset.ini` and `ReShade.log` whoever wrote them, and the whole `reshade-shaders`
+//! folder. That is more than ReShade's setup removes (it keeps the preset and the textures).
 //!
 //! An install that changes the Vulkan layer runs as one `ReshadeJob` in a copy of Game Manager
 //! started as administrator with `--reshade-ops`: the folder's files first, then the layer; a
@@ -83,7 +87,8 @@ Install also adds ReShade's default effects (Standard effects and SweetFX) in re
 Vulkan games, and games with DXVK, use ReShade's Vulkan layer: one install for the whole \
 computer, shared with ReShade's own setup; installing updates it for every game on its list.
 
-Uninstall keeps ReShade.ini and your presets once ReShade has saved into them.
+Uninstall removes ReShade with its settings: ReShade.ini, ReShadePreset.ini, ReShade.log and \
+the reshade-shaders folder (back up a preset you want to keep).
 
 ⚠ Add-on builds are for single-player games: anti-cheat may ban players who use them online.";
 
@@ -850,23 +855,31 @@ fn split_effects(installed: Option<&Installed>) -> (Vec<InstalledFile>, Installe
     )
 }
 
-/// The job that removes `state`'s install, and takes the game off the layer if Game Manager put
-/// it there.
+/// The job that removes `state`'s install with everything ReShade keeps in the game's folder,
+/// and takes the game off the layer if Game Manager put it there.
 fn removal(state: &ReshadeState) -> Result<ReshadeJob> {
     let mut ops = Vec::new();
     if let Some(installed) = &state.installed {
-        let (effects, files) = split_effects(Some(installed));
-        ops = plan(Some(&files), &installed.folder, &[])?.ops;
-        let names: Vec<String> = effects
+        let folder = &installed.folder;
+        // The DLL goes and the game's own files come back, through `plan`.
+        let (_, files) = split_effects(Some(installed));
+        ops = plan(Some(&files), folder, &[])?.ops;
+        // So do ReShade's settings, preset and log, whoever wrote them (`plan` keeps changed
+        // files), and the whole effects folder.
+        let saved: Vec<String> = SAVED_FILES
             .iter()
-            .filter(|file| file.is_at(&installed.folder.join(&file.name)))
-            .map(|file| file.name.clone())
+            .filter(|name| folder.join(name).is_file())
+            .map(|name| (*name).to_owned())
             .collect();
-        if !names.is_empty() {
+        if !saved.is_empty() {
             ops.push(FileOp::DeleteFiles {
-                folder: installed.folder.clone(),
-                names,
+                folder: folder.clone(),
+                names: saved,
             });
+        }
+        let effects = folder.join(SHADERS_FOLDER);
+        if effects.is_dir() {
+            ops.push(FileOp::DeleteTree { path: effects });
         }
     }
     let layer = state
@@ -1285,15 +1298,24 @@ mod tests {
             b"the game's own d3d9"
         );
 
-        // ReShade saved its settings: uninstalling keeps them, the rest is as before.
-        fs::write(folder.join(CONFIG_FILE), b"[GENERAL]\r\nsaved by ReShade").unwrap();
-        run(&removal(&second).unwrap().ops).unwrap();
-        assert_eq!(
-            fs::read(folder.join(CONFIG_FILE)).unwrap(),
-            b"[GENERAL]\r\nsaved by ReShade"
-        );
-        fs::remove_file(folder.join(CONFIG_FILE)).unwrap();
-        assert_eq!(listing(&folder), before);
+        // ReShade ran and saved its settings, preset and log: Reinstall keeps them.
+        let saved = b"[GENERAL]\r\nsaved by ReShade";
+        fs::write(folder.join(CONFIG_FILE), saved).unwrap();
+        fs::write(folder.join("ReShadePreset.ini"), b"Techniques=LumaSharpen").unwrap();
+        fs::write(folder.join("ReShade.log"), b"log").unwrap();
+        let third = install(&second);
+        assert_eq!(fs::read(folder.join(CONFIG_FILE)).unwrap(), saved);
+        assert!(folder.join("ReShadePreset.ini").exists());
+
+        // Uninstalling removes all of ReShade, its settings and every effect included; the game's
+        // own files are as before.
+        run(&removal(&third).unwrap().ops).unwrap();
+        let without_effects: Vec<(String, Vec<u8>)> = before
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with(SHADERS_FOLDER))
+            .collect();
+        assert_eq!(listing(&folder), without_effects);
+        assert!(!folder.join(SHADERS_FOLDER).exists());
         fs::remove_dir_all(dir).unwrap();
     }
 

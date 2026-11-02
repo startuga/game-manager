@@ -228,6 +228,10 @@ pub(crate) enum FileOp {
         folder: PathBuf,
         names: Vec<String>,
     },
+    /// Deletes the folder `path` with everything in it.
+    DeleteTree {
+        path: PathBuf,
+    },
     /// Creates `path` (empty) when it is missing and lets the user `sid` change it: ReShade's
     /// files in a protected folder, which ReShade saves into while the game runs.
     Writable {
@@ -334,7 +338,9 @@ pub(crate) fn all_writable(ops: &[FileOp]) -> Result<bool> {
         .flat_map(|op| match op {
             FileOp::Copy { to, .. } => vec![to.clone()],
             FileOp::Move { from, to } => vec![from.clone(), to.clone()],
-            FileOp::Delete { path } | FileOp::Writable { path, .. } => vec![path.clone()],
+            FileOp::Delete { path }
+            | FileOp::Writable { path, .. }
+            | FileOp::DeleteTree { path } => vec![path.clone()],
             FileOp::CopyTree { to, .. } => vec![to.join("file")],
             FileOp::DeleteFiles { folder, names } => {
                 names.iter().map(|name| folder.join(name)).collect()
@@ -456,6 +462,9 @@ pub(crate) fn run_then(ops: &[FileOp], then: impl FnOnce() -> Result<()>) -> Res
 /// Removes what a successful run set aside, and the folders a `DeleteFiles` left empty.
 fn finish(step: &Done) {
     match step {
+        Done::SetAside { aside, .. } if aside.is_dir() => {
+            let _ = fs::remove_dir_all(aside);
+        }
         Done::SetAside { aside, .. } => {
             let _ = fs::remove_file(aside);
         }
@@ -572,10 +581,12 @@ fn delete_files(folder: &Path, names: &[String]) -> Result<Done> {
     }
 }
 
-/// Renames `path` to `<path>.gm-delete`, replacing a stale one.
+/// Renames `path` (a file or folder) to `<path>.gm-delete`, replacing a stale one.
 fn set_aside(path: &Path) -> Result<PathBuf> {
     let aside = with_suffix(path, ASIDE_SUFFIX);
-    if aside.exists() {
+    if aside.is_dir() {
+        fs::remove_dir_all(&aside).map_err(Error::io(&aside))?;
+    } else if aside.exists() {
         fs::remove_file(&aside).map_err(Error::io(&aside))?;
     }
     fs::rename(path, &aside).map_err(Error::io(path))?;
@@ -615,7 +626,8 @@ fn step(op: &FileOp) -> Result<Done> {
                 to: to.clone(),
             })
         }
-        FileOp::Delete { path } => Ok(Done::SetAside {
+        // A folder is set aside whole, like a file: undone by renaming it back.
+        FileOp::Delete { path } | FileOp::DeleteTree { path } => Ok(Done::SetAside {
             path: path.clone(),
             aside: set_aside(path)?,
         }),
@@ -805,13 +817,23 @@ mod tests {
             names,
         };
         let with_ini = tree(&game);
-        assert!(run(&[delete.clone(), failing]).is_err());
+        assert!(run(&[delete.clone(), failing.clone()]).is_err());
         assert_eq!(tree(&game), with_ini);
 
         // The emptied folders go; the user's file and its folder stay.
         run(&[delete]).unwrap();
         fs::remove_file(game.join("ReShade.ini")).unwrap();
         assert_eq!(tree(&game), before);
+
+        // A whole folder: put back when a later step fails, else gone with all it holds.
+        let delete_tree = FileOp::DeleteTree {
+            path: game.join("reshade-shaders"),
+        };
+        assert!(run(&[delete_tree.clone(), failing]).is_err());
+        assert_eq!(tree(&game), before);
+        run(&[delete_tree]).unwrap();
+        let left: Vec<String> = tree(&game).into_keys().collect();
+        assert_eq!(left, ["game.exe"]);
         fs::remove_dir_all(dir).unwrap();
     }
 

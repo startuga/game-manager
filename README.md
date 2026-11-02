@@ -33,8 +33,8 @@ chooses **Stable** (reshade.me, with add-ons), **Development** (the latest main 
 nightly.link) or **No Addons** (reshade.me, for online games). Vulkan games, and games with DXVK,
 use ReShade's Vulkan layer instead: the same install for the whole computer that ReShade's own
 setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rights. Direct3D 8
-games need DXVK first. Uninstalling keeps `ReShade.ini` and your presets once ReShade has saved
-into them.
+games need DXVK first. Reinstall keeps ReShade's settings; uninstalling removes ReShade with
+`ReShade.ini`, `ReShadePreset.ini`, `ReShade.log` and the `reshade-shaders` folder.
 
 The **Mods** expander installs mods into the game's folder. The first is
 [DXVK](https://github.com/doitsujin/dxvk), which runs Direct3D 8–11 games on Vulkan: **Install DXVK**
