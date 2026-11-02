@@ -10,6 +10,8 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
   `request_hdr_mod_configs`, `request_laa` and `request_reshade`, so whatever selects a game or
   shows HDR-mod looks things up once.
 - `mods_view.rs` (`impl GameManager`) – the Enhancements and Mods expanders and their dialog.
+- `reshade_panel.rs` (`impl GameManager`) – the top bar's ReShade button and its Global Shaders
+  panel; its `ShadersDraft` is UI-free and unit-tested.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
   UI-free and unit-tested: put logic there, not in views.
 - Blocking work runs through `ComponentContext::spawn_background` and comes back as a `Message`,
@@ -42,6 +44,11 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
   time, so whatever opens one is disabled while another is open.
 - **Drop**: the root is a transparent `Border` (so empty areas are hit-testable) whose
   `drop_policy` accepts storage items only while `can_add_game`.
+- **Wide panels**: `ContentDialog` is at most about 548 px wide, and the reactor cannot change
+  that. ReShade's panels are a last root-grid layer instead (as the game menu is): a dimmed
+  `Border` that takes every click, and the panel centred on it. Escape closes it, like the menu.
+- **Messages cross threads** (`spawn_background` needs `Message: Send`): a menu's `Key` is
+  passed on as a `String`.
 - **Tuple children stop at 16**: group rows, or pass a `Vec<View>` when rows come and go.
 - **Controls**:
   - `Button` has no foreground: the red ✕ is a `FontIcon` with `ThemeBrush::SystemCritical`.

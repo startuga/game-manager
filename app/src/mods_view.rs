@@ -33,6 +33,8 @@ pub(crate) enum ModKind {
     Dxvk,
     Laa,
     Reshade,
+    /// The Global Shaders going to every game with ReShade.
+    Deploy,
 }
 
 /// The columns of every mod row, fixed so the rows line up: name, version or status, Info, the
@@ -183,9 +185,13 @@ impl GameManager {
         });
     }
 
-    /// Any dialog is open: WinUI shows one at a time.
-    fn dialog_open(&self) -> bool {
-        self.mod_dialog.is_some() || self.draft.is_some() || self.removing.is_some()
+    /// Any dialog is open: WinUI shows one at a time. The ReShade panel counts too: what is
+    /// under it cannot be clicked.
+    pub(crate) fn dialog_open(&self) -> bool {
+        self.mod_dialog.is_some()
+            || self.draft.is_some()
+            || self.removing.is_some()
+            || self.reshade_panel.is_some()
     }
 
     /// Any work that the mod buttons wait for.

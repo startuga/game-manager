@@ -924,6 +924,15 @@ pub fn uninstall(game: &Game) -> Result<ModsFile> {
 /// `Error::Incomplete`, after the rest was saved.
 pub fn deploy(games: &[Game]) -> Result<ModsFile> {
     let mods = super::load()?;
+    let any = mods.games.values().any(|entry| {
+        entry
+            .reshade
+            .as_ref()
+            .is_some_and(|state| state.installed.is_some())
+    });
+    if !any {
+        return Ok(mods);
+    }
     let staging = fresh_staging("reshade-deploy")?;
     let effects = staging.join("effects");
     let staged = stage_global_shaders(&effects)?;
