@@ -1,6 +1,7 @@
 //! Minimal HTTPS `GET`s over WinHTTP, Windows' own HTTP client: it uses the system's proxy
 //! settings and certificate store, and follows redirects, with no extra crates. `get` reads small
-//! answers into memory, `download` streams a file to disk. Blocking: call them off the UI thread.
+//! answers into memory, `download` streams a file to disk, `etag` asks only for the headers.
+//! Blocking: call them off the UI thread.
 
 use crate::{Error, Result};
 use std::fs::{self, File};
@@ -8,9 +9,9 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use windows::Win32::{
     HINTERNET, INTERNET_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
-    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-    WinHttpSendRequest, WinHttpSetTimeouts,
+    WINHTTP_QUERY_ETAG, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle,
+    WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
+    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -46,6 +47,12 @@ pub(crate) fn get(url: &str) -> Result<Vec<u8>> {
         Ok(())
     })?;
     Ok(body)
+}
+
+/// `HEAD <url>`: the answer's `ETag`, which changes when the file does (GitHub's and GitLab's
+/// archives have one); `None` when it has none.
+pub(crate) fn etag(url: &str) -> Result<Option<String>> {
+    Ok(Response::request(url, w!("HEAD"))?.header(WINHTTP_QUERY_ETAG as u32))
 }
 
 /// `GET <url>` into `file`. A failed download leaves no file behind.
@@ -94,6 +101,10 @@ struct Response {
 
 impl Response {
     fn open(url: &str) -> Result<Self> {
+        Self::request(url, w!("GET"))
+    }
+
+    fn request(url: &str, method: PCWSTR) -> Result<Self> {
         let (host, path) = split_url(url).ok_or_else(|| Error::InvalidUrl(url.to_owned()))?;
         let agent = HSTRING::from(user_agent());
         // SAFETY: `agent` is a valid wide string for the call; null proxy names mean the system's.
@@ -122,7 +133,7 @@ impl Response {
         let request = Handle::new(unsafe {
             WinHttpOpenRequest(
                 connection.0,
-                w!("GET"),
+                method,
                 &object,
                 PCWSTR::null(),
                 PCWSTR::null(),
@@ -169,6 +180,42 @@ impl Response {
             _connection: connection,
             _session: session,
         })
+    }
+
+    /// A response header as text (`WINHTTP_QUERY_ETAG`), if the answer has it.
+    fn header(&self, query: u32) -> Option<String> {
+        let mut size = 0u32;
+        // SAFETY: asks only for the size, in bytes; it fails by design, or when there is no such
+        // header. A null name and index mean the header by its query and its first value.
+        let _ = unsafe {
+            WinHttpQueryHeaders(
+                self.request.0,
+                query,
+                PCWSTR::null(),
+                None,
+                &mut size,
+                std::ptr::null_mut(),
+            )
+        };
+        if size == 0 {
+            return None;
+        }
+        let mut text = vec![0u16; (size as usize).div_ceil(2)];
+        // SAFETY: `text` holds `size` bytes, the size WinHTTP asked for.
+        unsafe {
+            WinHttpQueryHeaders(
+                self.request.0,
+                query,
+                PCWSTR::null(),
+                Some(text.as_mut_ptr().cast()),
+                &mut size,
+                std::ptr::null_mut(),
+            )
+        }
+        .ok()
+        .ok()?;
+        let value = String::from_utf16_lossy(&text[..(size as usize / 2).min(text.len())]);
+        Some(value.trim_end_matches('\0').to_owned()).filter(|value| !value.is_empty())
     }
 
     /// Hands the body to `each`, a chunk at a time, until it ends or `each` fails.

@@ -69,6 +69,9 @@ pub enum Error {
     /// The mod cannot be installed in this game; the text says why.
     #[error("{0}")]
     NotInstallable(String),
+    /// A job did and saved its work, but left some of it out; the text names what.
+    #[error("{0}")]
+    Incomplete(String),
     /// An NVIDIA driver settings call failed; `status` is NVAPI's.
     #[error(
         "NVIDIA driver settings: could not {action}: {} (NVAPI {status})",

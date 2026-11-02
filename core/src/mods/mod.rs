@@ -14,6 +14,8 @@ pub mod dxvk;
 pub mod laa;
 pub mod reshade;
 pub mod reshade_layer;
+pub mod reshade_settings;
+pub mod shader_packs;
 
 pub use crate::elevate::FILE_OPS_ARG;
 use crate::text::{fnv1a, percent_decode, percent_encode};

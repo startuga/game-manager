@@ -344,7 +344,7 @@ impl GameManager {
                 }
                 (None, Some(Ok(target))) => match target.mode {
                     Mode::Dll(_) => format!(
-                        "Installs the latest {} build: {}, with ReShade's default effects in \
+                        "Installs the latest {} build: {}, with your Global Shaders in \
                          reshade-shaders, into {}.",
                         variant.name(),
                         target.summary(),
@@ -359,7 +359,7 @@ impl GameManager {
                         };
                         format!(
                             "Installs the latest {} build through ReShade's Vulkan layer{why}, with \
-                             ReShade's default effects in reshade-shaders.{}",
+                             your Global Shaders in reshade-shaders.{}",
                             variant.name(),
                             layer_note(apps)
                         )
