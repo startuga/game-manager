@@ -39,6 +39,7 @@
 //! started as administrator with `--reshade-ops`: the folder's files first, then the layer; a
 //! failing layer change undoes the files.
 
+use super::reshade_addons::{self, Addon};
 use super::reshade_layer::{self, LAYER_FILES, LayerChange, LayerStatus};
 use super::{
     BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, files_under, folder_writable,
@@ -150,6 +151,12 @@ pub struct ReshadeState {
     /// Game Manager's `reshade-shaders` folder in the game, while it is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<Effects>,
+    /// The variant of the installed build (`variant` is the next install's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built: Option<ReshadeVariant>,
+    /// The Global Addons' files Game Manager put next to the program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addons: Option<Installed>,
 }
 
 /// The `reshade-shaders` folder Game Manager put into a game.
@@ -164,6 +171,18 @@ pub struct Effects {
 }
 
 impl ReshadeState {
+    /// Whether the installed build loads add-ons: not the No Addons variant. An earlier
+    /// version's record says so only in its version ("6.8.0 (no add-ons)").
+    pub fn loads_addons(&self) -> bool {
+        match self.built {
+            Some(variant) => variant != ReshadeVariant::NoAddons,
+            None => self
+                .installed
+                .as_ref()
+                .is_some_and(|installed| !installed.version.ends_with("(no add-ons)")),
+        }
+    }
+
     /// Whether the game's `reshade-shaders` is Game Manager's: recorded as such, or (an earlier
     /// version's record) holding the effect files it listed.
     fn owns_effects(&self) -> bool {
@@ -810,6 +829,9 @@ fn removal(state: &ReshadeState) -> Result<ReshadeJob> {
             });
         }
         ops.extend(effects_removal(state, folder));
+        if let Some(addons) = &state.addons {
+            ops.extend(plan(Some(addons), &addons.folder, &[])?.ops);
+        }
     }
     let layer = state
         .layer
@@ -836,12 +858,73 @@ fn fresh_staging(name: &str) -> Result<PathBuf> {
     Ok(staging)
 }
 
-/// Lays out the user's Global Shaders under `tree`. Blocking: downloads the packs not cached
-/// and those that changed.
-fn stage_global_shaders(tree: &Path) -> Result<shader_packs::Staged> {
+/// The Global Shaders and Global Addons, laid out for a job.
+struct Global {
+    /// The add-ons switched on, with their folders.
+    addons: Vec<(Addon, PathBuf)>,
+    /// What could not be had: "Name: what failed".
+    failed: Vec<String>,
+}
+
+/// Lays out the user's Global Shaders under `tree`, with the effects of the Global Addons, and
+/// gets those add-ons. Blocking: downloads what is not cached and what changed.
+fn stage_global(tree: &Path) -> Result<Global> {
     let catalog = shader_packs::catalog()?;
-    let selection = reshade_settings::load()?.selection(&catalog);
-    shader_packs::stage(&catalog, &selection, tree, true)
+    let settings = reshade_settings::load()?;
+    let staged = shader_packs::stage(&catalog, &settings.selection(&catalog), tree, true)?;
+    let mut failed = staged.failed;
+    let mut addons = Vec::new();
+    if !settings.addons.is_empty() {
+        let list = reshade_addons::list()?;
+        for id in &settings.addons {
+            let Some(addon) = list.iter().find(|addon| addon.id == *id) else {
+                continue;
+            };
+            match reshade_addons::ensure(addon, true) {
+                Ok(dir) => {
+                    reshade_addons::stage_effects(addon, &dir, &tree.join(SHADERS_FOLDER))?;
+                    addons.push((addon.clone(), dir));
+                }
+                Err(error) => failed.push(format!("{}: {error}", addon.name)),
+            }
+        }
+    }
+    Ok(Global { addons, failed })
+}
+
+/// The operations that put the Global Addons' files for a 64-bit or 32-bit game into `folder`,
+/// replacing `previous`'s, and the record of them (`None` when there are none). A build without
+/// add-on support gets none. An add-on without a file for the game's bitness is named in
+/// `missing`.
+fn addon_ops(
+    previous: &ReshadeState,
+    folder: &Path,
+    is_64_bit: bool,
+    addons: &[(Addon, PathBuf)],
+    missing: &mut Vec<String>,
+) -> Result<(Vec<FileOp>, Option<Installed>)> {
+    let mut files = Vec::new();
+    if previous.loads_addons() {
+        for (addon, dir) in addons {
+            match reshade_addons::file_for(addon, dir, is_64_bit) {
+                Some(file) => files.push(file),
+                None => missing.push(format!(
+                    "{}: no {}-bit build",
+                    addon.name,
+                    if is_64_bit { 64 } else { 32 }
+                )),
+            }
+        }
+    }
+    let plan = plan(previous.addons.as_ref(), folder, &files)?;
+    let record = (!plan.files.is_empty() || !plan.backups.is_empty()).then(|| Installed {
+        version: String::new(),
+        page: String::new(),
+        folder: folder.to_path_buf(),
+        files: plan.files,
+        backups: plan.backups,
+    });
+    Ok((plan.ops, record))
 }
 
 /// The error for a job that did its work but left some of it out.
@@ -861,7 +944,8 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let cache = cached_build(state.variant, &build)?;
     let staging = fresh_staging("reshade")?;
     let effects = staging.join("effects");
-    let staged = stage_global_shaders(&effects)?;
+    let global = stage_global(&effects)?;
+    let mut failed = global.failed;
     let sid = if folder_writable(&target.folder)? {
         None
     } else {
@@ -872,7 +956,7 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         effects: &effects,
         staging: &staging,
     };
-    let prepared = prepare(
+    let mut prepared = prepare(
         &state,
         &target,
         &sources,
@@ -880,6 +964,19 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         &reshade_layer::status(),
         sid.as_deref(),
     )?;
+    // The Global Addons, for the build being installed.
+    let built = ReshadeState {
+        built: Some(state.variant),
+        ..state.clone()
+    };
+    let (ops, addons) = addon_ops(
+        &built,
+        &target.folder,
+        target.is_64_bit,
+        &global.addons,
+        &mut failed,
+    )?;
+    prepared.job.ops.extend(ops);
     run_job(&prepared.job)?;
     let _ = fs::remove_dir_all(&staging);
     let mut installed = prepared.installed;
@@ -891,14 +988,13 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         reshade.installed = Some(installed);
         reshade.layer = prepared.layer;
         reshade.effects = Some(prepared.effects);
+        reshade.built = Some(state.variant);
+        reshade.addons = addons;
     })?;
-    if staged.failed.is_empty() {
+    if failed.is_empty() {
         Ok(saved)
     } else {
-        Err(incomplete(
-            "ReShade is installed with its shaders",
-            &staged.failed,
-        ))
+        Err(incomplete("ReShade is installed", &failed))
     }
 }
 
@@ -912,16 +1008,19 @@ pub fn uninstall(game: &Game) -> Result<ModsFile> {
             reshade.installed = None;
             reshade.layer = None;
             reshade.effects = None;
+            reshade.built = None;
+            reshade.addons = None;
         }
         drop_default(&mut mods.reshade);
     })
 }
 
-/// Brings the Global Shaders to every game where Game Manager installed ReShade, replacing each
-/// one's `reshade-shaders`, and returns `mods.json` as saved. Writable folders are changed
-/// directly, the protected ones together as administrator (one UAC prompt). `games` names them
-/// in messages. Blocking: downloads, 7-Zip and file copies. What could not be done is named in an
-/// `Error::Incomplete`, after the rest was saved.
+/// Brings the Global Shaders and Global Addons to every game where Game Manager installed
+/// ReShade, replacing each one's `reshade-shaders` and add-on files, and returns `mods.json` as
+/// saved. Writable folders are changed directly, the protected ones together as administrator
+/// (one UAC prompt). `games` names them in messages and gives their bitness (a game not among
+/// them keeps its add-ons). Blocking: downloads, 7-Zip and file copies. What could not be done is
+/// named in an `Error::Incomplete`, after the rest was saved.
 pub fn deploy(games: &[Game]) -> Result<ModsFile> {
     let mods = super::load()?;
     let any = mods.games.values().any(|entry| {
@@ -935,16 +1034,18 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
     }
     let staging = fresh_staging("reshade-deploy")?;
     let effects = staging.join("effects");
-    let staged = stage_global_shaders(&effects)?;
-    let mut failed = staged.failed;
+    let global = stage_global(&effects)?;
+    let mut failed = global.failed;
     let name = |id: &str| {
         games
             .iter()
             .find(|game| game.id == id)
             .map_or_else(|| id.to_owned(), |game| game.name.clone())
     };
-    let mut done = Vec::new();
-    let mut protected: Vec<(String, Vec<FileOp>, Effects)> = Vec::new();
+    /// What a game gets: its effects' record, and its add-ons' (unchanged when `None`).
+    type Records = (Effects, Option<Option<Installed>>);
+    let mut done: Vec<(String, Records)> = Vec::new();
+    let mut protected: Vec<(String, Vec<FileOp>, Records)> = Vec::new();
     for (id, entry) in &mods.games {
         let Some(state) = &entry.reshade else {
             continue;
@@ -952,7 +1053,36 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
         let Some(installed) = state.installed.as_ref().filter(|i| i.folder.is_dir()) else {
             continue;
         };
-        let (ops, record) = match effects_ops(state, &installed.folder, &effects) {
+        let planned =
+            effects_ops(state, &installed.folder, &effects).and_then(|(mut ops, effects)| {
+                let bits = games
+                    .iter()
+                    .find(|game| game.id == *id)
+                    .and_then(|game| game.arch)
+                    .map(|arch| !matches!(arch, Arch::X86));
+                let addons = match bits {
+                    Some(is_64_bit) => {
+                        let mut missing = Vec::new();
+                        let (more, record) = addon_ops(
+                            state,
+                            &installed.folder,
+                            is_64_bit,
+                            &global.addons,
+                            &mut missing,
+                        )?;
+                        ops.extend(more);
+                        failed.extend(
+                            missing
+                                .into_iter()
+                                .map(|what| format!("{}: {what}", name(id))),
+                        );
+                        Some(record)
+                    }
+                    None => None,
+                };
+                Ok((ops, (effects, addons)))
+            });
+        let (ops, record) = match planned {
             Ok(planned) => planned,
             Err(error) => {
                 failed.push(format!("{}: {error}", name(id)));
@@ -984,21 +1114,27 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
     }
     let _ = fs::remove_dir_all(&staging);
     let mut saved = mods;
-    for (id, record) in done {
+    for (id, (effects, addons)) in done {
         saved = update(&id, |mods| {
             if let Some(reshade) = &mut mods.reshade {
                 // An earlier version's list of effect files is replaced by the folder's record.
                 if let Some(installed) = &mut reshade.installed {
                     *installed = split_effects(Some(installed)).1;
                 }
-                reshade.effects = Some(record);
+                reshade.effects = Some(effects);
+                if let Some(addons) = addons {
+                    reshade.addons = addons;
+                }
             }
         })?;
     }
     if failed.is_empty() {
         Ok(saved)
     } else {
-        Err(incomplete("The Global Shaders were deployed", &failed))
+        Err(incomplete(
+            "ReShade's global settings were deployed",
+            &failed,
+        ))
     }
 }
 
