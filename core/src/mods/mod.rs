@@ -13,6 +13,7 @@
 pub mod dxvk;
 pub mod laa;
 pub mod reshade;
+pub mod reshade_addons;
 pub mod reshade_layer;
 pub mod reshade_settings;
 pub mod shader_packs;

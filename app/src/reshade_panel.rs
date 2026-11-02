@@ -1,16 +1,19 @@
-//! ReShade ▸ Global Shaders: the panel the top bar's ReShade button opens. WinUI's ContentDialog
-//! is at most about 548 px wide, too narrow for the pack list, so the panel is drawn by the app as
-//! the window's last layer, as the game menu is: a dimmed backdrop that takes every click, and the
-//! panel centred on it. Escape and Cancel close it; Deploy saves the selection and brings it to
-//! every game with ReShade (`reshade::deploy`).
+//! ReShade ▸ Global Shaders and Global Addons: the panels the top bar's ReShade button opens.
+//! WinUI's ContentDialog is at most about 548 px wide, too narrow for the pack list, so a panel is
+//! drawn by the app as the window's last layer, as the game menu is: a dimmed backdrop that takes
+//! every click, and the panel centred on it.
 //!
-//! The panel edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single effects of
-//! a pack (▶ lists them, downloading the pack first). Essential packs are always deployed, so
-//! their box is checked and cannot be cleared.
+//! - **Global Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single
+//!   effects of a pack (▶ lists them, downloading the pack first). Essential packs are always
+//!   deployed, so their box is checked and cannot be cleared. Escape and Cancel close it; Deploy
+//!   saves the selection and brings it to every game with ReShade (`reshade::deploy`).
+//! - **Global Addons** lists every add-on with an On/Off switch. A switch takes effect when the
+//!   panel closes (Close or Escape): the choice is saved and deployed like the shaders.
 
 use crate::mods_view::ModKind;
 use crate::{GameManager, Message, icon_label};
 use gm_core::mods::reshade;
+use gm_core::mods::reshade_addons::{self, Addon};
 use gm_core::mods::reshade_settings::{self, GlobalSettings};
 use gm_core::mods::shader_packs::{self, Catalog, Category, Pick, Selection};
 use std::collections::{BTreeSet, HashMap};
@@ -50,10 +53,41 @@ pub(crate) fn load_library() -> Result<ShaderLibrary, String> {
     })
 }
 
+/// What the Global Addons panel reads: every add-on, the user's choices, and what is cached.
+#[derive(Clone)]
+pub(crate) struct AddonLibrary {
+    pub addons: Vec<Addon>,
+    pub settings: GlobalSettings,
+    /// The cached add-ons, by id, with their version when they have one.
+    pub cached: HashMap<String, Option<String>>,
+}
+
+/// The add-on list, read in the background (the custom folder is made, for its link). Blocking:
+/// one web request.
+pub(crate) fn load_addons() -> Result<AddonLibrary, String> {
+    if let Ok(folder) = reshade_addons::custom_dir() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let addons = reshade_addons::list().map_err(|e| e.to_string())?;
+    let settings = reshade_settings::load().map_err(|e| e.to_string())?;
+    let cached = addons
+        .iter()
+        .filter(|addon| reshade_addons::is_cached(addon))
+        .map(|addon| (addon.id.clone(), reshade_addons::version(addon)))
+        .collect();
+    Ok(AddonLibrary {
+        addons,
+        settings,
+        cached,
+    })
+}
+
 /// The open panel.
 pub(crate) enum ReshadePanel {
     /// Global Shaders; `None` while the library loads.
     Shaders(Option<ShadersDraft>),
+    /// Global Addons: the ids switched on; `None` while the list loads.
+    Addons(Option<BTreeSet<String>>),
 }
 
 /// The Global Shaders being chosen.
@@ -165,7 +199,10 @@ impl GameManager {
     pub(crate) fn reshade_button(&self, context: &ViewContext<Self>) -> View {
         // Messages cross threads, so the key travels as text.
         let menu = Menu::new(
-            [MenuItem::item("shaders", "Global Shaders")],
+            [
+                MenuItem::item("shaders", "Global Shaders"),
+                MenuItem::item("addons", "Global Addons"),
+            ],
             context.callback(|key: Key| {
                 Message::ReshadeMenu(key.as_str().unwrap_or_default().to_owned())
             }),
@@ -179,10 +216,81 @@ impl GameManager {
 
     /// Opens what the ReShade button's menu picked.
     pub(crate) fn open_reshade_panel(&mut self, key: &str, context: &ComponentContext<Self>) {
-        if key == "shaders" {
-            self.reshade_panel = Some(ReshadePanel::Shaders(None));
-            context.spawn_background(|_cancel| Message::ShaderLibraryLoaded(load_library()));
+        match key {
+            "shaders" => {
+                self.reshade_panel = Some(ReshadePanel::Shaders(None));
+                context.spawn_background(|_cancel| Message::ShaderLibraryLoaded(load_library()));
+            }
+            "addons" => {
+                self.reshade_panel = Some(ReshadePanel::Addons(None));
+                context.spawn_background(|_cancel| Message::AddonLibraryLoaded(load_addons()));
+            }
+            _ => {}
         }
+    }
+
+    /// The Global Addons panel's messages.
+    pub(crate) fn handle_addons(&mut self, message: Message, context: &ComponentContext<Self>) {
+        match message {
+            Message::AddonLibraryLoaded(loaded) => {
+                match (&loaded, &mut self.reshade_panel) {
+                    (Ok(library), Some(ReshadePanel::Addons(draft @ None))) => {
+                        *draft = Some(library.settings.addons.iter().cloned().collect());
+                    }
+                    (Err(error), _) => {
+                        self.error = Some(format!("Global Addons: {error}"));
+                        self.reshade_panel = None;
+                    }
+                    _ => {}
+                }
+                self.addon_library = Some(loaded);
+            }
+            Message::AddonSwitched(id, on) => {
+                if let Some(ReshadePanel::Addons(Some(enabled))) = &mut self.reshade_panel {
+                    if on {
+                        enabled.insert(id);
+                    } else {
+                        enabled.remove(&id);
+                    }
+                }
+            }
+            Message::OpenAddonFolder => {
+                self.error = reshade_addons::custom_dir()
+                    .and_then(|folder| gm_core::open_folder(&folder, None))
+                    .err()
+                    .map(|e| e.to_string());
+            }
+            Message::CloseAddons => self.apply_addons(context),
+            _ => {}
+        }
+    }
+
+    /// Closes Global Addons; a changed choice is saved and deployed to every game with ReShade.
+    fn apply_addons(&mut self, context: &ComponentContext<Self>) {
+        let panel = self.reshade_panel.take();
+        let (Some(ReshadePanel::Addons(Some(enabled))), Some(Ok(library))) =
+            (panel, &self.addon_library)
+        else {
+            return;
+        };
+        let mut settings = library.settings.clone();
+        let chosen: Vec<String> = enabled.into_iter().collect();
+        let mut before = settings.addons.clone();
+        before.sort();
+        if chosen == before {
+            return;
+        }
+        settings.addons = chosen;
+        // The shaders' copy of the settings must not bring back the old add-ons.
+        if let Some(Ok(shaders)) = &mut self.shader_library {
+            shaders.settings.addons = settings.addons.clone();
+        }
+        let games = self.games.clone();
+        self.mod_job = Some((String::new(), ModKind::Deploy));
+        context.spawn_background(move |_cancel| {
+            let done = reshade_settings::save(&settings).and_then(|()| reshade::deploy(&games));
+            Message::ModJobDone(done.map_err(|e| e.to_string()))
+        });
     }
 
     /// The Global Shaders panel's messages.
@@ -281,6 +389,12 @@ impl GameManager {
                 }
             }
             Message::DeployShaders => self.deploy_shaders(context),
+            // Escape on Global Addons closes it like its Close button: the switches apply.
+            Message::CloseReshadePanel
+                if matches!(self.reshade_panel, Some(ReshadePanel::Addons(_))) =>
+            {
+                self.apply_addons(context);
+            }
             Message::CloseReshadePanel => self.reshade_panel = None,
             _ => {}
         }
@@ -338,6 +452,7 @@ impl GameManager {
         let height = (height - 2.0 * PANEL_MARGIN).clamp(360.0, PANEL_HEIGHT);
         let content = match panel {
             ReshadePanel::Shaders(draft) => self.shaders_panel(draft.as_ref(), context),
+            ReshadePanel::Addons(enabled) => self.addons_panel(enabled.as_ref(), context),
         };
         let card = Border::new()
             .width(width)
@@ -359,6 +474,72 @@ impl GameManager {
                 .children((backdrop, card))
                 .into(),
         )
+    }
+
+    /// ReShade Addon Manager: the custom folder's link, a card per add-on, and Close.
+    fn addons_panel(
+        &self,
+        enabled: Option<&BTreeSet<String>>,
+        context: &ViewContext<Self>,
+    ) -> View {
+        let title = TextBlock::new()
+            .text("ReShade Addon Manager")
+            .font_size(28.0)
+            .font_weight(FontWeight::SEMI_BOLD);
+        let header = StackPanel::new().spacing(4.0).grid_row(0).children((
+            title,
+            HyperlinkButton::new()
+                .content("Place custom .addon64/.addon32 files here")
+                .on_click(context.message(Message::OpenAddonFolder))
+                .automation_name("Place custom add-on files here"),
+            note(
+                "A switch takes effect when this closes: the add-ons switched on go into every \
+                     game with ReShade, next to its program. Games with the No Addons build get \
+                     none.",
+            ),
+        ));
+        let library = self
+            .addon_library
+            .as_ref()
+            .and_then(|library| library.as_ref().ok());
+        let body: View = match (enabled, library) {
+            (Some(enabled), Some(library)) => {
+                let cards: Vec<View> = library
+                    .addons
+                    .iter()
+                    .map(|addon| addon_card(addon, enabled.contains(&addon.id), library, context))
+                    .collect();
+                ScrollViewer::new()
+                    .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
+                    .content(
+                        StackPanel::new()
+                            .spacing(12.0)
+                            .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
+                            .children(cards),
+                    )
+                    .into()
+            }
+            _ => StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(12.0)
+                .children((
+                    ProgressRing::new().is_active(true).width(20.0).height(20.0),
+                    TextBlock::new().text("Reading the add-on list…"),
+                ))
+                .into(),
+        };
+        let close = Button::new()
+            .horizontal_alignment(HorizontalAlignment::Right)
+            .min_width(280.0)
+            .on_click(context.message(Message::CloseAddons))
+            .automation_name("Close")
+            .content("Close")
+            .grid_row(2);
+        Grid::new()
+            .rows([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
+            .row_spacing(20.0)
+            .children((header, Border::new().grid_row(1).content(body), close))
+            .into()
     }
 
     fn shaders_panel(&self, draft: Option<&ShadersDraft>, context: &ViewContext<Self>) -> View {
@@ -687,6 +868,90 @@ impl GameManager {
             ))
             .into()
     }
+}
+
+/// One add-on: its name, version ✓ when downloaded, description and How to use, and its switch.
+fn addon_card(
+    addon: &Addon,
+    on: bool,
+    library: &AddonLibrary,
+    context: &ViewContext<GameManager>,
+) -> View {
+    let mut title: Vec<View> = vec![
+        TextBlock::new()
+            .text(addon.name.as_str())
+            .font_size(16.0)
+            .font_weight(FontWeight::SEMI_BOLD)
+            .text_wrapping(TextWrapping::Wrap)
+            .into(),
+    ];
+    if let Some(version) = library.cached.get(&addon.id) {
+        if let Some(version) = version {
+            title.push(
+                TextBlock::new()
+                    .text(version.as_str())
+                    .opacity(0.7)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .into(),
+            );
+        }
+        title.push(
+            FontIcon::new()
+                .glyph("\u{E73E}")
+                .foreground(ThemeBrush::Accent)
+                .vertical_alignment(VerticalAlignment::Center)
+                .tooltip("Downloaded"),
+        );
+    }
+    let mut lines: Vec<View> = vec![
+        StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(10.0)
+            .children(title)
+            .into(),
+        TextBlock::new()
+            .text(addon.description.as_str())
+            .opacity(0.7)
+            .text_wrapping(TextWrapping::Wrap)
+            .into(),
+    ];
+    if let Some(page) = &addon.repository {
+        lines.push(
+            HyperlinkButton::new()
+                .content("How to use")
+                .on_click(context.message(Message::OpenModPage(page.clone())))
+                .automation_name(format!("How to use {}", addon.name))
+                .into(),
+        );
+    }
+    let id = addon.id.clone();
+    // Named after its add-on, for screen readers.
+    let switch = ToggleSwitch::new()
+        .is_on(on)
+        .on_content("On")
+        .off_content("Off")
+        .automation_name(addon.name.as_str())
+        .vertical_alignment(VerticalAlignment::Center)
+        .on_toggled(context.callback(move |on: bool| Message::AddonSwitched(id.clone(), on)));
+    Border::new()
+        .padding(Thickness::uniform(16.0))
+        .corner_radius(8.0)
+        .background(ThemeBrush::CardBackground)
+        .border_brush(ThemeBrush::CardStroke)
+        .border_thickness(Thickness::uniform(1.0))
+        .content(
+            Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto])
+                .column_spacing(24.0)
+                .children((
+                    StackPanel::new()
+                        .spacing(4.0)
+                        .grid_column(0)
+                        .children(lines),
+                    Border::new().grid_column(1).content(switch),
+                )),
+        )
+        .into()
 }
 
 fn heading(text: &str) -> View {

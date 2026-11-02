@@ -246,7 +246,7 @@ pub fn stage(
 
 /// Copies the `Shaders` and `Textures` files of `from` that `take` accepts into `to`, keeping
 /// those already there; returns how many it copied.
-fn copy_files(from: &Path, to: &Path, take: impl Fn(&str) -> bool) -> Result<usize> {
+pub(crate) fn copy_files(from: &Path, to: &Path, take: impl Fn(&str) -> bool) -> Result<usize> {
     let mut copied = 0;
     for relative in pack_files(from)? {
         let name = relative.to_string_lossy();
@@ -419,7 +419,7 @@ fn latest(pack: &ShaderPack) -> Result<(String, String, String)> {
 
 /// Lays an unpacked pack out as `kept\Shaders` and `kept\Textures`; returns how many files it
 /// kept.
-fn lay_out(catalog: &Catalog, unpacked: &Path, kept: &Path) -> Result<usize> {
+pub(crate) fn lay_out(catalog: &Catalog, unpacked: &Path, kept: &Path) -> Result<usize> {
     let mut count = 0;
     let mut copy = |from: &Path, relative: &Path, to: &Path| -> Result<()> {
         let excluded = relative

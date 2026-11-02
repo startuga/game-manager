@@ -22,7 +22,7 @@ use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
 use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
-use reshade_panel::{ReshadePanel, ShaderLibrary};
+use reshade_panel::{AddonLibrary, ReshadePanel, ShaderLibrary};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -177,6 +177,14 @@ enum Message {
     DeployShaders,
     /// Cancel or Escape in the ReShade panel.
     CloseReshadePanel,
+    /// Every add-on, the user's choices and what is cached, or what failed.
+    AddonLibraryLoaded(Result<AddonLibrary, String>),
+    /// An add-on's switch in Global Addons: id, on.
+    AddonSwitched(String, bool),
+    /// Opens the folder for the user's own add-ons.
+    OpenAddonFolder,
+    /// Global Addons' Close: saves and deploys a changed choice.
+    CloseAddons,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -232,8 +240,9 @@ struct GameManager {
     reshade_pending: HashSet<String>,
     /// ReShade ▸ Global Shaders, while open.
     reshade_panel: Option<ReshadePanel>,
-    /// What the panel read: read again each time it opens.
+    /// What the panels read: read again each time one opens.
     shader_library: Option<Result<ShaderLibrary, String>>,
+    addon_library: Option<Result<AddonLibrary, String>>,
     /// Packs being downloaded to list their effects, and those that failed.
     packs_downloading: HashSet<String>,
     pack_errors: HashMap<String, String>,
@@ -1097,6 +1106,7 @@ impl Component for GameManager {
             reshade_pending: HashSet::new(),
             reshade_panel: None,
             shader_library: None,
+            addon_library: None,
             packs_downloading: HashSet::new(),
             pack_errors: HashMap::new(),
             mod_dialog: None,
@@ -1343,6 +1353,10 @@ impl GameManager {
             | Message::ShaderPackDownloaded(..)
             | Message::DeployShaders
             | Message::CloseReshadePanel) => self.handle_shaders(message, context),
+            message @ (Message::AddonLibraryLoaded(_)
+            | Message::AddonSwitched(..)
+            | Message::OpenAddonFolder
+            | Message::CloseAddons) => self.handle_addons(message, context),
             Message::EnhancementsExpanded(open) => self.enhancements_open = open,
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);

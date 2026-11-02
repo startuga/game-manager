@@ -11,7 +11,8 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
   shows HDR-mod looks things up once.
 - `mods_view.rs` (`impl GameManager`) – the Enhancements and Mods expanders and their dialog.
 - `reshade_panel.rs` (`impl GameManager`) – the top bar's ReShade button and its Global Shaders
-  panel; its `ShadersDraft` is UI-free and unit-tested.
+  and Global Addons panels; `ShadersDraft` is UI-free and unit-tested. Deploy, and closing
+  Global Addons after a change, run `reshade::deploy` for every game with ReShade.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
   UI-free and unit-tested: put logic there, not in views.
 - Blocking work runs through `ComponentContext::spawn_background` and comes back as a `Message`,

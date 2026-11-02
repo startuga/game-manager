@@ -31,6 +31,8 @@ holds the rules and facts that span them.
   - `mods/shader_packs.rs` (Global Shaders: the shipped `config/reshade-shaders.json`, the pack
     cache, layout and staging) and `mods/reshade_settings.rs` (`reshade.json`: the selection,
     add-ons and profiles).
+  - `mods/reshade_addons.rs` (Global Addons: ReShade's `Addons.ini`, the shipped
+    `config/reshade-addons.json` and the user's own; the add-on cache).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).
   - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
@@ -154,3 +156,6 @@ holds the rules and facts that span them.
     pack changed. Some releases carry no files (PumboAutoHDR): use the branch archive.
     `cargo test -p gm-core live_packs -- --ignored --nocapture` downloads every pack and reports
     its effects.
+  - **Add-ons**: some entries of `Addons.ini` link a plain `.addon` as `DownloadUrl64`; it is
+    kept as `.addon64`. Its links can be broken (ShaderToggler's 32-bit one): one bitness that
+    downloads is enough. `live_addons` downloads every add-on. A No Addons build gets none.

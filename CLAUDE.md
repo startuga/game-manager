@@ -55,7 +55,8 @@ games plus games added by hand, starts them, and installs mods (ReShade, DXVK, L
     then `PostMessage` `BM_CLICK` to `GetDlgItem(dlg, 1)`.
 - **No input desktop**: drag and drop, right-clicks and the UAC prompt can't be done (the cursor
   reads 0,0 and there is no foreground window). Ask the user to try them on a build they run.
-  ReShade's Vulkan layer always needs the UAC prompt, so the user tests it.
+  ReShade's Vulkan layer always needs the UAC prompt, so the user tests it. Keys posted to the
+  window (`WM_KEYDOWN` for Escape) do not reach WinUI's key events either.
 - **Packaged session**: programs started from the Claude desktop app run inside its package.
   - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`.
   - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
