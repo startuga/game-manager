@@ -40,6 +40,7 @@ holds the rules and facts that span them.
   - `error.rs` (`Error`, `Result`, `ScanError`).
   - `json_file.rs` (where files live, load/save).
   - `security.rs` (the user's SID, whether elevated, granting file rights).
+  - `clipboard.rs` (a file on the clipboard, `CF_HDROP`, through a message-only window).
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`).
   - `text.rs`.
   - `com.rs` (`ComGuard`).

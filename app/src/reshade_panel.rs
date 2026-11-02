@@ -17,6 +17,7 @@ use gm_core::mods::reshade_addons::{self, Addon};
 use gm_core::mods::reshade_settings::{self, GlobalSettings};
 use gm_core::mods::shader_packs::{self, Catalog, Category, Pick, Selection};
 use std::collections::{BTreeSet, HashMap};
+use windows_pickers::OpenFilePicker;
 use windows_reactor::*;
 
 /// The user's own shaders, listed like a pack.
@@ -35,8 +36,14 @@ pub(crate) struct ShaderLibrary {
     pub effects: HashMap<String, Vec<String>>,
 }
 
-/// The library, read in the background. Blocking.
+/// The library, read in the background (the custom folder is made, for Open Custom Folder).
+/// Blocking.
 pub(crate) fn load_library() -> Result<ShaderLibrary, String> {
+    if let Ok(custom) = shader_packs::custom_dir() {
+        for top in [shader_packs::SHADERS, shader_packs::TEXTURES] {
+            let _ = std::fs::create_dir_all(custom.join(top));
+        }
+    }
     let catalog = shader_packs::catalog().map_err(|e| e.to_string())?;
     let settings = reshade_settings::load().map_err(|e| e.to_string())?;
     let mut effects: HashMap<String, Vec<String>> = catalog
@@ -97,6 +104,10 @@ pub(crate) struct ShadersDraft {
     pub search: String,
     /// The packs whose effects are listed (`CUSTOM` too).
     pub expanded: BTreeSet<String>,
+    /// The profile being renamed, and the name typed so far.
+    pub renaming: Option<(String, String)>,
+    /// What Export or Import did, shown under the profiles.
+    pub note: Option<String>,
 }
 
 impl ShadersDraft {
@@ -388,6 +399,139 @@ impl GameManager {
                     }
                 }
             }
+            Message::ProfileLoad(name) => {
+                let shaders = library.and_then(|library| {
+                    library
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.name == name)
+                        .map(|profile| profile.shaders.clone())
+                });
+                if let (Some(draft), Some(shaders)) = (draft, shaders) {
+                    draft.selection = shaders;
+                    self.change_profiles(context, |settings, _| settings.profile = Some(name));
+                }
+            }
+            Message::ProfileRename(name) => {
+                if let Some(draft) = draft {
+                    draft.renaming = (!name.is_empty()).then(|| (name.clone(), name));
+                }
+            }
+            Message::ProfileRenameText(text) => {
+                if let Some(draft) = draft
+                    && let Some((_, typed)) = &mut draft.renaming
+                {
+                    *typed = text;
+                }
+            }
+            Message::ProfileRenamed => {
+                let Some((old, new)) = draft.and_then(|draft| draft.renaming.take()) else {
+                    return;
+                };
+                self.change_profiles(context, move |settings, draft| {
+                    if !settings.rename_profile(&old, &new) {
+                        draft.note = Some(format!(
+                            "\u{201c}{}\u{201d} cannot be a profile's name: it is blank or taken.",
+                            new.trim()
+                        ));
+                    }
+                });
+            }
+            Message::ProfileDelete(name) => {
+                self.change_profiles(context, |settings, _| settings.delete_profile(&name));
+            }
+            Message::ProfileSave => {
+                self.change_profiles(context, |settings, draft| {
+                    settings.save_profile(draft.selection.clone());
+                });
+            }
+            Message::ProfileNew => {
+                self.change_profiles(context, |settings, draft| {
+                    settings.new_profile(draft.selection.clone());
+                });
+            }
+            Message::ProfilesSaved(Err(error)) => self.error = Some(error),
+            Message::ProfilesSaved(Ok(())) => {}
+            Message::ExportShaders => {
+                let (Some(draft), Some(library)) = (draft, library) else {
+                    return;
+                };
+                draft.note = Some("Zipping the selected shaders…".to_owned());
+                let (catalog, selection) = (library.catalog.clone(), draft.selection.clone());
+                context.spawn_background(move |_cancel| {
+                    let done =
+                        shader_packs::export(&catalog, &selection).and_then(|(zip, failed)| {
+                            gm_core::clipboard::put_file(&zip)?;
+                            Ok((zip, failed))
+                        });
+                    Message::ShadersExported(done.map_err(|e| e.to_string()))
+                });
+            }
+            Message::ShadersExported(done) => {
+                if let Some(draft) = draft {
+                    draft.note = Some(match done {
+                        Ok((zip, failed)) if failed.is_empty() => format!(
+                            "{} is on the clipboard: paste it into Discord or a folder to share.",
+                            zip.file_name()
+                                .map(|name| name.to_string_lossy())
+                                .unwrap_or_default()
+                        ),
+                        Ok((_, failed)) => format!(
+                            "The ZIP is on the clipboard, without what could not be downloaded:\n{}",
+                            failed.join("\n")
+                        ),
+                        Err(error) => format!("Export failed: {error}"),
+                    });
+                }
+            }
+            Message::ImportShaders => {
+                self.picking = OpenFilePicker::new()
+                    .title("Choose a ZIP of ReShade shaders to import")
+                    .filter_extensions("ZIP archives", ["zip"])
+                    .request(context, |picked| {
+                        Message::ImportPicked(
+                            picked.map_err(|e| format!("could not choose a file: {}", e.message())),
+                        )
+                    });
+            }
+            Message::ImportPicked(picked) => {
+                self.picking = false;
+                match picked {
+                    Ok(Some(zip)) => {
+                        if let Some(draft) = draft {
+                            draft.note = Some("Importing…".to_owned());
+                        }
+                        context.spawn_background(move |_cancel| {
+                            let done = shader_packs::import(&zip)
+                                .map(|count| (count, shader_packs::custom_effects()));
+                            Message::ShadersImported(done.map_err(|e| e.to_string()))
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            Message::ShadersImported(done) => {
+                let note = match done {
+                    Ok((count, effects)) => {
+                        if let Some(Ok(library)) = &mut self.shader_library {
+                            library.effects.insert(CUSTOM.to_owned(), effects);
+                        }
+                        format!("Imported {count} files into Custom Shaders.")
+                    }
+                    Err(error) => format!("Import failed: {error}"),
+                };
+                if let Some(ReshadePanel::Shaders(Some(draft))) = &mut self.reshade_panel {
+                    draft.note = Some(note);
+                }
+            }
+            Message::OpenCustomFolder => {
+                self.error = shader_packs::custom_dir()
+                    .and_then(|folder| gm_core::open_folder(&folder, None))
+                    .err()
+                    .map(|e| e.to_string());
+            }
             Message::DeployShaders => self.deploy_shaders(context),
             // Escape on Global Addons closes it like its Close button: the switches apply.
             Message::CloseReshadePanel
@@ -398,6 +542,25 @@ impl GameManager {
             Message::CloseReshadePanel => self.reshade_panel = None,
             _ => {}
         }
+    }
+
+    /// Changes the profiles (in the library's settings, with the draft at hand) and saves them in
+    /// the background. The shader selection saved stays the deployed one until Deploy.
+    fn change_profiles(
+        &mut self,
+        context: &ComponentContext<Self>,
+        change: impl FnOnce(&mut GlobalSettings, &mut ShadersDraft),
+    ) {
+        let (Some(ReshadePanel::Shaders(Some(draft))), Some(Ok(library))) =
+            (&mut self.reshade_panel, &mut self.shader_library)
+        else {
+            return;
+        };
+        change(&mut library.settings, draft);
+        let settings = library.settings.clone();
+        context.spawn_background(move |_cancel| {
+            Message::ProfilesSaved(reshade_settings::save(&settings).map_err(|e| e.to_string()))
+        });
     }
 
     /// Downloads a pack that is not cached, to list its effects.
@@ -553,7 +716,18 @@ impl GameManager {
             .as_ref()
             .and_then(|library| library.as_ref().ok());
         let body: View = match (draft, library) {
-            (Some(draft), Some(library)) => self.shader_list(draft, library, context),
+            (Some(draft), Some(library)) => Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Pixel(300.0)])
+                .column_spacing(32.0)
+                .children((
+                    Border::new()
+                        .grid_column(0)
+                        .content(self.shader_list(draft, library, context)),
+                    Border::new()
+                        .grid_column(1)
+                        .content(profiles_column(draft, library, context)),
+                ))
+                .into(),
             _ => StackPanel::new()
                 .orientation(Orientation::Horizontal)
                 .spacing(12.0)
@@ -868,6 +1042,129 @@ impl GameManager {
             ))
             .into()
     }
+}
+
+/// Profiles (each with ✎ and ✕; Save, New), Export and Import, and Open Custom Folder.
+fn profiles_column(
+    draft: &ShadersDraft,
+    library: &ShaderLibrary,
+    context: &ViewContext<GameManager>,
+) -> View {
+    let wide = |label: &str, message: Message| {
+        Button::new()
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .on_click(context.message(message))
+            .automation_name(label)
+            .content(label)
+    };
+    let mut rows: Vec<View> = vec![
+        TextBlock::new()
+            .text("Profiles")
+            .font_size(20.0)
+            .font_weight(FontWeight::SEMI_BOLD)
+            .into(),
+    ];
+    let current = library.settings.profile.as_deref();
+    for profile in &library.settings.profiles {
+        let name = profile.name.clone();
+        let row: View = match &draft.renaming {
+            Some((old, typed)) if *old == profile.name => Grid::new()
+                .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
+                .column_spacing(4.0)
+                .children((
+                    TextBox::new()
+                        .text(typed.as_str())
+                        .automation_name(format!("New name for {name}"))
+                        .on_text_changed(context.callback(|text: std::rc::Rc<str>| {
+                            Message::ProfileRenameText(text.to_string())
+                        }))
+                        .grid_column(0),
+                    Button::new()
+                        .on_click(context.message(Message::ProfileRenamed))
+                        .automation_name("Rename")
+                        .content(SymbolIcon::new().symbol(Symbol::Accept))
+                        .grid_column(1)
+                        .tooltip("Rename"),
+                    Button::new()
+                        .on_click(context.message(Message::ProfileRename(String::new())))
+                        .automation_name("Keep the name")
+                        .content(SymbolIcon::new().symbol(Symbol::Cancel))
+                        .grid_column(2)
+                        .tooltip("Keep the name"),
+                ))
+                .into(),
+            _ => {
+                let weight = if current == Some(profile.name.as_str()) {
+                    FontWeight::SEMI_BOLD
+                } else {
+                    FontWeight::NORMAL
+                };
+                Grid::new()
+                    .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
+                    .column_spacing(4.0)
+                    .children((
+                        Button::new()
+                            .style(ButtonStyle::Subtle)
+                            .horizontal_alignment(HorizontalAlignment::Stretch)
+                            .horizontal_content_alignment(HorizontalAlignment::Left)
+                            .on_click(context.message(Message::ProfileLoad(name.clone())))
+                            .automation_name(format!("Load {name}"))
+                            .content(TextBlock::new().text(name.as_str()).font_weight(weight))
+                            .grid_column(0)
+                            .tooltip("Use this profile's selection"),
+                        Button::new()
+                            .style(ButtonStyle::Subtle)
+                            .on_click(context.message(Message::ProfileRename(name.clone())))
+                            .automation_name(format!("Rename {name}"))
+                            .content(SymbolIcon::new().symbol(Symbol::Edit))
+                            .grid_column(1)
+                            .tooltip("Rename"),
+                        Button::new()
+                            .style(ButtonStyle::Subtle)
+                            .on_click(context.message(Message::ProfileDelete(name.clone())))
+                            .automation_name(format!("Delete {name}"))
+                            .content(
+                                FontIcon::new()
+                                    .glyph("\u{E711}")
+                                    .foreground(ThemeBrush::SystemCritical),
+                            )
+                            .grid_column(2)
+                            .tooltip("Delete"),
+                    ))
+                    .into()
+            }
+        };
+        rows.push(row);
+    }
+    let separator = || -> View {
+        Border::new()
+            .height(1.0)
+            .background(ThemeBrush::CardStroke)
+            .margin(Thickness::xy(0.0, 6.0))
+            .into()
+    };
+    rows.extend([
+        wide("Save", Message::ProfileSave)
+            .tooltip("Save the selection into the current profile (a new one when there is none)"),
+        wide("New", Message::ProfileNew).tooltip("Save the selection as a new profile"),
+        separator(),
+        wide("Export", Message::ExportShaders).tooltip(
+            "Zip the selected shader files and copy the archive to your clipboard. Paste it \
+             into Discord or a folder to share.",
+        ),
+        wide("Import", Message::ImportShaders)
+            .tooltip("Add the shaders of a ZIP to your own, under Custom Shaders"),
+        separator(),
+        wide("Open Custom Folder", Message::OpenCustomFolder)
+            .tooltip("Your own shaders and textures go here; they show as Custom Shaders"),
+    ]);
+    if let Some(text) = &draft.note {
+        rows.push(note(text));
+    }
+    ScrollViewer::new()
+        .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
+        .content(StackPanel::new().spacing(10.0).children(rows))
+        .into()
 }
 
 /// One add-on: its name, version ✓ when downloaded, description and How to use, and its switch.

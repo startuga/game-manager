@@ -43,6 +43,31 @@ pub(crate) fn extract(archive: &Path, dest: &Path) -> Result<()> {
     fs::remove_dir_all(&inner).map_err(Error::io(&inner))
 }
 
+/// Packs `folder` (with its name) into the ZIP `archive`, replacing one that is there.
+pub(crate) fn zip_folder(folder: &Path, archive: &Path) -> Result<()> {
+    let tool = tool()?;
+    if archive.exists() {
+        fs::remove_file(archive).map_err(Error::io(archive))?;
+    }
+    let status = Command::new(&tool)
+        .args(["a", "-tzip", "-y", "-bso0", "-bsp0", "-bse0"])
+        .arg(archive)
+        .arg(folder)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW as u32)
+        .status()
+        .map_err(Error::io(&tool))?;
+    match status.code() {
+        Some(0 | 1) => Ok(()),
+        code => Err(Error::Extract {
+            archive: archive.to_path_buf(),
+            code: code.unwrap_or(-1),
+        }),
+    }
+}
+
 /// `7z x -y -o<dest> <archive>`, quietly and without a console window (7-Zip is a console program,
 /// the app has none). Exit code 1 is a warning (e.g. a file it could not set the time of).
 fn run(tool: &Path, archive: &Path, dest: &Path) -> Result<()> {

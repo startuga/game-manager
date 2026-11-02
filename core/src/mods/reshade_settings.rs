@@ -35,6 +35,67 @@ impl GlobalSettings {
             .clone()
             .unwrap_or_else(|| Selection::defaults(catalog))
     }
+
+    /// Adds a profile of `shaders` named "Profile <n>", the first number free, and makes it the
+    /// current one; returns its name.
+    pub fn new_profile(&mut self, shaders: Selection) -> String {
+        let name = (1..)
+            .map(|n| format!("Profile {n}"))
+            .find(|name| self.profile_index(name).is_none())
+            .unwrap_or_default();
+        self.profiles.push(Profile {
+            name: name.clone(),
+            shaders,
+        });
+        self.profile = Some(name.clone());
+        name
+    }
+
+    /// Saves `shaders` into the current profile, or into a new one when there is none.
+    pub fn save_profile(&mut self, shaders: Selection) {
+        match self
+            .profile
+            .as_deref()
+            .and_then(|name| self.profile_index(name))
+        {
+            Some(index) => self.profiles[index].shaders = shaders,
+            None => {
+                self.new_profile(shaders);
+            }
+        }
+    }
+
+    /// Renames a profile; a blank name or one another profile has is refused (false).
+    pub fn rename_profile(&mut self, old: &str, new: &str) -> bool {
+        let new = new.trim();
+        let taken = self
+            .profile_index(new)
+            .is_some_and(|index| self.profiles[index].name != old);
+        let Some(index) = self
+            .profile_index(old)
+            .filter(|_| !new.is_empty() && !taken)
+        else {
+            return false;
+        };
+        self.profiles[index].name = new.to_owned();
+        if self.profile.as_deref() == Some(old) {
+            self.profile = Some(new.to_owned());
+        }
+        true
+    }
+
+    pub fn delete_profile(&mut self, name: &str) {
+        self.profiles.retain(|profile| profile.name != name);
+        if self.profile.as_deref() == Some(name) {
+            self.profile = None;
+        }
+    }
+
+    fn profile_index(&self, name: &str) -> Option<usize> {
+        self.profiles
+            .iter()
+            .position(|profile| profile.name.eq_ignore_ascii_case(name))
+    }
 }
 
 /// A named shader selection.
@@ -68,6 +129,28 @@ mod tests {
     use super::*;
     use crate::mods::shader_packs::Pick;
     use std::fs;
+
+    #[test]
+    fn profiles_are_made_saved_renamed_and_deleted() {
+        let mut settings = GlobalSettings::default();
+        let mut sweet = Selection::default();
+        sweet.packs.insert("SweetFX".into(), Pick::default());
+        // Saving with no current profile makes one.
+        settings.save_profile(sweet.clone());
+        assert_eq!(settings.profile.as_deref(), Some("Profile 1"));
+        assert_eq!(settings.new_profile(Selection::default()), "Profile 2");
+        settings.save_profile(sweet.clone());
+        assert_eq!(settings.profiles[1].shaders, sweet);
+        // A blank name, or another profile's, is refused.
+        assert!(!settings.rename_profile("Profile 2", "  "));
+        assert!(!settings.rename_profile("Profile 2", "profile 1"));
+        assert!(settings.rename_profile("Profile 2", " HDR "));
+        assert_eq!(settings.profile.as_deref(), Some("HDR"));
+        settings.delete_profile("HDR");
+        assert_eq!(settings.profile, None);
+        assert_eq!(settings.profiles.len(), 1);
+        assert_eq!(settings.new_profile(Selection::default()), "Profile 2");
+    }
 
     #[test]
     fn keeps_unknown_fields_and_defaults_the_selection() {

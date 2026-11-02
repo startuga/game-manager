@@ -12,7 +12,9 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
 - `mods_view.rs` (`impl GameManager`) – the Enhancements and Mods expanders and their dialog.
 - `reshade_panel.rs` (`impl GameManager`) – the top bar's ReShade button and its Global Shaders
   and Global Addons panels; `ShadersDraft` is UI-free and unit-tested. Deploy, and closing
-  Global Addons after a change, run `reshade::deploy` for every game with ReShade.
+  Global Addons after a change, run `reshade::deploy` for every game with ReShade. Profile
+  changes are saved at once (`GlobalSettings`' profile methods); the selection itself only by
+  Deploy. Export puts a ZIP on the clipboard; Import takes one through the Open dialog.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
   UI-free and unit-tested: put logic there, not in views.
 - Blocking work runs through `ComponentContext::spawn_background` and comes back as a `Message`,

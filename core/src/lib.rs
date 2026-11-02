@@ -1,5 +1,6 @@
 //! Game discovery and launching for Game Manager. Contains no UI code.
 
+pub mod clipboard;
 mod com;
 pub mod config;
 pub mod custom;
