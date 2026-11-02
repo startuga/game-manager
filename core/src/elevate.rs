@@ -1,5 +1,6 @@
 //! Runs work that needs administrator rights: file operations in protected game folders
-//! (`C:\Program Files`, `--file-ops`) and NVIDIA driver settings (`--nvidia-ops`). Game Manager
+//! (`C:\Program Files`, `--file-ops`), ReShade's Vulkan layer with the game folder's files
+//! (`--reshade-ops`) and NVIDIA driver settings (`--nvidia-ops`). Game Manager
 //! starts a copy of itself with the argument and the encoded work through the `runas` verb, which
 //! shows the UAC prompt, and waits for it. The work travels on the command line, so the copy
 //! running as administrator reads nothing that another program could change in between.
@@ -55,8 +56,8 @@ pub(crate) fn run(arg: &str, encoded: &str) -> Result<()> {
     }
 }
 
-/// A process handle, closed when dropped.
-struct OwnedHandle(HANDLE);
+/// A process or token handle, closed when dropped.
+pub(crate) struct OwnedHandle(pub(crate) HANDLE);
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {

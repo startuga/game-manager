@@ -1,12 +1,14 @@
-//! The Mods expander: a row per mod (DXVK so far) with its installed version, which links to the
-//! page it was downloaded from, Info, Install or Reinstall, Settings and Uninstall, and the one
-//! dialog these open (Info or settings). WinUI shows one dialog at a time, so the mod buttons wait
-//! while any dialog is open.
+//! The mod expanders: Enhancements (ReShade) and Mods (DXVK, and LAA for 32-bit games). Each mod
+//! is a row in the same columns: its installed version, which links to the page it was
+//! downloaded from, Info, Install or Reinstall, Settings and Uninstall; then the one dialog these
+//! open (Info or settings). WinUI shows one dialog at a time, so the mod buttons wait while any
+//! dialog is open.
 
 use crate::{GameManager, Message, icon_label};
 use gm_core::graphics::GraphicsApi;
 use gm_core::mods::dxvk::{self, Blocked, DxvkConfig, DxvkVariant, Hud};
 use gm_core::mods::laa::{LAA_INFO, LaaStatus};
+use gm_core::mods::reshade::{self, Mode, ReshadeVariant};
 use gm_core::nvidia::{self, NvidiaChoice, PRESENT_FLAG_VALUES, PRESENT_METHODS, SettingState};
 use gm_core::{Arch, Game};
 use std::path::Path;
@@ -20,6 +22,9 @@ pub(crate) enum ModDialog {
     Info,
     Settings(DxvkSettings),
     LaaInfo,
+    ReshadeInfo,
+    /// ReShade settings: the variant being chosen.
+    ReshadeSettings(ReshadeVariant),
 }
 
 /// Which mod a job works on, so only its row shows "Working…".
@@ -27,6 +32,7 @@ pub(crate) enum ModDialog {
 pub(crate) enum ModKind {
     Dxvk,
     Laa,
+    Reshade,
 }
 
 /// The columns of every mod row, fixed so the rows line up: name, version or status, Info, the
@@ -112,9 +118,9 @@ impl DxvkSettings {
 }
 
 impl GameManager {
-    /// The API DXVK is installed for: the one chosen in Game settings, else the one detected when
-    /// exactly one was found.
-    pub(crate) fn dxvk_api(&self, game: &Game) -> Option<GraphicsApi> {
+    /// The API mods (DXVK, ReShade) are installed for: the one chosen in Game settings, else the
+    /// one detected when exactly one was found.
+    pub(crate) fn mod_api(&self, game: &Game) -> Option<GraphicsApi> {
         game.edits
             .as_ref()
             .and_then(|edits| edits.graphics_api)
@@ -159,9 +165,225 @@ impl GameManager {
         });
     }
 
+    /// Reads what the selected game's ReShade row needs from the disk (DXVK in its folder, the
+    /// Vulkan layer) in the background, once (it is read again after a scan, a mod job or
+    /// `mods.json` loading, which clear it).
+    pub(crate) fn request_reshade(&mut self, context: &ComponentContext<Self>) {
+        let Some(game) = self.selected_game() else {
+            return;
+        };
+        if self.reshade.contains_key(&game.id) || self.reshade_pending.contains(&game.id) {
+            return;
+        }
+        let (game, mods) = (game.clone(), self.mods.clone());
+        self.reshade_pending.insert(game.id.clone());
+        context.spawn_background(move |_cancel| {
+            let status = reshade::status(&game, &mods);
+            Message::ReshadeLoaded(game.id, status)
+        });
+    }
+
     /// Any dialog is open: WinUI shows one at a time.
     fn dialog_open(&self) -> bool {
         self.mod_dialog.is_some() || self.draft.is_some() || self.removing.is_some()
+    }
+
+    /// Any work that the mod buttons wait for.
+    fn mods_busy(&self) -> bool {
+        self.mod_job.is_some() || self.dialog_open() || self.scanning || self.saving || self.picking
+    }
+
+    pub(crate) fn enhancements_expander(&self, game: &Game, context: &ViewContext<Self>) -> View {
+        Expander::new()
+            .is_expanded(self.enhancements_open)
+            .on_is_expanded_changed(context.callback(Message::EnhancementsExpanded))
+            .horizontal_alignment(HorizontalAlignment::Stretch)
+            .horizontal_content_alignment(HorizontalAlignment::Stretch)
+            .automation_name("Enhancements")
+            .header("Enhancements")
+            .content(
+                StackPanel::new()
+                    .spacing(16.0)
+                    .children(vec![self.reshade_row(game, context)]),
+            )
+            .into()
+    }
+
+    /// ReShade's row, and below it what Install does, what is installed, or why it can't be.
+    fn reshade_row(&self, game: &Game, context: &ViewContext<Self>) -> View {
+        let state = self.mods.reshade(&game.id);
+        let installed = state.and_then(|state| state.installed.as_ref());
+        let on_layer = state.is_some_and(|state| state.layer.is_some());
+        let variant = state.map_or(ReshadeVariant::default(), |state| state.variant);
+        let working = self
+            .mod_job
+            .as_ref()
+            .is_some_and(|(id, kind)| *id == game.id && *kind == ModKind::Reshade);
+        let busy = self.mods_busy();
+        let status = self.reshade.get(&game.id);
+        let api = self.mod_api(game);
+        let target = status.map(|status| reshade::target(game, api, status.dxvk));
+
+        let version: View = match installed {
+            Some(installed) => HyperlinkButton::new()
+                .content(installed.version.clone())
+                .on_click(context.message(Message::OpenModPage(installed.page.clone())))
+                .automation_name(format!("ReShade {}", installed.version))
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(1)
+                .tooltip(format!(
+                    "Open the page ReShade {} was downloaded from",
+                    installed.version
+                )),
+            None => TextBlock::new()
+                .text("Not installed")
+                .opacity(0.7)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(1)
+                .into(),
+        };
+        let (symbol, label) = if installed.is_some() {
+            (Symbol::Refresh, "Reinstall ReShade")
+        } else {
+            (Symbol::Download, "Install ReShade")
+        };
+        let install_content = if working {
+            StackPanel::new()
+                .orientation(Orientation::Horizontal)
+                .spacing(8.0)
+                .children((
+                    ProgressRing::new().is_active(true).width(16.0).height(16.0),
+                    TextBlock::new().text("Working…"),
+                ))
+                .into()
+        } else {
+            icon_label(symbol, label)
+        };
+        let gap = Thickness::new(8.0, 0.0, 0.0, 0.0);
+        let row = Grid::new().columns(mod_columns()).children((
+            TextBlock::new()
+                .text("ReShade")
+                .font_weight(FontWeight::SEMI_BOLD)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0),
+            version,
+            Button::new()
+                .is_enabled(!self.dialog_open())
+                .on_click(context.message(Message::ShowReshadeInfo))
+                .automation_name("ReShade information")
+                .margin(gap)
+                .grid_column(2)
+                .content("Info"),
+            Button::new()
+                .is_enabled(!busy && matches!(target, Some(Ok(_))))
+                .on_click(context.message(Message::InstallReshade))
+                .automation_name(label)
+                .horizontal_alignment(HorizontalAlignment::Stretch)
+                .margin(gap)
+                .grid_column(3)
+                .content(install_content),
+            Button::new()
+                .is_enabled(self.mod_job.is_none() && !self.dialog_open())
+                .on_click(context.message(Message::ShowReshadeSettings))
+                .automation_name("ReShade settings")
+                .margin(gap)
+                .grid_column(4)
+                .content(SymbolIcon::new().symbol(Symbol::Setting))
+                .tooltip("ReShade settings"),
+            Button::new()
+                .is_enabled(!busy && (installed.is_some() || on_layer))
+                .on_click(context.message(Message::UninstallReshade))
+                .automation_name("Uninstall ReShade")
+                .margin(gap)
+                .grid_column(5)
+                .content(
+                    FontIcon::new()
+                        .glyph(UNINSTALL_GLYPH)
+                        .foreground(ThemeBrush::SystemCritical),
+                )
+                .tooltip("Uninstall ReShade"),
+        ));
+
+        let layer_note = |apps: usize| {
+            format!(
+                " The layer is shared by every program on its list ({apps} now): installing \
+                 updates it for all of them."
+            )
+        };
+        let hint = if working {
+            "Working… Windows asks for administrator rights when the game's folder or ReShade's \
+             Vulkan layer needs them."
+                .to_owned()
+        } else {
+            match (installed, &target) {
+                (_, None) => "Checking the game's folder…".to_owned(),
+                (Some(installed), Some(target)) => {
+                    let how = match state.and_then(|state| state.dll()) {
+                        Some(dll) => format!("ReShade as {dll}"),
+                        None if on_layer => "ReShade's Vulkan layer".to_owned(),
+                        None => "ReShade".to_owned(),
+                    };
+                    let mut hint = format!(
+                        "{how} with its effects in reshade-shaders, in {}. Reinstall gets the \
+                         latest {} build.",
+                        shown_path(game, &installed.folder),
+                        variant.name()
+                    );
+                    // The game changed since: DXVK added or removed.
+                    match target {
+                        Ok(target) if on_layer && target.mode != Mode::Layer => hint.push_str(
+                            " DXVK is no longer installed: Reinstall ReShade to use it without \
+                             the Vulkan layer.",
+                        ),
+                        Ok(target) if !on_layer && target.mode == Mode::Layer => hint.push_str(
+                            " DXVK is installed now: Reinstall ReShade to use its Vulkan layer.",
+                        ),
+                        _ => {}
+                    }
+                    hint
+                }
+                (None, Some(Ok(target))) => match target.mode {
+                    Mode::Dll(_) => format!(
+                        "Installs the latest {} build: {}, with ReShade's default effects in \
+                         reshade-shaders, into {}.",
+                        variant.name(),
+                        target.summary(),
+                        shown_path(game, &target.folder)
+                    ),
+                    Mode::Layer => {
+                        let apps = status.map_or(0, |status| status.layer.programs());
+                        let why = if status.is_some_and(|status| status.dxvk) {
+                            ", as DXVK is installed"
+                        } else {
+                            ""
+                        };
+                        format!(
+                            "Installs the latest {} build through ReShade's Vulkan layer{why}, with \
+                             ReShade's default effects in reshade-shaders.{}",
+                            variant.name(),
+                            layer_note(apps)
+                        )
+                    }
+                },
+                (None, Some(Err(reshade::Blocked::NoApi)))
+                    if !self.graphics.contains_key(&game.id) =>
+                {
+                    "Checking the game's graphics APIs…".to_owned()
+                }
+                (None, Some(Err(blocked))) => blocked.to_string(),
+            }
+        };
+        StackPanel::new()
+            .spacing(8.0)
+            .children((
+                row,
+                TextBlock::new()
+                    .text(hint)
+                    .font_size(12.0)
+                    .opacity(0.7)
+                    .text_wrapping(TextWrapping::Wrap),
+            ))
+            .into()
     }
 
     pub(crate) fn mods_expander(&self, game: &Game, context: &ViewContext<Self>) -> View {
@@ -332,8 +554,13 @@ impl GameManager {
             .is_some_and(|(id, kind)| *id == game.id && *kind == ModKind::Dxvk);
         let idle = self.mod_job.is_none() && !self.dialog_open();
         let busy = !idle || self.scanning || self.saving || self.picking;
-        let api = self.dxvk_api(game);
+        let api = self.mod_api(game);
         let target = dxvk::target(game, api);
+        // ReShade installed as one of DXVK's DLLs is in the way.
+        let reshade_dll = target
+            .as_ref()
+            .ok()
+            .and_then(|target| dxvk::reshade_dll(&self.mods, &game.id, target));
 
         let version: View = match installed {
             Some(installed) => HyperlinkButton::new()
@@ -386,7 +613,7 @@ impl GameManager {
                 .grid_column(2)
                 .content("Info"),
             Button::new()
-                .is_enabled(!busy && target.is_ok())
+                .is_enabled(!busy && target.is_ok() && reshade_dll.is_none())
                 .on_click(context.message(Message::InstallDxvk))
                 .automation_name(label)
                 .horizontal_alignment(HorizontalAlignment::Stretch)
@@ -426,6 +653,7 @@ impl GameManager {
                 .to_owned()
         } else {
             match (installed, &target) {
+                (None, Ok(_)) if let Some(dll) = &reshade_dll => reshade::blocks_dxvk(dll),
                 (Some(installed), _) => format!(
                     "{} in {}. Reinstall gets the latest {} build{with_config}.",
                     installed
@@ -462,7 +690,7 @@ impl GameManager {
             .into()
     }
 
-    /// DXVK's Info or settings dialog, or LAA's Info, while one is open.
+    /// DXVK's or ReShade's Info or settings dialog, or LAA's Info, while one is open.
     pub(crate) fn mod_dialog_view(&self, context: &ViewContext<Self>) -> ContentDialog {
         let dialog = ContentDialog::new()
             .is_open(self.mod_dialog.is_some())
@@ -508,13 +736,59 @@ impl GameManager {
                 .close_button_text("Cancel")
                 .default_button(ContentDialogButton::Primary)
                 .content(self.dxvk_settings_form(settings, context)),
-            _ => {
+            Some(ModDialog::ReshadeInfo) => {
                 let this_game = self.selected_game().map(|game| {
-                    match dxvk::target(game, self.dxvk_api(game)) {
+                    let dxvk = self.reshade.get(&game.id).is_some_and(|status| status.dxvk);
+                    match reshade::target(game, self.mod_api(game), dxvk) {
                         Ok(target) => format!("For this game: {}.", target.summary()),
                         Err(blocked) => format!("For this game: {blocked}"),
                     }
                 });
+                dialog.title("ReShade").close_button_text("OK").content(
+                    StackPanel::new().spacing(12.0).children((
+                        TextBlock::new()
+                            .text(reshade::INFO)
+                            .text_wrapping(TextWrapping::Wrap),
+                        TextBlock::new()
+                            .text(this_game.unwrap_or_default())
+                            .opacity(0.7)
+                            .text_wrapping(TextWrapping::Wrap),
+                    )),
+                )
+            }
+            Some(ModDialog::ReshadeSettings(variant)) => {
+                let index = ReshadeVariant::ALL
+                    .iter()
+                    .position(|known| known == variant);
+                dialog
+                    .title("ReShade settings")
+                    .primary_button_text("Save")
+                    .close_button_text("Cancel")
+                    .default_button(ContentDialogButton::Primary)
+                    .content(
+                        StackPanel::new().spacing(16.0).min_width(420.0).children((
+                            RadioButtons::new()
+                                .header("Version")
+                                .items_source(ReshadeVariant::ALL.map(ReshadeVariant::label))
+                                .selected_index(index)
+                                .on_selection_changed(
+                                    context.callback(Message::ReshadeVariantChosen),
+                                ),
+                            TextBlock::new()
+                                .text("The version is used by the next Install or Reinstall.")
+                                .font_size(12.0)
+                                .opacity(0.7)
+                                .text_wrapping(TextWrapping::Wrap),
+                        )),
+                    )
+            }
+            _ => {
+                let this_game =
+                    self.selected_game()
+                        .map(|game| match dxvk::target(game, self.mod_api(game)) {
+                            Ok(target) => format!("For this game: {}.", target.summary()),
+                            Err(blocked) => format!("For this game: {blocked}"),
+                        });
                 dialog.title("DXVK").close_button_text("OK").content(
                     StackPanel::new().spacing(12.0).children((
                         TextBlock::new()
@@ -743,7 +1017,7 @@ impl GameManager {
 
     /// HDR-mod's own configs for the game's API: "None", then each in the latest HDR-mod build.
     fn hdr_mod_config_picker(&self, settings: &DxvkSettings, context: &ViewContext<Self>) -> View {
-        let api = self.selected_game().and_then(|game| self.dxvk_api(game));
+        let api = self.selected_game().and_then(|game| self.mod_api(game));
         let names: Vec<String> = match &self.hdr_mod_configs {
             Some(Ok(names)) => dxvk::configs_for(names, api)
                 .into_iter()

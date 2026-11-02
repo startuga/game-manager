@@ -25,6 +25,17 @@ in `%LOCALAPPDATA%\Game Manager\cache`), otherwise read from the game's files, w
 the game does not use. Hover over them to see where they come from. When several are shown, choose
 the one the game runs on in Game settings.
 
+The **Enhancements** expander installs [ReShade](https://reshade.me), post-processing effects for
+games. **Install ReShade** copies ReShade as the game's graphics DLL (`d3d9.dll`, `dxgi.dll` or
+`opengl32.dll`), writes a `ReShade.ini` when the game has none, and adds ReShade's default effects
+(Standard effects and SweetFX) in `reshade-shaders`; press Home in the game for its overlay. ⚙
+chooses **Stable** (reshade.me, with add-ons), **Development** (the latest main build, via
+nightly.link) or **No Addons** (reshade.me, for online games). Vulkan games, and games with DXVK,
+use ReShade's Vulkan layer instead: the same install for the whole computer that ReShade's own
+setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rights. Direct3D 8
+games need DXVK first. Uninstalling keeps `ReShade.ini` and your presets once ReShade has saved
+into them.
+
 The **Mods** expander installs mods into the game's folder. The first is
 [DXVK](https://github.com/doitsujin/dxvk), which runs Direct3D 8–11 games on Vulkan: **Install DXVK**
 downloads the latest build and copies the DLLs for the game's bitness and graphics API next to its
@@ -42,11 +53,12 @@ profile had; they stay when DXVK is uninstalled.
 For 32-bit games, the Mods expander also shows **LAA** (Large Address Aware): whether the game's
 program may use 4 GB of memory instead of 2 GB, and **Enable LAA** to patch it (the original is
 kept as `<program>.gm-backup`, and ✕ puts it back). Programs wrapped by Steam's DRM get a warning,
-as a changed program may not start. Files of the game
-that DXVK replaces are kept as `<name>.gm-backup` and put back on uninstall. When a game is in a
-protected folder (such as `C:\Program Files`), Windows asks for administrator rights. What is
-installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are cached in
-`%LOCALAPPDATA%\Game Manager\mods`.
+as a changed program may not start.
+
+Files of the game that a mod replaces are kept as `<name>.gm-backup` and put back on uninstall.
+When a game is in a protected folder (such as `C:\Program Files`), Windows asks for administrator
+rights. What is installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are
+cached in `%LOCALAPPDATA%\Game Manager\mods`.
 
 **PCGamingWiki** opens the game's [PCGamingWiki](https://www.pcgamingwiki.com) page (fixes,
 settings, save locations) in your browser: by store id for Steam and GOG games, otherwise a wiki

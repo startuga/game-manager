@@ -25,7 +25,7 @@
 //! Settings go into `dxvk.conf` next to the program, which DXVK reads from the game's working
 //! directory: the program's folder for nearly every launch.
 
-use super::{Installed, ModsFile, apply, plan, update};
+use super::{Build, Installed, ModsFile, apply, get_json, latest_run, plan, reshade, update};
 use crate::graphics::GraphicsApi;
 use crate::nvidia::{self, NvidiaChoice, NvidiaOriginal};
 use crate::{Arch, Error, Game, Result, http, json_file, seven_zip};
@@ -222,18 +222,8 @@ pub struct DxvkState {
     pub nvidia_original: Option<NvidiaOriginal>,
 }
 
-/// A DXVK build to download.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Build {
-    /// `3.1.1`, `master-0cfe089` for a development build, or `3.1-HDR-mod-v0.3.4`.
-    pub version: String,
-    /// The release page, or the commit it was built from.
-    pub page: String,
-    pub url: String,
-    pub file_name: String,
-}
-
-/// The latest build of the variant. Blocking: two or three web requests.
+/// The latest build of the variant (`3.1.1`, `master-0cfe089` for a development build, or
+/// `3.1-HDR-mod-v0.3.4`). Blocking: two or three web requests.
 pub fn latest(variant: DxvkVariant) -> Result<Build> {
     match variant {
         DxvkVariant::Stable => {
@@ -264,13 +254,6 @@ pub fn latest(variant: DxvkVariant) -> Result<Build> {
     }
 }
 
-fn get_json(url: &str) -> Result<Value> {
-    serde_json::from_slice(&http::get(url)?).map_err(|source| Error::WebJson {
-        url: url.to_owned(),
-        source,
-    })
-}
-
 /// The release's Windows build: `dxvk-<version>.tar.gz`, not the Linux `dxvk-native-…`.
 fn is_stable_asset(name: &str, version: &str) -> bool {
     name == format!("dxvk-{version}.tar.gz")
@@ -296,12 +279,6 @@ fn release_build(release: &Value, is_asset: fn(&str, &str) -> bool) -> Option<Bu
         url: asset["browser_download_url"].as_str()?.to_owned(),
         file_name: asset["name"].as_str()?.to_owned(),
     })
-}
-
-/// The workflow's latest run: its id and commit.
-fn latest_run(runs: &Value) -> Option<(u64, String)> {
-    let run = &runs["workflow_runs"][0];
-    Some((run["id"].as_u64()?, run["head_sha"].as_str()?.to_owned()))
 }
 
 /// The run's DXVK artifact, `dxvk-master-<commit>`.
@@ -413,6 +390,16 @@ pub fn target(game: &Game, api: Option<GraphicsApi>) -> Result<Target, Blocked> 
     })
 }
 
+/// The DLL ReShade is installed as in the game, when DXVK would replace it.
+pub fn reshade_dll(mods: &ModsFile, id: &str, target: &Target) -> Option<String> {
+    let dll = mods.reshade(id)?.dll()?;
+    target
+        .dlls
+        .iter()
+        .any(|ours| ours.eq_ignore_ascii_case(dll))
+        .then(|| dll.to_owned())
+}
+
 fn state(game: &Game) -> Result<DxvkState> {
     Ok(super::load()?.dxvk(&game.id).cloned().unwrap_or_default())
 }
@@ -423,6 +410,9 @@ fn state(game: &Game) -> Result<DxvkState> {
 pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let target =
         target(game, Some(api)).map_err(|blocked| Error::NotInstallable(blocked.to_string()))?;
+    if let Some(dll) = reshade_dll(&super::load()?, &game.id, &target) {
+        return Err(Error::NotInstallable(reshade::blocks_dxvk(&dll)));
+    }
     let state = state(game)?;
     let build = latest(state.variant)?;
     let cache = cached_build(&build)?;

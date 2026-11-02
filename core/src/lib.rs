@@ -17,12 +17,14 @@ pub mod mods;
 pub mod nvidia;
 pub mod pcgamingwiki;
 pub mod pe;
+mod security;
 mod seven_zip;
 mod shortcut;
 pub mod snapshot;
 pub mod steam;
 mod text;
 pub mod vdf;
+mod version_info;
 pub mod xbox;
 
 pub use error::{Error, Result, ScanError, ScanPart};

@@ -6,16 +6,17 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
 
 ## Structure
 - `main.rs` – `Message`, the `GameManager` state, `render` (top bar, sidebar, main panel,
-  dialogs) and `handle`. `update` runs `handle`, then `request_graphics` and
-  `request_hdr_mod_configs`, so whatever selects a game or shows HDR-mod looks things up once.
-- `mods_view.rs` (`impl GameManager`) – the Mods expander and its dialog.
+  dialogs) and `handle`. `update` runs `handle`, then `request_graphics`,
+  `request_hdr_mod_configs`, `request_laa` and `request_reshade`, so whatever selects a game or
+  shows HDR-mod looks things up once.
+- `mods_view.rs` (`impl GameManager`) – the Enhancements and Mods expanders and their dialog.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
   UI-free and unit-tested: put logic there, not in views.
 - Blocking work runs through `ComponentContext::spawn_background` and comes back as a `Message`,
   never on the UI thread. Errors arrive as `String`s (`to_string()` where received) and show in
   the error bar.
-- `main()` with `--file-ops <ops>` runs `gm_core::mods::run_encoded` and exits before any UI (the
-  copy started as administrator). A failure to start shows a message box (there is no console),
+- `main()` with `--file-ops`, `--reshade-ops` or `--nvidia-ops` runs that work and exits before
+  any UI (the copy started as administrator). A failure to start shows a message box (there is no console),
   except a missing Windows App Runtime, whose install the reactor already offered.
 
 ## windows-reactor quirks (each one cost a bug)
@@ -61,7 +62,6 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
 - **Mods**:
   - One job runs at a time (`mod_job`), and `mods.json` is replaced by what each job returns.
     After a failed job it is read again, since a job may have saved part of its work.
-  - DXVK's API is `dxvk_api`: the one chosen in Game settings, else the only one detected.
   - **DXVK settings' NVIDIA section** (for every variant): opening the dialog reads the game's
     driver profile in the background (`NvidiaLoaded`, matched to the selected game; hidden when
     there is no NVIDIA driver).
@@ -71,6 +71,11 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
     - Uninstalling DXVK leaves them.
   - **Shared columns**: mod rows share `mod_columns()`, fixed widths, so each row's cells line up
     with the others'.
+  - **Enhancements** (above Mods) holds ReShade's row, with settings for its variant. Its install
+    mode (DLL or Vulkan layer) depends on DXVK in the game's folder, which `request_reshade`
+    reads in the background with the layer's list. DXVK's Install is disabled while ReShade is
+    installed as one of DXVK's DLLs (`dxvk::reshade_dll`).
+  - Mods use `mod_api`: the API chosen in Game settings, else the only one detected.
   - **The LAA row**: under DXVK, only for 32-bit games (`game.arch == X86`, the chosen bitness
     counts), with no settings.
     - Its status comes from `request_laa` (in `update`, like `request_graphics`; cleared after a

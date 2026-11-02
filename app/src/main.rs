@@ -1,9 +1,9 @@
 //! Game Manager's window: a WinUI 3 app built with windows-reactor (Elm style: `Message`s go
 //! through `update`, `render` draws the state). Top bar, library sidebar and the selected game's
-//! panel with its Game settings and Mods expanders; `mods_view.rs` holds the Mods expander,
-//! `edit.rs` and `library.rs` the UI-free logic. Started with `--file-ops` or `--nvidia-ops`, it
-//! is the copy that changes a protected game folder or NVIDIA driver settings as administrator,
-//! and shows no window.
+//! panel with its Game settings, Enhancements and Mods expanders; `mods_view.rs` holds the mod
+//! expanders, `edit.rs` and `library.rs` the UI-free logic. Started with `--file-ops`,
+//! `--reshade-ops` or `--nvidia-ops`, it is the copy that changes a protected game folder,
+//! ReShade's Vulkan layer or NVIDIA driver settings as administrator, and shows no window.
 
 #![windows_subsystem = "windows"]
 
@@ -15,6 +15,7 @@ use edit::{EditChoice, EditDraft, EditField};
 use gm_core::custom::NewGame;
 use gm_core::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
 use gm_core::mods::laa::{self, Laa};
+use gm_core::mods::reshade::{self, ReshadeStatus, ReshadeVariant};
 use gm_core::mods::{ModsFile, dxvk};
 use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
@@ -144,6 +145,17 @@ enum Message {
     /// Puts the selected game's original program back.
     RestoreLaa,
     ShowLaaInfo,
+    /// The Enhancements expander was opened or closed.
+    EnhancementsExpanded(bool),
+    /// What a game's ReShade row reads from the disk: DXVK in its folder, the Vulkan layer.
+    ReshadeLoaded(String, ReshadeStatus),
+    /// Installs ReShade in the selected game, or reinstalls it.
+    InstallReshade,
+    UninstallReshade,
+    ShowReshadeInfo,
+    ShowReshadeSettings,
+    /// The variant picked in ReShade settings; `None` (the list losing its selection) is ignored.
+    ReshadeVariantChosen(Option<usize>),
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -192,6 +204,11 @@ struct GameManager {
     /// 32-bit games' Large Address Aware status by id, once read.
     laa: HashMap<String, Result<Laa, String>>,
     laa_pending: HashSet<String>,
+    /// The Enhancements expander is open (kept while switching games).
+    enhancements_open: bool,
+    /// What each game's ReShade row read from the disk, by id.
+    reshade: HashMap<String, ReshadeStatus>,
+    reshade_pending: HashSet<String>,
     mod_dialog: Option<ModDialog>,
     /// HDR-mod's own configs, listed once the settings dialog shows HDR-mod (`Err`: what failed,
     /// tried again when the dialog opens again).
@@ -753,6 +770,7 @@ impl GameManager {
                         header,
                         actions,
                         self.game_settings(game, context),
+                        self.enhancements_expander(game, context),
                         self.mods_expander(game, context),
                     )),
             )
@@ -1039,6 +1057,9 @@ impl Component for GameManager {
             mod_job: None,
             laa: HashMap::new(),
             laa_pending: HashSet::new(),
+            enhancements_open: false,
+            reshade: HashMap::new(),
+            reshade_pending: HashSet::new(),
             mod_dialog: None,
             hdr_mod_configs: None,
             hdr_mod_configs_pending: false,
@@ -1063,6 +1084,8 @@ impl Component for GameManager {
         self.request_hdr_mod_configs(context);
         // A 32-bit game's LAA status, whenever it is unknown.
         self.request_laa(context);
+        // What the ReShade row needs from the disk, whenever it is unknown.
+        self.request_reshade(context);
     }
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
@@ -1083,6 +1106,7 @@ impl GameManager {
                 self.games = games;
                 // A program may have changed (an update, or another one chosen).
                 self.laa.clear();
+                self.reshade.clear();
                 self.error = (!errors.is_empty()).then(|| errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
@@ -1158,8 +1182,10 @@ impl GameManager {
             Message::SettingsExpanded(open) => self.settings_open = open,
             Message::ModsLoaded(Ok(mods)) => {
                 self.mods = mods;
-                // The LAA status depends on what mods.json says was patched.
+                // The LAA status depends on what mods.json says was patched, ReShade's on
+                // whether it lists DXVK.
                 self.laa.clear();
+                self.reshade.clear();
             }
             Message::ModsLoaded(Err(e)) => self.error = Some(e),
             Message::ModsExpanded(open) => self.mods_open = open,
@@ -1167,7 +1193,7 @@ impl GameManager {
                 let Some(game) = self.selected_game() else {
                     return;
                 };
-                let Some(api) = self.dxvk_api(game) else {
+                let Some(api) = self.mod_api(game) else {
                     return;
                 };
                 let game = game.clone();
@@ -1188,6 +1214,7 @@ impl GameManager {
             Message::ModJobDone(done) => {
                 self.mod_job = None;
                 self.laa.clear();
+                self.reshade.clear();
                 match done {
                     Ok(mods) => self.mods = mods,
                     Err(e) => {
@@ -1266,23 +1293,82 @@ impl GameManager {
                 self.hdr_mod_configs_pending = false;
                 self.hdr_mod_configs = Some(configs);
             }
-            Message::ModDialogClosed(result) => {
-                if let Some(ModDialog::Settings(settings)) = self.mod_dialog.take()
-                    && result == ContentDialogResult::Primary
-                    && let Some(game) = self.selected_game().cloned()
+            Message::EnhancementsExpanded(open) => self.enhancements_open = open,
+            Message::ReshadeLoaded(id, status) => {
+                self.reshade_pending.remove(&id);
+                self.reshade.insert(id, status);
+            }
+            Message::InstallReshade => {
+                let Some(game) = self.selected_game() else {
+                    return;
+                };
+                let Some(api) = self.mod_api(game) else {
+                    return;
+                };
+                let game = game.clone();
+                self.mod_job = Some((game.id.clone(), ModKind::Reshade));
+                context.spawn_background(move |_cancel| {
+                    Message::ModJobDone(reshade::install(&game, api).map_err(|e| e.to_string()))
+                });
+            }
+            Message::UninstallReshade => {
+                let Some(game) = self.selected_game().cloned() else {
+                    return;
+                };
+                self.mod_job = Some((game.id.clone(), ModKind::Reshade));
+                context.spawn_background(move |_cancel| {
+                    Message::ModJobDone(reshade::uninstall(&game).map_err(|e| e.to_string()))
+                });
+            }
+            Message::ShowReshadeInfo => self.mod_dialog = Some(ModDialog::ReshadeInfo),
+            Message::ShowReshadeSettings => {
+                let Some(game) = self.selected_game() else {
+                    return;
+                };
+                let variant = self
+                    .mods
+                    .reshade(&game.id)
+                    .map_or(ReshadeVariant::default(), |state| state.variant);
+                self.mod_dialog = Some(ModDialog::ReshadeSettings(variant));
+            }
+            Message::ReshadeVariantChosen(index) => {
+                if let Some(ModDialog::ReshadeSettings(variant)) = &mut self.mod_dialog
+                    && let Some(&chosen) = index.and_then(|index| ReshadeVariant::ALL.get(index))
                 {
-                    let api = self.dxvk_api(&game);
-                    self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
-                    context.spawn_background(move |_cancel| {
-                        let saved = dxvk::save_settings(
-                            &game,
-                            api,
-                            settings.variant,
-                            settings.config,
-                            settings.nvidia,
-                        );
-                        Message::ModJobDone(saved.map_err(|e| e.to_string()))
-                    });
+                    *variant = chosen;
+                }
+            }
+            Message::ModDialogClosed(result) => {
+                let dialog = self.mod_dialog.take();
+                if result != ContentDialogResult::Primary {
+                    return;
+                }
+                let Some(game) = self.selected_game().cloned() else {
+                    return;
+                };
+                match dialog {
+                    Some(ModDialog::Settings(settings)) => {
+                        let api = self.mod_api(&game);
+                        self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
+                        context.spawn_background(move |_cancel| {
+                            let saved = dxvk::save_settings(
+                                &game,
+                                api,
+                                settings.variant,
+                                settings.config,
+                                settings.nvidia,
+                            );
+                            Message::ModJobDone(saved.map_err(|e| e.to_string()))
+                        });
+                    }
+                    Some(ModDialog::ReshadeSettings(variant)) => {
+                        self.mod_job = Some((game.id.clone(), ModKind::Reshade));
+                        context.spawn_background(move |_cancel| {
+                            let saved = reshade::save_settings(&game, variant);
+                            Message::ModJobDone(saved.map_err(|e| e.to_string()))
+                        });
+                    }
+                    _ => {}
                 }
             }
             Message::EditField(field, value) => {
@@ -1563,11 +1649,13 @@ impl GameManager {
 }
 
 fn main() -> ExitCode {
-    // Started as administrator to change a protected game folder or NVIDIA driver settings: do
-    // that, show no window, and exit with the result (0, or a code saying what failed).
+    // Started as administrator to change a protected game folder, ReShade's Vulkan layer or
+    // NVIDIA driver settings: do that, show no window, and exit with the result (0, or a code
+    // saying what failed).
     let mut args = std::env::args().skip(1);
     let elevated: Option<fn(&str) -> u32> = match args.next().as_deref() {
         Some(gm_core::mods::FILE_OPS_ARG) => Some(gm_core::mods::run_encoded),
+        Some(gm_core::mods::reshade::RESHADE_OPS_ARG) => Some(gm_core::mods::reshade::run_encoded),
         Some(gm_core::nvidia::NVIDIA_OPS_ARG) => Some(gm_core::nvidia::run_encoded),
         _ => None,
     };

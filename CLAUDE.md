@@ -1,7 +1,7 @@
 # Game Manager
 
 Native Windows 11 game launcher and library in Rust. It finds Steam, Epic, GOG, EA and Xbox
-games plus games added by hand, starts them, and installs mods (DXVK).
+games plus games added by hand, starts them, and installs mods (ReShade, DXVK, LAA).
 
 - `app/` – the WinUI 3 window (windows-reactor); see `app/CLAUDE.md`.
 - `core/` (crate `gm-core`) – scanners, launching, configuration, graphics detection and mods,
@@ -55,6 +55,13 @@ games plus games added by hand, starts them, and installs mods (DXVK).
     then `PostMessage` `BM_CLICK` to `GetDlgItem(dlg, 1)`.
 - **No input desktop**: drag and drop, right-clicks and the UAC prompt can't be done (the cursor
   reads 0,0 and there is no foreground window). Ask the user to try them on a build they run.
+  ReShade's Vulkan layer always needs the UAC prompt, so the user tests it.
+- **Packaged session**: programs started from the Claude desktop app run inside its package.
+  - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`.
+  - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
+  - The user's own runs are not redirected.
+- **Live downloads**: `cargo test -p gm-core live_builds -- --ignored` fetches each ReShade
+  variant and the default effects.
 - **The user's files**: back up `%APPDATA%\Game Manager\*.json` before a check and restore them
   after, comparing first that only the test changed them.
 - **The user's window**: never close or kill it. If `target\debug\app.exe` is locked, build into

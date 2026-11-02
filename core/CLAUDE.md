@@ -20,16 +20,22 @@ holds the rules and facts that span them.
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
   - `http.rs` (WinHTTP `get`/`download`).
 - **Mods**:
-  - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`).
+  - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`; `CopyTree` and
+    `DeleteFiles` move a folder of files as one operation).
   - `mods/dxvk.rs` (Stable, Development, HDR-mod).
   - `mods/laa.rs` (Large Address Aware for 32-bit programs: status, enable, restore; the patched
     program is recorded in `mods.json` under `laa`).
+  - `mods/reshade.rs` (Stable, Development, No Addons; the DLL, `ReShade.ini` and default
+    effects) and `mods/reshade_layer.rs` (ReShade's global Vulkan layer, shared with ReShade's
+    own setup).
   - `seven_zip.rs` (the shipped 7-Zip).
-  - `elevate.rs` (`runas` + `--file-ops` / `--nvidia-ops`).
+  - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).
   - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
   - `json_file.rs` (where files live, load/save).
+  - `security.rs` (the user's SID, whether elevated, granting file rights).
+  - `version_info.rs` (a file's `ProductName`/`ProductVersion`).
   - `text.rs`.
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v`, `--graphics`, `--icons <dir>`.
@@ -63,6 +69,7 @@ holds the rules and facts that span them.
   - `snapshot::VERSION`: the serde form of `Game`.
   - `icon::CACHE_FORMAT`.
   - `dxvk::CACHE_FORMAT`.
+  - `reshade::CACHE_FORMAT`.
 
 ## Rules
 - **Errors**: return `gm_core::Result<T>` with a `gm_core::Error` variant, never a `String`
@@ -120,3 +127,21 @@ holds the rules and facts that span them.
     A changed program may not start, so the app warns but still patches.
   - **Updates**: a game update replaces the patched program, and the old backup is then stale and
     removed.
+- **ReShade**:
+  - **Builds**: every setup (reshade.me's `ReShade_Setup_<v>_Addon.exe` and `ReShade_Setup_<v>.exe`,
+    and the CI's "ReShade Setup" artifact) appends a ZIP of `ReShade32/64.dll` and their layer
+    `.json` files. The ZIP's offsets count from its own start, not the file's: it starts at the
+    central directory minus the offset the directory states (`appended_zip`).
+  - **Add-ons**: the CI's `Release` configuration is `RESHADE_ADDON=2` (full, like `_Addon`); the
+    official no-add-on build is `Release Signed`, `=1`. CI artifacts expire after 90 days.
+  - **As its setup does**: `d3d9.dll` (D3D9), `dxgi.dll` (D3D10–12), `opengl32.dll`; Direct3D 8
+    needs d3d8to9 or DXVK; a DLL whose ProductName is "DXVK" means the Vulkan layer. Default
+    effects are the `Enabled=1`/`Required=1` packages of `EffectPackages.ini`. In a protected
+    folder, `ReShade.ini`, `ReShadePreset.ini` and `ReShade.log` are created and given to the
+    user (Modify), or ReShade cannot save there.
+  - **The Vulkan layer**: `%ProgramData%\ReShade` (`ReShade32/64.dll` + `.json`), registered under
+    `HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers` (32-bit under `WOW6432Node`); the folder grants
+    ALL APPLICATION PACKAGES read & execute. `ReShadeApps.ini` (UTF-8 with BOM) has one
+    `Apps=` line of paths split by commas, so a path with a comma can never match; it is left
+    byte for byte except for the game's own entry. ReShade's setup removes the layer when the
+    list ends empty, and so does Game Manager.
