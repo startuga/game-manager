@@ -10,6 +10,7 @@
 mod edit;
 mod library;
 mod mods_view;
+mod reshade_panel;
 
 use edit::{EditChoice, EditDraft, EditField};
 use gm_core::custom::NewGame;
@@ -21,6 +22,7 @@ use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
 use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
+use reshade_panel::{ReshadePanel, ShaderLibrary};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -156,6 +158,25 @@ enum Message {
     ShowReshadeSettings,
     /// The variant picked in ReShade settings; `None` (the list losing its selection) is ignored.
     ReshadeVariantChosen(Option<usize>),
+    /// The key of the top bar's ReShade menu item picked: `shaders` opens Global Shaders.
+    ReshadeMenu(String),
+    /// The shader pack list, the user's choices and the cached packs' effects, or what failed.
+    ShaderLibraryLoaded(Result<ShaderLibrary, String>),
+    /// A pack's box (or the user's own shaders'); `None` is ignored.
+    ShaderPackChecked(String, Option<bool>),
+    /// One effect of a pack: pack id, file, on.
+    ShaderEffectChecked(String, String, Option<bool>),
+    /// Shows or hides a pack's effects (downloading the pack to list them).
+    ShaderPackExpanded(String),
+    ShaderExpandAll,
+    ShaderDeselectAll,
+    ShaderSearch(String),
+    /// A pack downloaded for its effects, or what failed.
+    ShaderPackDownloaded(String, Result<Vec<String>, String>),
+    /// Saves the Global Shaders and deploys them to every game with ReShade.
+    DeployShaders,
+    /// Cancel or Escape in the ReShade panel.
+    CloseReshadePanel,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -209,6 +230,13 @@ struct GameManager {
     /// What each game's ReShade row read from the disk, by id.
     reshade: HashMap<String, ReshadeStatus>,
     reshade_pending: HashSet<String>,
+    /// ReShade ▸ Global Shaders, while open.
+    reshade_panel: Option<ReshadePanel>,
+    /// What the panel read: read again each time it opens.
+    shader_library: Option<Result<ShaderLibrary, String>>,
+    /// Packs being downloaded to list their effects, and those that failed.
+    packs_downloading: HashSet<String>,
+    pack_errors: HashMap<String, String>,
     mod_dialog: Option<ModDialog>,
     /// HDR-mod's own configs, listed once the settings dialog shows HDR-mod (`Err`: what failed,
     /// tried again when the dialog opens again).
@@ -325,10 +353,16 @@ impl GameManager {
         }
     }
 
-    /// Global controls: app title, scan status, Add game and Rescan.
+    /// Global controls: app title, scan status, ReShade, Add game and Rescan.
     fn top_bar(&self, context: &ViewContext<Self>) -> View {
+        let deploying = self
+            .mod_job
+            .as_ref()
+            .is_some_and(|(_, kind)| *kind == ModKind::Deploy);
         let status = if self.scanning {
             "Scanning libraries…".to_owned()
+        } else if deploying {
+            "Deploying the Global Shaders…".to_owned()
         } else {
             format!("{} games", self.games.len())
         };
@@ -353,13 +387,14 @@ impl GameManager {
             .grid_column(2)
             .children((
                 ProgressRing::new()
-                    .is_active(self.scanning)
+                    .is_active(self.scanning || deploying)
                     .width(20.0)
                     .height(20.0),
                 TextBlock::new()
                     .text(status)
                     .opacity(0.7)
                     .vertical_alignment(VerticalAlignment::Center),
+                self.reshade_button(context),
                 Button::new()
                     .is_enabled(self.can_add_game())
                     .on_click(context.message(Message::AddGame))
@@ -1060,6 +1095,10 @@ impl Component for GameManager {
             enhancements_open: false,
             reshade: HashMap::new(),
             reshade_pending: HashSet::new(),
+            reshade_panel: None,
+            shader_library: None,
+            packs_downloading: HashSet::new(),
+            pack_errors: HashMap::new(),
             mod_dialog: None,
             hdr_mod_configs: None,
             hdr_mod_configs_pending: false,
@@ -1293,6 +1332,17 @@ impl GameManager {
                 self.hdr_mod_configs_pending = false;
                 self.hdr_mod_configs = Some(configs);
             }
+            Message::ReshadeMenu(key) => self.open_reshade_panel(&key, context),
+            message @ (Message::ShaderLibraryLoaded(_)
+            | Message::ShaderPackChecked(..)
+            | Message::ShaderEffectChecked(..)
+            | Message::ShaderPackExpanded(_)
+            | Message::ShaderExpandAll
+            | Message::ShaderDeselectAll
+            | Message::ShaderSearch(_)
+            | Message::ShaderPackDownloaded(..)
+            | Message::DeployShaders
+            | Message::CloseReshadePanel) => self.handle_shaders(message, context),
             Message::EnhancementsExpanded(open) => self.enhancements_open = open,
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);
@@ -1617,6 +1667,7 @@ impl GameManager {
             body.content_dialog(self.remove_dialog(context)),
         ];
         layers.extend(self.row_menu_view(context));
+        layers.extend(self.reshade_panel_view(context));
         let window = Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
             .children(layers);
@@ -1634,12 +1685,20 @@ impl GameManager {
             .background(Color::transparent())
             .drop_policy(drop_policy)
             .on_drop(context.callback(Message::Dropped));
-        // Escape closes the game menu. The root is an ancestor of whatever has focus; the handler
-        // exists only while the menu is open, so Escape keeps its usual meaning otherwise.
-        let root = if self.row_menu.is_some() {
+        // Escape closes the game menu or the ReShade panel. The root is an ancestor of whatever
+        // has focus; the handler exists only while one is open, so Escape keeps its usual meaning
+        // otherwise.
+        let closing = if self.row_menu.is_some() {
+            Some(Message::CloseRowMenu)
+        } else if self.reshade_panel.is_some() {
+            Some(Message::CloseReshadePanel)
+        } else {
+            None
+        };
+        let root = if let Some(close) = closing {
             let sender = context.sender();
             root.on_key_up(RoutedCallback::new(move |key: KeyEventInfo| {
-                key.key == VirtualKey::ESCAPE && sender.send(Message::CloseRowMenu)
+                key.key == VirtualKey::ESCAPE && sender.send(close.clone())
             }))
         } else {
             root
