@@ -208,7 +208,8 @@ enum Message {
     OpenAddonFolder,
     /// The Addons panel's Close: saves and deploys a changed choice.
     CloseAddons,
-    /// "Apply to" in a ReShade panel: 0 all games, 1 the selected game; `None` is ignored.
+    /// "Apply to" in a ReShade panel: with a game selected, 0 is that game and 1 all games (else 0
+    /// is all games); `None` is ignored.
     ReshadeTargetChosen(Option<usize>),
     /// Drops the selected game's own choice in the open ReShade panel and deploys the shared one
     /// to it.

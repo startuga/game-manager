@@ -51,10 +51,10 @@ The top bar's **ReShade** button chooses what games with ReShade get:
   next to the program of the games it applies to, for each one's bitness; games with the No
   Addons build get none.
 
-**Apply to**, at the top of both, chooses where: **All games with ReShade**, or **Only** the game
-selected in the library, which then keeps a selection of its own. Deploying to all games leaves
-a game's own selection alone until **Use all games' selection** (or add-ons) puts it back on the
-shared one. A game with its own choice opens on it.
+**Apply to**, at the top of both, chooses where: **Only** the game selected in the library (the
+default), which then keeps a selection of its own, or **All games with ReShade**. Deploying to
+all games leaves a game's own selection alone until **Use all games' selection** (or add-ons)
+puts it back on the shared one. A game without a selection of its own starts from the shared one.
 
 Your choices are saved in `%APPDATA%\Game Manager\reshade.json` (a game's own under `games`), your
 own shaders and add-ons in `%APPDATA%\Game Manager\reshade\custom`.
