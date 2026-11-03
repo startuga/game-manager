@@ -33,7 +33,8 @@ pub(crate) enum ModKind {
     Dxvk,
     Laa,
     Reshade,
-    /// ReShade's shaders and add-ons going to games with ReShade.
+    /// ReShade's shaders and add-ons going to games with ReShade: to every game when the job's
+    /// game id is empty.
     Deploy,
 }
 

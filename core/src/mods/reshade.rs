@@ -26,10 +26,12 @@
 //!   laid out as `reshade-shaders\Shaders` and `\Textures`. That folder is Game Manager's: a
 //!   game's own one is set aside as `reshade-shaders.gm-backup` on the first install and put back
 //!   on uninstall, and Reinstall or Deploy replaces the whole folder (`DeleteTree` then
-//!   `CopyTree`, two short operations a game). `deploy` brings a changed selection to every game
-//!   with ReShade.
+//!   `CopyTree`, two short operations a game).
 //! - **Add-ons** chosen in ReShade ▸ Addons go next to the program, for its bitness, in builds
 //!   that load add-ons.
+//! - **Whose choice**: each game gets its own shaders or add-ons when it has them
+//!   (`reshade_settings`), else the shared ones. `deploy` brings a changed shared choice to the
+//!   games that follow it, or a game's own choice to that game.
 //! - **In a protected folder**, `ReShade.ini`, `ReShadePreset.ini` and `ReShade.log` are created
 //!   and given to the user, as ReShade's setup does, so ReShade can save into them.
 //!
@@ -44,6 +46,8 @@
 
 use super::reshade_addons::{self, Addon};
 use super::reshade_layer::{self, LAYER_FILES, LayerChange, LayerStatus};
+use super::reshade_settings::{Part, ReshadeSettings};
+use super::shader_packs::{Catalog, Selection};
 use super::{
     BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, files_under, folder_writable,
     get_json, latest_run, plan, reshade_settings, run_then, shader_packs, update, with_suffix,
@@ -861,7 +865,7 @@ fn fresh_staging(name: &str) -> Result<PathBuf> {
     Ok(staging)
 }
 
-/// The chosen shaders and add-ons, laid out for a job.
+/// A choice of shaders and add-ons, laid out for a job.
 struct Chosen {
     /// The add-ons switched on, with their folders.
     addons: Vec<(Addon, PathBuf)>,
@@ -869,30 +873,40 @@ struct Chosen {
     failed: Vec<String>,
 }
 
-/// Lays out the chosen shaders under `tree`, with the effects of the chosen add-ons, and gets
-/// those add-ons. Blocking: downloads what is not cached and what changed.
-fn stage_choice(tree: &Path) -> Result<Chosen> {
-    let catalog = shader_packs::catalog()?;
-    let settings = reshade_settings::load()?;
-    let staged = shader_packs::stage(&catalog, &settings.selection(&catalog), tree, true)?;
+/// Lays out `selection` under `tree`, with the effects of the add-ons `addon_ids` (found in
+/// `list`), and gets those add-ons. Blocking: downloads what is not cached and what changed.
+fn stage_choice(
+    tree: &Path,
+    catalog: &Catalog,
+    selection: &Selection,
+    addon_ids: &[String],
+    list: &[Addon],
+) -> Result<Chosen> {
+    let staged = shader_packs::stage(catalog, selection, tree, true)?;
     let mut failed = staged.failed;
     let mut addons = Vec::new();
-    if !settings.addons.is_empty() {
-        let list = reshade_addons::list()?;
-        for id in &settings.addons {
-            let Some(addon) = list.iter().find(|addon| addon.id == *id) else {
-                continue;
-            };
-            match reshade_addons::ensure(addon, true) {
-                Ok(dir) => {
-                    reshade_addons::stage_effects(addon, &dir, &tree.join(SHADERS_FOLDER))?;
-                    addons.push((addon.clone(), dir));
-                }
-                Err(error) => failed.push(format!("{}: {error}", addon.name)),
+    for id in addon_ids {
+        let Some(addon) = list.iter().find(|addon| addon.id == *id) else {
+            continue;
+        };
+        match reshade_addons::ensure(addon, true) {
+            Ok(dir) => {
+                reshade_addons::stage_effects(addon, &dir, &tree.join(SHADERS_FOLDER))?;
+                addons.push((addon.clone(), dir));
             }
+            Err(error) => failed.push(format!("{}: {error}", addon.name)),
         }
     }
     Ok(Chosen { addons, failed })
+}
+
+/// The add-on list, read only when `needed` (an add-on is chosen). Blocking: a web request.
+fn addon_list(needed: bool) -> Result<Vec<Addon>> {
+    if needed {
+        reshade_addons::list()
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 /// The operations that put the chosen add-ons' files for a 64-bit or 32-bit game into `folder`,
@@ -935,10 +949,11 @@ fn incomplete(done: &str, failed: &[String]) -> Error {
     Error::Incomplete(format!("{done}, but not all of it:\n{}", failed.join("\n")))
 }
 
-/// Installs the latest build of the game's ReShade variant for `api`, with the chosen shaders and
-/// add-ons, replacing an earlier install, and returns `mods.json` as saved. Blocking: downloads, 7-Zip and
-/// file copies (as administrator when the folder or the Vulkan layer needs it). Shader packs that
-/// cannot be downloaded are left out, and named in an `Error::Incomplete` after the install.
+/// Installs the latest build of the game's ReShade variant for `api`, with the shaders and add-ons
+/// chosen for it (its own, else the shared ones), replacing an earlier install, and returns
+/// `mods.json` as saved. Blocking: downloads, 7-Zip and file copies (as administrator when the
+/// folder or the Vulkan layer needs it). Shader packs that cannot be downloaded are left out, and
+/// named in an `Error::Incomplete` after the install.
 pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let (mods, state) = state(game)?;
     let target = target(game, Some(api), dxvk_present(game, &mods))
@@ -947,7 +962,16 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let cache = cached_build(state.variant, &build)?;
     let staging = fresh_staging("reshade")?;
     let effects = staging.join("effects");
-    let chosen = stage_choice(&effects)?;
+    let catalog = shader_packs::catalog()?;
+    let settings = reshade_settings::load()?;
+    let addon_ids = settings.addons_for(&game.id);
+    let chosen = stage_choice(
+        &effects,
+        &catalog,
+        &settings.shaders_for(&game.id, &catalog),
+        addon_ids,
+        &addon_list(!addon_ids.is_empty())?,
+    )?;
     let mut failed = chosen.failed;
     let sid = if folder_writable(&target.folder)? {
         None
@@ -1018,27 +1042,55 @@ pub fn uninstall(game: &Game) -> Result<ModsFile> {
     })
 }
 
-/// Brings the chosen shaders and add-ons to every game where Game Manager installed
-/// ReShade, replacing each one's `reshade-shaders` and add-on files, and returns `mods.json` as
-/// saved. Writable folders are changed directly, the protected ones together as administrator
-/// (one UAC prompt). `games` names them in messages and gives their bitness (a game not among
-/// them keeps its add-ons). Blocking: downloads, 7-Zip and file copies. What could not be done is
-/// named in an `Error::Incomplete`, after the rest was saved.
-pub fn deploy(games: &[Game]) -> Result<ModsFile> {
+/// Which games a deploy reaches (among those where Game Manager installed ReShade).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeployTo {
+    /// Every game that follows the shared choice of this part: the shared one changed.
+    Sharing(Part),
+    /// One game: its own choice changed, or it went back to the shared one.
+    Game(String),
+}
+
+/// The ids of the games with ReShade that `to` reaches.
+fn deploy_targets(mods: &ModsFile, settings: &ReshadeSettings, to: &DeployTo) -> Vec<String> {
+    mods.games
+        .iter()
+        .filter(|(_, entry)| {
+            entry
+                .reshade
+                .as_ref()
+                .is_some_and(|state| state.installed.is_some())
+        })
+        .filter(|(id, _)| match to {
+            DeployTo::Sharing(part) => !settings.has_own(id, *part),
+            DeployTo::Game(game) => *id == game,
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Brings the shaders and add-ons chosen for them (each game's own, else the shared ones) to the
+/// games `to` reaches, replacing each one's `reshade-shaders` and add-on files, and returns
+/// `mods.json` as saved. Each different choice is laid out once. Writable folders are changed
+/// directly, the protected ones together as administrator (one UAC prompt). `games` names them in
+/// messages and gives their bitness (a game not among them keeps its add-ons). Blocking:
+/// downloads, 7-Zip and file copies. What could not be done is named in an `Error::Incomplete`,
+/// after the rest was saved.
+pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
     let mods = super::load()?;
-    let any = mods.games.values().any(|entry| {
-        entry
-            .reshade
-            .as_ref()
-            .is_some_and(|state| state.installed.is_some())
-    });
-    if !any {
+    let settings = reshade_settings::load()?;
+    let targets = deploy_targets(&mods, &settings, to);
+    if targets.is_empty() {
         return Ok(mods);
     }
+    let catalog = shader_packs::catalog()?;
+    let list = addon_list(targets.iter().any(|id| !settings.addons_for(id).is_empty()))?;
     let staging = fresh_staging("reshade-deploy")?;
-    let effects = staging.join("effects");
-    let chosen = stage_choice(&effects)?;
-    let mut failed = chosen.failed;
+    let mut failed: Vec<String> = Vec::new();
+    /// A different choice, laid out once in its own folder: its shaders and add-ons, the folder,
+    /// and the add-ons' files.
+    type LaidOut<'a> = (Selection, &'a [String], PathBuf, Vec<(Addon, PathBuf)>);
+    let mut choices: Vec<LaidOut> = Vec::new();
     let name = |id: &str| {
         games
             .iter()
@@ -1049,15 +1101,35 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
     type Records = (Effects, Option<Option<Installed>>);
     let mut done: Vec<(String, Records)> = Vec::new();
     let mut protected: Vec<(String, Vec<FileOp>, Records)> = Vec::new();
-    for (id, entry) in &mods.games {
-        let Some(state) = &entry.reshade else {
+    for id in &targets {
+        let Some(state) = mods.reshade(id) else {
             continue;
         };
         let Some(installed) = state.installed.as_ref().filter(|i| i.folder.is_dir()) else {
             continue;
         };
+        let selection = settings.shaders_for(id, &catalog);
+        let addon_ids = settings.addons_for(id);
+        let index = match choices
+            .iter()
+            .position(|(shaders, addons, _, _)| *shaders == selection && *addons == addon_ids)
+        {
+            Some(index) => index,
+            None => {
+                let tree = staging.join(choices.len().to_string());
+                let chosen = stage_choice(&tree, &catalog, &selection, addon_ids, &list)?;
+                for what in chosen.failed {
+                    if !failed.contains(&what) {
+                        failed.push(what);
+                    }
+                }
+                choices.push((selection, addon_ids, tree, chosen.addons));
+                choices.len() - 1
+            }
+        };
+        let (_, _, effects, addons) = &choices[index];
         let planned =
-            effects_ops(state, &installed.folder, &effects).and_then(|(mut ops, effects)| {
+            effects_ops(state, &installed.folder, effects).and_then(|(mut ops, effects)| {
                 let bits = games
                     .iter()
                     .find(|game| game.id == *id)
@@ -1066,13 +1138,8 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
                 let addons = match bits {
                     Some(is_64_bit) => {
                         let mut missing = Vec::new();
-                        let (more, record) = addon_ops(
-                            state,
-                            &installed.folder,
-                            is_64_bit,
-                            &chosen.addons,
-                            &mut missing,
-                        )?;
+                        let (more, record) =
+                            addon_ops(state, &installed.folder, is_64_bit, addons, &mut missing)?;
                         ops.extend(more);
                         failed.extend(
                             missing
@@ -1162,7 +1229,7 @@ fn drop_default(reshade: &mut Option<ReshadeState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mods::run;
+    use crate::mods::{GameMods, run};
     use crate::seven_zip::tests::{seven_zip, temp_dir};
     use crate::{Launch, Store};
     use GraphicsApi::*;
@@ -1250,6 +1317,33 @@ mod tests {
                 build.version, build.url
             );
         }
+    }
+
+    #[test]
+    fn deploy_reaches_the_games_that_follow_the_changed_choice() {
+        let mut mods = ModsFile::default();
+        let entry = |installed: Option<Installed>| GameMods {
+            reshade: Some(ReshadeState {
+                installed,
+                ..ReshadeState::default()
+            }),
+            ..GameMods::default()
+        };
+        for id in ["a", "b", "c"] {
+            mods.games
+                .insert(id.to_owned(), entry(Some(Installed::default())));
+        }
+        // "d" has only a variant chosen: ReShade is not installed there.
+        mods.games.insert("d".to_owned(), entry(None));
+
+        let mut settings = ReshadeSettings::default();
+        settings.set_own_shaders("a", Some(Selection::default()));
+        settings.set_own_addons("b", Some(Vec::new()));
+        let reached = |to: DeployTo| deploy_targets(&mods, &settings, &to);
+        assert_eq!(reached(DeployTo::Sharing(Part::Shaders)), ["b", "c"]);
+        assert_eq!(reached(DeployTo::Sharing(Part::Addons)), ["a", "c"]);
+        assert_eq!(reached(DeployTo::Game("a".to_owned())), ["a"]);
+        assert!(reached(DeployTo::Game("d".to_owned())).is_empty());
     }
 
     #[test]
