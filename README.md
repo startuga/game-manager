@@ -37,21 +37,27 @@ setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rig
 games need DXVK first. Reinstall keeps ReShade's settings; uninstalling removes ReShade with
 `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log` and the `reshade-shaders` folder.
 
-The top bar's **ReShade** button chooses what every game with ReShade gets:
+The top bar's **ReShade** button chooses what games with ReShade get:
 
 - **Shaders** lists 55 shader packs as Essential (Lilium's HDR shaders,
-  selected until you choose), Recommended, Custom Shaders (your own) and Extra. ▶ downloads a pack and lists its
-  effects, to pick single ones; search finds packs and effects. Profiles keep selections (Save,
-  New, rename, delete); **Export** zips the selected shaders onto the clipboard, to paste into
-  Discord or a folder, and **Import** adds a ZIP's shaders to your own (**Open Custom Folder**).
-  **Deploy** puts the selection into every game with ReShade. Packs are cached in
-  `%LOCALAPPDATA%\Game Manager\mods\reshade\packs` and updated when they change.
+  selected until you choose), Recommended, Custom Shaders (your own) and Extra. ▶ downloads a
+  pack and lists its effects, to pick single ones; search finds packs and effects. Profiles keep
+  selections (Save, New, rename, delete); **Export** zips the selected shaders onto the clipboard,
+  to paste into Discord or a folder, and **Import** adds a ZIP's shaders to your own (**Open
+  Custom Folder**). **Deploy** puts the selection into the games it applies to. Packs are cached
+  in `%LOCALAPPDATA%\Game Manager\mods\reshade\packs` and updated when they change.
 - **Addons** lists ReShade's add-ons and a few more, and your own (`.addon32`/`.addon64`
   files in the custom folder), each with an On/Off switch. Closing it puts the add-ons switched on
-  next to each game's program, for its bitness; games with the No Addons build get none.
+  next to the program of the games it applies to, for each one's bitness; games with the No
+  Addons build get none.
 
-Your choices are saved in `%APPDATA%\Game Manager\reshade.json`, your own shaders and add-ons in
-`%APPDATA%\Game Manager\reshade\custom`.
+**Apply to**, at the top of both, chooses where: **All games with ReShade**, or **Only** the game
+selected in the library, which then keeps a selection of its own. Deploying to all games leaves
+a game's own selection alone until **Use all games' selection** (or add-ons) puts it back on the
+shared one. A game with its own choice opens on it.
+
+Your choices are saved in `%APPDATA%\Game Manager\reshade.json` (a game's own under `games`), your
+own shaders and add-ons in `%APPDATA%\Game Manager\reshade\custom`.
 
 The **Mods** expander installs mods into the game's folder. The first is
 [DXVK](https://github.com/doitsujin/dxvk), which runs Direct3D 8–11 games on Vulkan: **Install DXVK**

@@ -208,6 +208,11 @@ enum Message {
     OpenAddonFolder,
     /// The Addons panel's Close: saves and deploys a changed choice.
     CloseAddons,
+    /// "Apply to" in a ReShade panel: 0 all games, 1 the selected game; `None` is ignored.
+    ReshadeTargetChosen(Option<usize>),
+    /// Drops the selected game's own choice in the open ReShade panel and deploys the shared one
+    /// to it.
+    UseSharedChoice,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
 }
@@ -387,17 +392,21 @@ impl GameManager {
 
     /// Global controls: app title, scan status, ReShade, Add game and Rescan.
     fn top_bar(&self, context: &ViewContext<Self>) -> View {
+        // A deploy to every game has no game id.
         let deploying = self
             .mod_job
             .as_ref()
-            .is_some_and(|(_, kind)| *kind == ModKind::Deploy);
-        let status = if self.scanning {
-            "Scanning libraries…".to_owned()
-        } else if deploying {
-            "Deploying ReShade's shaders and add-ons…".to_owned()
-        } else {
-            format!("{} games", self.games.len())
+            .filter(|(_, kind)| *kind == ModKind::Deploy)
+            .map(|(id, _)| self.games.iter().find(|game| game.id == *id));
+        let status = match deploying {
+            _ if self.scanning => "Scanning libraries…".to_owned(),
+            Some(Some(game)) => {
+                format!("Deploying ReShade's shaders and add-ons to {}…", game.name)
+            }
+            Some(None) => "Deploying ReShade's shaders and add-ons…".to_owned(),
+            None => format!("{} games", self.games.len()),
         };
+        let deploying = deploying.is_some();
 
         let title = StackPanel::new()
             .orientation(Orientation::Horizontal)
@@ -1415,6 +1424,9 @@ impl GameManager {
             | Message::AddonSwitched(..)
             | Message::OpenAddonFolder
             | Message::CloseAddons) => self.handle_addons(message, context),
+            message @ (Message::ReshadeTargetChosen(_) | Message::UseSharedChoice) => {
+                self.handle_target(message, context);
+            }
             Message::EnhancementsExpanded(open) => self.enhancements_open = open,
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);

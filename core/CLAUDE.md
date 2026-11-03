@@ -29,8 +29,8 @@ holds the rules and facts that span them.
     `reshade-shaders` folder, `deploy`) and `mods/reshade_layer.rs` (ReShade's global Vulkan
     layer, shared with ReShade's own setup).
   - `mods/shader_packs.rs` (ReShade ▸ Shaders: the shipped `config/reshade-shaders.json`, the pack
-    cache, layout and staging) and `mods/reshade_settings.rs` (`reshade.json`: the selection,
-    add-ons and profiles).
+    cache, layout and staging) and `mods/reshade_settings.rs` (`reshade.json`: the shared
+    selection and add-ons, games' own ones, and profiles).
   - `mods/reshade_addons.rs` (ReShade ▸ Addons: ReShade's `Addons.ini`, the shipped
     `config/reshade-addons.json` and the user's own; the add-on cache).
   - `seven_zip.rs` (the shipped 7-Zip).

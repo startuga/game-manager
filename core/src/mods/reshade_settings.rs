@@ -1,11 +1,19 @@
-//! The user's ReShade choices for every game (ReShade ▸ Shaders and Addons), in
-//! `%APPDATA%\Game Manager\reshade.json`: the shader selection (`shader_packs::Selection`; the
-//! packs' defaults until the user chooses), the add-ons switched on, and named profiles of
-//! shader selections. Fields this version does not know are kept.
+//! The user's ReShade choices (ReShade ▸ Shaders and Addons), in
+//! `%APPDATA%\Game Manager\reshade.json`:
+//!
+//! - **Shared**: the shader selection (`shader_packs::Selection`; the packs' defaults until the
+//!   user chooses) and the add-ons switched on, for every game with ReShade.
+//! - **A game's own** (`games`, by game id): its own shaders, add-ons or both, chosen with the
+//!   panels' "Only <game>". A part it has no choice of follows the shared one, and deploying the
+//!   shared one leaves a game's own part alone. Uninstalling ReShade keeps it, for a reinstall.
+//! - **Profiles**: named shader selections, loaded into either.
+//!
+//! Fields this version does not know are kept.
 
 use super::shader_packs::{Catalog, Selection};
 use crate::{Result, json_file};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const SETTINGS_FILE: &str = "reshade.json";
@@ -19,6 +27,9 @@ pub struct ReshadeSettings {
     /// The ids of the add-ons switched on.
     #[serde(default)]
     pub addons: Vec<String>,
+    /// Games with a choice of their own, by id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub games: BTreeMap<String, GameChoice>,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     /// The profile the selection came from, if any.
@@ -28,12 +39,75 @@ pub struct ReshadeSettings {
     other: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A game's own choice; a part left `None` follows the shared one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameChoice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shaders: Option<Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addons: Option<Vec<String>>,
+}
+
+/// The two parts of the choice, each shared or a game's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Shaders,
+    Addons,
+}
+
 impl ReshadeSettings {
-    /// The shader selection to deploy.
+    /// The shared shader selection.
     pub fn selection(&self, catalog: &Catalog) -> Selection {
         self.shaders
             .clone()
             .unwrap_or_else(|| Selection::defaults(catalog))
+    }
+
+    /// The shaders the game gets: its own, else the shared ones.
+    pub fn shaders_for(&self, id: &str, catalog: &Catalog) -> Selection {
+        self.own_shaders(id)
+            .cloned()
+            .unwrap_or_else(|| self.selection(catalog))
+    }
+
+    /// The add-ons the game gets: its own, else the shared ones.
+    pub fn addons_for(&self, id: &str) -> &[String] {
+        self.own_addons(id).unwrap_or(&self.addons)
+    }
+
+    pub fn own_shaders(&self, id: &str) -> Option<&Selection> {
+        self.games.get(id)?.shaders.as_ref()
+    }
+
+    pub fn own_addons(&self, id: &str) -> Option<&[String]> {
+        self.games.get(id)?.addons.as_deref()
+    }
+
+    /// Whether the game has its own choice of `part`.
+    pub fn has_own(&self, id: &str, part: Part) -> bool {
+        match part {
+            Part::Shaders => self.own_shaders(id).is_some(),
+            Part::Addons => self.own_addons(id).is_some(),
+        }
+    }
+
+    /// Gives the game its own shaders, or (`None`) makes it follow the shared ones.
+    pub fn set_own_shaders(&mut self, id: &str, shaders: Option<Selection>) {
+        self.change_own(id, |choice| choice.shaders = shaders);
+    }
+
+    /// Gives the game its own add-ons, or (`None`) makes it follow the shared ones.
+    pub fn set_own_addons(&mut self, id: &str, addons: Option<Vec<String>>) {
+        self.change_own(id, |choice| choice.addons = addons);
+    }
+
+    /// Changes a game's own choice; one left with no part is removed.
+    fn change_own(&mut self, id: &str, change: impl FnOnce(&mut GameChoice)) {
+        let choice = self.games.entry(id.to_owned()).or_default();
+        change(choice);
+        if *choice == GameChoice::default() {
+            self.games.remove(id);
+        }
     }
 
     /// Adds a profile of `shaders` named "Profile <n>", the first number free, and makes it the
@@ -153,6 +227,42 @@ mod tests {
     }
 
     #[test]
+    fn a_game_has_its_own_choice_or_follows_the_shared_one() {
+        let mut settings = ReshadeSettings {
+            addons: vec!["swapchain".into()],
+            ..ReshadeSettings::default()
+        };
+        let catalog = Catalog::default();
+        let mut sweet = Selection::default();
+        sweet.packs.insert("SweetFX".into(), Pick::default());
+        settings.shaders = Some(Selection::default());
+
+        settings.set_own_shaders("steam:1", Some(sweet.clone()));
+        assert_eq!(settings.shaders_for("steam:1", &catalog), sweet);
+        assert_eq!(
+            settings.shaders_for("steam:2", &catalog),
+            Selection::default()
+        );
+        // Its add-ons still follow the shared ones.
+        assert_eq!(settings.addons_for("steam:1"), ["swapchain"]);
+        assert!(settings.has_own("steam:1", Part::Shaders));
+        assert!(!settings.has_own("steam:1", Part::Addons));
+
+        // No add-ons is a choice of its own too.
+        settings.set_own_addons("steam:1", Some(Vec::new()));
+        assert!(settings.addons_for("steam:1").is_empty());
+        settings.set_own_shaders("steam:1", None);
+        assert_eq!(
+            settings.shaders_for("steam:1", &catalog),
+            Selection::default()
+        );
+        assert!(settings.games.contains_key("steam:1"));
+        // A game left with no choice of its own is dropped.
+        settings.set_own_addons("steam:1", None);
+        assert!(settings.games.is_empty());
+    }
+
+    #[test]
     fn keeps_unknown_fields_and_defaults_the_selection() {
         let dir = std::env::temp_dir().join(format!("GM-ReShadeSettings-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -170,11 +280,16 @@ mod tests {
             shaders: chosen.clone(),
         });
         settings.shaders = Some(chosen.clone());
+        // An older file has no games of their own, and none are written.
+        assert!(settings.games.is_empty());
         save_to(&file, &settings).unwrap();
         let json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(json["theme"], "dark");
         assert!(json["shaders"]["packs"]["SweetFX"].is_object());
+        assert!(json.get("games").is_none());
+        settings.set_own_addons("steam:1", Some(vec!["swapchain".into()]));
+        save_to(&file, &settings).unwrap();
         let again: ReshadeSettings = json_file::load(&file).unwrap();
         assert_eq!(again, settings);
         assert_eq!(again.selection(&Catalog::default()), chosen);

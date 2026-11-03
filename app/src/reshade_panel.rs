@@ -5,16 +5,22 @@
 //!
 //! - **Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single effects
 //!   of a pack (▶ lists them, downloading the pack first). Every pack can be left out, Lilium's
-//!   too. Escape and Cancel close it; Deploy saves the selection and brings it to every game with
-//!   ReShade (`reshade::deploy`).
+//!   too. Escape and Cancel close it; Deploy saves the selection and brings it to the games
+//!   (`reshade::deploy`).
 //! - **Addons** lists every add-on with an On/Off switch. A switch takes effect when the panel
 //!   closes (Close or Escape): the choice is saved and deployed like the shaders.
+//!
+//! **Apply to**: each panel shows and applies either the shared choice ("All games with ReShade",
+//! leaving out the games with their own) or the own choice of the game selected in the library
+//! when it opened ("Only <game>"; `ReshadeSettings::games`). It opens on the game when that game
+//! has its own choice. "Use all games' selection" drops the game's own choice and deploys the
+//! shared one to it.
 
 use crate::mods_view::ModKind;
 use crate::{GameManager, Message, icon_label};
-use gm_core::mods::reshade;
+use gm_core::mods::reshade::{self, DeployTo};
 use gm_core::mods::reshade_addons::{self, Addon};
-use gm_core::mods::reshade_settings::{self, ReshadeSettings};
+use gm_core::mods::reshade_settings::{self, Part, ReshadeSettings};
 use gm_core::mods::shader_packs::{self, Catalog, Category, Pick, Selection};
 use std::collections::{BTreeSet, HashMap};
 use windows_pickers::OpenFilePicker;
@@ -90,11 +96,69 @@ pub(crate) fn load_addons() -> Result<AddonLibrary, String> {
 }
 
 /// The open panel.
-pub(crate) enum ReshadePanel {
+pub(crate) struct ReshadePanel {
+    /// The game selected in the library when the panel opened (id, name), for "Only <game>". The
+    /// panel's backdrop keeps the selection from changing while it is open.
+    pub game: Option<(String, String)>,
+    /// The panel shows and applies the game's own choice, not the shared one.
+    pub only_game: bool,
+    pub kind: PanelKind,
+}
+
+pub(crate) enum PanelKind {
     /// Shaders; `None` while the library loads.
     Shaders(Option<ShadersDraft>),
     /// Addons: the ids switched on; `None` while the list loads.
     Addons(Option<BTreeSet<String>>),
+}
+
+impl ReshadePanel {
+    fn new(game: Option<(String, String)>, kind: PanelKind) -> Self {
+        Self {
+            game,
+            only_game: false,
+            kind,
+        }
+    }
+
+    /// The id of the game whose own choice the panel shows; `None` for the shared one.
+    fn target(&self) -> Option<&str> {
+        self.game
+            .as_ref()
+            .filter(|_| self.only_game)
+            .map(|(id, _)| id.as_str())
+    }
+
+    fn part(&self) -> Part {
+        match self.kind {
+            PanelKind::Shaders(_) => Part::Shaders,
+            PanelKind::Addons(_) => Part::Addons,
+        }
+    }
+
+    fn shaders_draft(&mut self) -> Option<&mut ShadersDraft> {
+        match &mut self.kind {
+            PanelKind::Shaders(Some(draft)) => Some(draft),
+            _ => None,
+        }
+    }
+}
+
+/// The shader selection the panel shows for `target` (a game's id, else the shared one).
+fn shown_shaders(library: &ShaderLibrary, target: Option<&str>) -> Selection {
+    match target {
+        Some(id) => library.settings.shaders_for(id, &library.catalog),
+        None => library.settings.selection(&library.catalog),
+    }
+}
+
+/// The add-ons the panel shows switched on for `target`.
+fn shown_addons(settings: &ReshadeSettings, target: Option<&str>) -> BTreeSet<String> {
+    target
+        .map_or(settings.addons.as_slice(), |id| settings.addons_for(id))
+        .iter()
+        .cloned()
+        .collect()
 }
 
 /// The shaders being chosen.
@@ -225,19 +289,103 @@ impl GameManager {
             .menu(menu)
     }
 
-    /// Opens what the ReShade button's menu picked.
+    /// Opens what the ReShade button's menu picked, for the game selected in the library.
     pub(crate) fn open_reshade_panel(&mut self, key: &str, context: &ComponentContext<Self>) {
+        let game = self
+            .selected_game()
+            .map(|game| (game.id.clone(), game.name.clone()));
         match key {
             "shaders" => {
-                self.reshade_panel = Some(ReshadePanel::Shaders(None));
+                self.reshade_panel = Some(ReshadePanel::new(game, PanelKind::Shaders(None)));
                 context.spawn_background(|_cancel| Message::ShaderLibraryLoaded(load_library()));
             }
             "addons" => {
-                self.reshade_panel = Some(ReshadePanel::Addons(None));
+                self.reshade_panel = Some(ReshadePanel::new(game, PanelKind::Addons(None)));
                 context.spawn_background(|_cancel| Message::AddonLibraryLoaded(load_addons()));
             }
             _ => {}
         }
+    }
+
+    /// "Apply to" and "Use all games' selection", in either panel.
+    pub(crate) fn handle_target(&mut self, message: Message, context: &ComponentContext<Self>) {
+        match message {
+            Message::ReshadeTargetChosen(Some(index)) => {
+                let Some(panel) = &mut self.reshade_panel else {
+                    return;
+                };
+                panel.only_game = index == 1 && panel.game.is_some();
+                let target = panel.target().map(str::to_owned);
+                match &mut panel.kind {
+                    PanelKind::Shaders(Some(draft)) => {
+                        if let Some(Ok(library)) = &self.shader_library {
+                            draft.selection = shown_shaders(library, target.as_deref());
+                        }
+                    }
+                    PanelKind::Addons(Some(enabled)) => {
+                        if let Some(Ok(library)) = &self.addon_library {
+                            *enabled = shown_addons(&library.settings, target.as_deref());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Message::UseSharedChoice => {
+                let Some(panel) = &self.reshade_panel else {
+                    return;
+                };
+                let Some(id) = panel.target().map(str::to_owned) else {
+                    return;
+                };
+                let settings = match panel.part() {
+                    Part::Shaders => self
+                        .shader_library
+                        .as_ref()
+                        .and_then(|library| Some(&library.as_ref().ok()?.settings)),
+                    Part::Addons => self
+                        .addon_library
+                        .as_ref()
+                        .and_then(|library| Some(&library.as_ref().ok()?.settings)),
+                };
+                let Some(mut settings) = settings.cloned() else {
+                    return;
+                };
+                match panel.part() {
+                    Part::Shaders => settings.set_own_shaders(&id, None),
+                    Part::Addons => settings.set_own_addons(&id, None),
+                }
+                self.save_and_deploy(settings, DeployTo::Game(id), context);
+            }
+            _ => {}
+        }
+    }
+
+    /// Closes the panel, then saves `settings` and deploys them to `to` in the background. Both
+    /// panels' copies of the settings take them, so neither brings back an older choice.
+    fn save_and_deploy(
+        &mut self,
+        settings: ReshadeSettings,
+        to: DeployTo,
+        context: &ComponentContext<Self>,
+    ) {
+        if let Some(Ok(library)) = &mut self.shader_library {
+            library.settings = settings.clone();
+        }
+        if let Some(Ok(library)) = &mut self.addon_library {
+            library.settings = settings.clone();
+        }
+        self.reshade_panel = None;
+        let id = match &to {
+            DeployTo::Game(id) => id.clone(),
+            DeployTo::Sharing(_) => String::new(),
+        };
+        self.mod_job = Some((id, ModKind::Deploy));
+        let games = self.games.clone();
+        context.spawn_background(move |_cancel| {
+            let done =
+                reshade_settings::save(&settings).and_then(|()| reshade::deploy(&games, &to));
+            Message::ModJobDone(done.map_err(|e| e.to_string()))
+        });
     }
 
     /// The Addons panel's messages.
@@ -245,8 +393,15 @@ impl GameManager {
         match message {
             Message::AddonLibraryLoaded(loaded) => {
                 match (&loaded, &mut self.reshade_panel) {
-                    (Ok(library), Some(ReshadePanel::Addons(draft @ None))) => {
-                        *draft = Some(library.settings.addons.iter().cloned().collect());
+                    (Ok(library), Some(panel)) if matches!(panel.kind, PanelKind::Addons(None)) => {
+                        panel.only_game = panel
+                            .game
+                            .as_ref()
+                            .is_some_and(|(id, _)| library.settings.has_own(id, Part::Addons));
+                        panel.kind = PanelKind::Addons(Some(shown_addons(
+                            &library.settings,
+                            panel.target(),
+                        )));
                     }
                     (Err(error), _) => {
                         self.error = Some(format!("ReShade add-ons: {error}"));
@@ -257,7 +412,11 @@ impl GameManager {
                 self.addon_library = Some(loaded);
             }
             Message::AddonSwitched(id, on) => {
-                if let Some(ReshadePanel::Addons(Some(enabled))) = &mut self.reshade_panel {
+                if let Some(ReshadePanel {
+                    kind: PanelKind::Addons(Some(enabled)),
+                    ..
+                }) = &mut self.reshade_panel
+                {
                     if on {
                         enabled.insert(id);
                     } else {
@@ -276,32 +435,32 @@ impl GameManager {
         }
     }
 
-    /// Closes the Addons panel; a changed choice is saved and deployed to every game with ReShade.
+    /// Closes the Addons panel; a changed choice is saved and deployed to the games it applies to.
     fn apply_addons(&mut self, context: &ComponentContext<Self>) {
         let panel = self.reshade_panel.take();
-        let (Some(ReshadePanel::Addons(Some(enabled))), Some(Ok(library))) =
-            (panel, &self.addon_library)
-        else {
+        let (Some(panel), Some(Ok(library))) = (panel, &self.addon_library) else {
             return;
         };
-        let mut settings = library.settings.clone();
-        let chosen: Vec<String> = enabled.into_iter().collect();
-        let mut before = settings.addons.clone();
-        before.sort();
-        if chosen == before {
+        let target = panel.target().map(str::to_owned);
+        let PanelKind::Addons(Some(enabled)) = panel.kind else {
+            return;
+        };
+        if enabled == shown_addons(&library.settings, target.as_deref()) {
             return;
         }
-        settings.addons = chosen;
-        // The shaders' copy of the settings must not bring back the old add-ons.
-        if let Some(Ok(shaders)) = &mut self.shader_library {
-            shaders.settings.addons = settings.addons.clone();
-        }
-        let games = self.games.clone();
-        self.mod_job = Some((String::new(), ModKind::Deploy));
-        context.spawn_background(move |_cancel| {
-            let done = reshade_settings::save(&settings).and_then(|()| reshade::deploy(&games));
-            Message::ModJobDone(done.map_err(|e| e.to_string()))
-        });
+        let mut settings = library.settings.clone();
+        let chosen: Vec<String> = enabled.into_iter().collect();
+        let to = match target {
+            Some(id) => {
+                settings.set_own_addons(&id, Some(chosen));
+                DeployTo::Game(id)
+            }
+            None => {
+                settings.addons = chosen;
+                DeployTo::Sharing(Part::Addons)
+            }
+        };
+        self.save_and_deploy(settings, to, context);
     }
 
     /// The Shaders panel's messages.
@@ -310,18 +469,23 @@ impl GameManager {
             .shader_library
             .as_ref()
             .and_then(|library| library.as_ref().ok());
-        let draft = match &mut self.reshade_panel {
-            Some(ReshadePanel::Shaders(Some(draft))) => Some(draft),
-            _ => None,
-        };
+        let draft = self
+            .reshade_panel
+            .as_mut()
+            .and_then(ReshadePanel::shaders_draft);
         match message {
             Message::ShaderLibraryLoaded(loaded) => {
-                if let (Ok(library), Some(ReshadePanel::Shaders(draft @ None))) =
-                    (&loaded, &mut self.reshade_panel)
+                if let (Ok(library), Some(panel)) = (&loaded, &mut self.reshade_panel)
+                    && matches!(panel.kind, PanelKind::Shaders(None))
                 {
-                    *draft = Some(ShadersDraft::new(
-                        library.settings.selection(&library.catalog),
-                    ));
+                    panel.only_game = panel
+                        .game
+                        .as_ref()
+                        .is_some_and(|(id, _)| library.settings.has_own(id, Part::Shaders));
+                    panel.kind = PanelKind::Shaders(Some(ShadersDraft::new(shown_shaders(
+                        library,
+                        panel.target(),
+                    ))));
                 }
                 if let Err(error) = &loaded {
                     self.error = Some(format!("ReShade shaders: {error}"));
@@ -522,7 +686,11 @@ impl GameManager {
                     }
                     Err(error) => format!("Import failed: {error}"),
                 };
-                if let Some(ReshadePanel::Shaders(Some(draft))) = &mut self.reshade_panel {
+                if let Some(draft) = self
+                    .reshade_panel
+                    .as_mut()
+                    .and_then(ReshadePanel::shaders_draft)
+                {
                     draft.note = Some(note);
                 }
             }
@@ -535,7 +703,10 @@ impl GameManager {
             Message::DeployShaders => self.deploy_shaders(context),
             // Escape on the Addons panel closes it like its Close button: the switches apply.
             Message::CloseReshadePanel
-                if matches!(self.reshade_panel, Some(ReshadePanel::Addons(_))) =>
+                if self
+                    .reshade_panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.part() == Part::Addons) =>
             {
                 self.apply_addons(context);
             }
@@ -551,9 +722,12 @@ impl GameManager {
         context: &ComponentContext<Self>,
         change: impl FnOnce(&mut ReshadeSettings, &mut ShadersDraft),
     ) {
-        let (Some(ReshadePanel::Shaders(Some(draft))), Some(Ok(library))) =
-            (&mut self.reshade_panel, &mut self.shader_library)
-        else {
+        let (Some(draft), Some(Ok(library))) = (
+            self.reshade_panel
+                .as_mut()
+                .and_then(ReshadePanel::shaders_draft),
+            &mut self.shader_library,
+        ) else {
             return;
         };
         change(&mut library.settings, draft);
@@ -586,25 +760,28 @@ impl GameManager {
         });
     }
 
-    /// Saves the selection and deploys it to every game with ReShade.
+    /// Saves the selection (the shared one, or the game's own) and deploys it to the games it
+    /// applies to.
     fn deploy_shaders(&mut self, context: &ComponentContext<Self>) {
-        let (Some(ReshadePanel::Shaders(Some(draft))), Some(Ok(library))) =
-            (&self.reshade_panel, &self.shader_library)
-        else {
+        let (Some(panel), Some(Ok(library))) = (&self.reshade_panel, &self.shader_library) else {
+            return;
+        };
+        let PanelKind::Shaders(Some(draft)) = &panel.kind else {
             return;
         };
         let mut settings = library.settings.clone();
-        settings.shaders = Some(draft.selection.clone());
-        let games = self.games.clone();
-        if let Some(Ok(library)) = &mut self.shader_library {
-            library.settings = settings.clone();
-        }
-        self.reshade_panel = None;
-        self.mod_job = Some((String::new(), ModKind::Deploy));
-        context.spawn_background(move |_cancel| {
-            let done = reshade_settings::save(&settings).and_then(|()| reshade::deploy(&games));
-            Message::ModJobDone(done.map_err(|e| e.to_string()))
-        });
+        let selection = draft.selection.clone();
+        let to = match panel.target() {
+            Some(id) => {
+                settings.set_own_shaders(id, Some(selection));
+                DeployTo::Game(id.to_owned())
+            }
+            None => {
+                settings.shaders = Some(selection);
+                DeployTo::Sharing(Part::Shaders)
+            }
+        };
+        self.save_and_deploy(settings, to, context);
     }
 
     /// The panel layer, while one is open: a dimmed backdrop and the panel centred on it.
@@ -613,9 +790,9 @@ impl GameManager {
         let (width, height) = self.window_size;
         let width = (width - 2.0 * PANEL_MARGIN).clamp(480.0, PANEL_WIDTH);
         let height = (height - 2.0 * PANEL_MARGIN).clamp(360.0, PANEL_HEIGHT);
-        let content = match panel {
-            ReshadePanel::Shaders(draft) => self.shaders_panel(draft.as_ref(), context),
-            ReshadePanel::Addons(enabled) => self.addons_panel(enabled.as_ref(), context),
+        let content = match &panel.kind {
+            PanelKind::Shaders(draft) => self.shaders_panel(panel, draft.as_ref(), context),
+            PanelKind::Addons(enabled) => self.addons_panel(panel, enabled.as_ref(), context),
         };
         let card = Border::new()
             .width(width)
@@ -639,32 +816,170 @@ impl GameManager {
         )
     }
 
+    /// A panel's title with "Apply to" beside it, and under them what applying does: for every
+    /// game with ReShade (but those with their own choice), or for the selected game alone (with
+    /// "Use all games' …" when it has its own).
+    fn panel_header(
+        &self,
+        panel: &ReshadePanel,
+        title: &str,
+        settings: Option<&ReshadeSettings>,
+        context: &ViewContext<Self>,
+    ) -> StackPanel {
+        let mut items = vec!["All games with ReShade".to_owned()];
+        if let Some((_, name)) = &panel.game {
+            items.push(format!("Only {name}"));
+        }
+        let selector = StackPanel::new()
+            .orientation(Orientation::Horizontal)
+            .spacing(8.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .grid_column(1)
+            .children((
+                TextBlock::new()
+                    .text("Apply to")
+                    .vertical_alignment(VerticalAlignment::Center),
+                ComboBox::new()
+                    .items_source(items)
+                    .selected_index(Some(usize::from(panel.only_game)))
+                    .is_enabled(panel.game.is_some() && settings.is_some())
+                    .min_width(280.0)
+                    .automation_name("Apply to")
+                    .on_selection_changed(context.callback(Message::ReshadeTargetChosen)),
+            ));
+        let top = Grid::new()
+            .columns([GridLength::Star(1.0), GridLength::Auto])
+            .column_spacing(16.0)
+            .children((
+                TextBlock::new()
+                    .text(title)
+                    .font_size(28.0)
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .grid_column(0),
+                selector,
+            ));
+        let mut rows: Vec<View> = vec![top.into()];
+        if let Some(settings) = settings {
+            rows.push(self.target_line(panel, settings, context));
+        }
+        StackPanel::new().spacing(6.0).children(rows)
+    }
+
+    /// What applying the panel's choice does, for its target.
+    fn target_line(
+        &self,
+        panel: &ReshadePanel,
+        settings: &ReshadeSettings,
+        context: &ViewContext<Self>,
+    ) -> View {
+        let part = panel.part();
+        let has_reshade = |id: &str| {
+            self.mods
+                .reshade(id)
+                .is_some_and(|state| state.installed.is_some())
+        };
+        // What applying is called at the start of a sentence, and inside one.
+        let (what, applying, applying_inside) = match part {
+            Part::Shaders => ("selection", "Deploy", "Deploy"),
+            Part::Addons => ("add-ons", "Closing this", "closing this"),
+        };
+        let (text, use_shared) = match (panel.target(), &panel.game) {
+            (Some(id), Some((_, name))) => {
+                let own = settings.has_own(id, part);
+                let text = match (has_reshade(id), own) {
+                    (false, _) => format!(
+                        "ReShade is not installed in {name}: {applying_inside} saves its own \
+                         {what} for its install."
+                    ),
+                    (true, true) => {
+                        format!("{name} has its own {what}, which {applying_inside} updates.")
+                    }
+                    (true, false) => format!(
+                        "{applying} gives {name} its own {what}, which deploying to all games then \
+                         leaves alone."
+                    ),
+                };
+                (text, own)
+            }
+            _ => {
+                let own = settings
+                    .games
+                    .keys()
+                    .filter(|id| has_reshade(id) && settings.has_own(id, part))
+                    .count();
+                let except = match own {
+                    0 => String::new(),
+                    1 => format!(", except the one with its own {what}"),
+                    n => format!(", except the {n} with their own {what}"),
+                };
+                let text = match part {
+                    Part::Shaders => {
+                        format!("Deploy puts this selection into every game with ReShade{except}.")
+                    }
+                    Part::Addons => format!(
+                        "Closing this puts the add-ons switched on next to the program of every \
+                         game with ReShade{except}."
+                    ),
+                };
+                (text, false)
+            }
+        };
+        let text = match part {
+            Part::Shaders => text,
+            Part::Addons => format!("{text} Games with the No Addons build get none."),
+        };
+        let mut line: Vec<View> = vec![
+            TextBlock::new()
+                .text(text)
+                .font_size(12.0)
+                .opacity(0.7)
+                .text_wrapping(TextWrapping::Wrap)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0)
+                .into(),
+        ];
+        if use_shared {
+            let label = match part {
+                Part::Shaders => "Use all games' selection",
+                Part::Addons => "Use all games' add-ons",
+            };
+            line.push(
+                Button::new()
+                    .on_click(context.message(Message::UseSharedChoice))
+                    .automation_name(label)
+                    .content(label)
+                    .grid_column(1)
+                    .tooltip("Drop this game's own choice and deploy the one all games share"),
+            );
+        }
+        Grid::new()
+            .columns([GridLength::Star(1.0), GridLength::Auto])
+            .column_spacing(16.0)
+            .children(line)
+            .into()
+    }
+
     /// ReShade Addon Manager: the custom folder's link, a card per add-on, and Close.
     fn addons_panel(
         &self,
+        panel: &ReshadePanel,
         enabled: Option<&BTreeSet<String>>,
         context: &ViewContext<Self>,
     ) -> View {
-        let title = TextBlock::new()
-            .text("ReShade Addon Manager")
-            .font_size(28.0)
-            .font_weight(FontWeight::SEMI_BOLD);
-        let header = StackPanel::new().spacing(4.0).grid_row(0).children((
-            title,
-            HyperlinkButton::new()
-                .content("Place custom .addon64/.addon32 files here")
-                .on_click(context.message(Message::OpenAddonFolder))
-                .automation_name("Place custom add-on files here"),
-            note(
-                "A switch takes effect when this closes: the add-ons switched on go into every \
-                     game with ReShade, next to its program. Games with the No Addons build get \
-                     none.",
-            ),
-        ));
         let library = self
             .addon_library
             .as_ref()
             .and_then(|library| library.as_ref().ok());
+        let settings = library
+            .filter(|_| enabled.is_some())
+            .map(|library| &library.settings);
+        let header = StackPanel::new().spacing(4.0).grid_row(0).children((
+            self.panel_header(panel, "ReShade Addon Manager", settings, context),
+            HyperlinkButton::new()
+                .content("Place custom .addon64/.addon32 files here")
+                .on_click(context.message(Message::OpenAddonFolder))
+                .automation_name("Place custom add-on files here"),
+        ));
         let body: View = match (enabled, library) {
             (Some(enabled), Some(library)) => {
                 let cards: Vec<View> = library
@@ -705,16 +1020,22 @@ impl GameManager {
             .into()
     }
 
-    fn shaders_panel(&self, draft: Option<&ShadersDraft>, context: &ViewContext<Self>) -> View {
-        let title = TextBlock::new()
-            .text("Select Shader Packs")
-            .font_size(28.0)
-            .font_weight(FontWeight::SEMI_BOLD)
-            .grid_row(0);
+    fn shaders_panel(
+        &self,
+        panel: &ReshadePanel,
+        draft: Option<&ShadersDraft>,
+        context: &ViewContext<Self>,
+    ) -> View {
         let library = self
             .shader_library
             .as_ref()
             .and_then(|library| library.as_ref().ok());
+        let settings = library
+            .filter(|_| draft.is_some())
+            .map(|library| &library.settings);
+        let title = self
+            .panel_header(panel, "Select Shader Packs", settings, context)
+            .grid_row(0);
         let body: View = match (draft, library) {
             (Some(draft), Some(library)) => Grid::new()
                 .columns([GridLength::Star(1.0), GridLength::Pixel(300.0)])
@@ -750,7 +1071,14 @@ impl GameManager {
                     .automation_name("Deploy")
                     .content("Deploy")
                     .grid_column(0)
-                    .tooltip("Save the selection and put it into every game with ReShade"),
+                    .tooltip(match &panel.game {
+                        Some((_, name)) if panel.only_game => {
+                            format!("Save the selection as {name}'s own and put it into {name}")
+                        }
+                        _ => "Save the selection and put it into every game with ReShade that \
+                              has no selection of its own"
+                            .to_owned(),
+                    }),
                 Button::new()
                     .horizontal_alignment(HorizontalAlignment::Stretch)
                     .on_click(context.message(Message::CloseReshadePanel))
