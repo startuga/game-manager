@@ -1,4 +1,4 @@
-//! ReShade's shader packs (ReShade ▸ Global Shaders): which packs there are, from the shipped
+//! ReShade's shader packs (ReShade ▸ Shaders): which packs there are, from the shipped
 //! `reshade-shaders.json` (copied from `config/`), and laying out the `reshade-shaders` folder
 //! that Game Manager deploys into games for the user's `Selection`.
 //!
@@ -11,8 +11,9 @@
 //!   images and `.cube` LUTs to `Textures`, keeping their subfolders. `excludedFiles` (effects
 //!   that do not compile) are dropped.
 //! - **Selection**: whole packs, or some of a pack's effects (`.fx`). Its headers (`.fxh`) and
-//!   textures always go with it, as the effects include them. Essential packs are always
-//!   deployed, and a pack brings the packs it `requires`.
+//!   textures always go with it, as the effects include them. A pack brings the packs it
+//!   `requires`. Essential and `default` packs are selected until the user chooses; any pack can
+//!   be left out.
 //! - **Staging**: the shared headers (`ReShade.fxh`, `ReShadeUI.fxh` from `headersPack`) first,
 //!   then the packs in the list's order (the first to supply a file keeps it), then the user's
 //!   own shaders from `%APPDATA%\Game Manager\reshade\custom`.
@@ -34,7 +35,7 @@ const TEXTURE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "dds", "bmp", "tga"
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Category {
-    /// Always deployed.
+    /// Selected until the user chooses (Lilium's HDR shaders).
     Essential,
     Recommended,
     Extra,
@@ -156,15 +157,13 @@ impl Selection {
         }
     }
 
-    /// The packs to deploy, in the list's order: the picked ones, the Essential ones (whole
-    /// unless picked) and the packs they require (whole).
+    /// The packs to deploy, in the list's order: the picked ones and the packs they require
+    /// (whole).
     pub fn to_deploy<'a>(&self, catalog: &'a Catalog) -> Vec<(&'a ShaderPack, Pick)> {
         let mut wanted: HashSet<&str> = catalog
             .packs
             .iter()
-            .filter(|pack| {
-                pack.category == Category::Essential || self.packs.contains_key(&pack.id)
-            })
+            .filter(|pack| self.packs.contains_key(&pack.id))
             .map(|pack| pack.id.as_str())
             .collect();
         // Requirements, and theirs.
@@ -654,7 +653,8 @@ mod tests {
         assert!(catalog.pack(headers).is_some());
         assert_eq!(catalog.headers, ["ReShade.fxh", "ReShadeUI.fxh"]);
         assert!(catalog.excluded("grainspread.FX"));
-        // Lilium is the essential pack; Lilium and crosire's master are selected first.
+        // Lilium is the essential pack; Lilium and crosire's master are selected until the user
+        // chooses.
         let defaults = Selection::defaults(&catalog);
         assert_eq!(
             defaults.packs.keys().collect::<Vec<_>>(),
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_brings_essentials_and_requirements() {
+    fn a_selection_brings_its_requirements() {
         let catalog = shipped();
         let mut selection = Selection::default();
         selection.packs.insert("Azen".into(), Pick::default());
@@ -682,11 +682,10 @@ mod tests {
             .iter()
             .map(|(pack, _)| pack.id.as_str())
             .collect();
-        // In the list's order: Essential, then what was picked and what it requires.
+        // In the list's order: what was picked and what it requires; Lilium only when picked.
         assert_eq!(
             deployed,
             [
-                "Lilium",
                 "CrosireMaster",
                 "CrosireLegacy",
                 "SmolbbsoopShaders",

@@ -1,20 +1,20 @@
-//! ReShade ▸ Global Shaders and Global Addons: the panels the top bar's ReShade button opens.
+//! ReShade ▸ Shaders and Addons: the panels the top bar's ReShade button opens.
 //! WinUI's ContentDialog is at most about 548 px wide, too narrow for the pack list, so a panel is
 //! drawn by the app as the window's last layer, as the game menu is: a dimmed backdrop that takes
 //! every click, and the panel centred on it.
 //!
-//! - **Global Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single
-//!   effects of a pack (▶ lists them, downloading the pack first). Essential packs are always
-//!   deployed, so their box is checked and cannot be cleared. Escape and Cancel close it; Deploy
-//!   saves the selection and brings it to every game with ReShade (`reshade::deploy`).
-//! - **Global Addons** lists every add-on with an On/Off switch. A switch takes effect when the
-//!   panel closes (Close or Escape): the choice is saved and deployed like the shaders.
+//! - **Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single effects
+//!   of a pack (▶ lists them, downloading the pack first). Every pack can be left out, Lilium's
+//!   too. Escape and Cancel close it; Deploy saves the selection and brings it to every game with
+//!   ReShade (`reshade::deploy`).
+//! - **Addons** lists every add-on with an On/Off switch. A switch takes effect when the panel
+//!   closes (Close or Escape): the choice is saved and deployed like the shaders.
 
 use crate::mods_view::ModKind;
 use crate::{GameManager, Message, icon_label};
 use gm_core::mods::reshade;
 use gm_core::mods::reshade_addons::{self, Addon};
-use gm_core::mods::reshade_settings::{self, GlobalSettings};
+use gm_core::mods::reshade_settings::{self, ReshadeSettings};
 use gm_core::mods::shader_packs::{self, Catalog, Category, Pick, Selection};
 use std::collections::{BTreeSet, HashMap};
 use windows_pickers::OpenFilePicker;
@@ -27,11 +27,11 @@ const PANEL_WIDTH: f64 = 1100.0;
 const PANEL_HEIGHT: f64 = 860.0;
 const PANEL_MARGIN: f64 = 32.0;
 
-/// What the Global Shaders panel reads from the disk.
+/// What the Shaders panel reads from the disk.
 #[derive(Clone)]
 pub(crate) struct ShaderLibrary {
     pub catalog: Catalog,
-    pub settings: GlobalSettings,
+    pub settings: ReshadeSettings,
     /// Each cached pack's effects (`Shaders\Bloom.fx`), by id; `CUSTOM` holds the user's own.
     pub effects: HashMap<String, Vec<String>>,
 }
@@ -60,11 +60,11 @@ pub(crate) fn load_library() -> Result<ShaderLibrary, String> {
     })
 }
 
-/// What the Global Addons panel reads: every add-on, the user's choices, and what is cached.
+/// What the Addons panel reads: every add-on, the user's choices, and what is cached.
 #[derive(Clone)]
 pub(crate) struct AddonLibrary {
     pub addons: Vec<Addon>,
-    pub settings: GlobalSettings,
+    pub settings: ReshadeSettings,
     /// The cached add-ons, by id, with their version when they have one.
     pub cached: HashMap<String, Option<String>>,
 }
@@ -91,13 +91,13 @@ pub(crate) fn load_addons() -> Result<AddonLibrary, String> {
 
 /// The open panel.
 pub(crate) enum ReshadePanel {
-    /// Global Shaders; `None` while the library loads.
+    /// Shaders; `None` while the library loads.
     Shaders(Option<ShadersDraft>),
-    /// Global Addons: the ids switched on; `None` while the list loads.
+    /// Addons: the ids switched on; `None` while the list loads.
     Addons(Option<BTreeSet<String>>),
 }
 
-/// The Global Shaders being chosen.
+/// The shaders being chosen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ShadersDraft {
     pub selection: Selection,
@@ -206,13 +206,13 @@ fn effect_name(file: &str) -> &str {
 }
 
 impl GameManager {
-    /// The top bar's ReShade button: Global Shaders, then Global Addons.
+    /// The top bar's ReShade button: Shaders, then Addons.
     pub(crate) fn reshade_button(&self, context: &ViewContext<Self>) -> View {
         // Messages cross threads, so the key travels as text.
         let menu = Menu::new(
             [
-                MenuItem::item("shaders", "Global Shaders"),
-                MenuItem::item("addons", "Global Addons"),
+                MenuItem::item("shaders", "Shaders"),
+                MenuItem::item("addons", "Addons"),
             ],
             context.callback(|key: Key| {
                 Message::ReshadeMenu(key.as_str().unwrap_or_default().to_owned())
@@ -240,7 +240,7 @@ impl GameManager {
         }
     }
 
-    /// The Global Addons panel's messages.
+    /// The Addons panel's messages.
     pub(crate) fn handle_addons(&mut self, message: Message, context: &ComponentContext<Self>) {
         match message {
             Message::AddonLibraryLoaded(loaded) => {
@@ -249,7 +249,7 @@ impl GameManager {
                         *draft = Some(library.settings.addons.iter().cloned().collect());
                     }
                     (Err(error), _) => {
-                        self.error = Some(format!("Global Addons: {error}"));
+                        self.error = Some(format!("ReShade add-ons: {error}"));
                         self.reshade_panel = None;
                     }
                     _ => {}
@@ -276,7 +276,7 @@ impl GameManager {
         }
     }
 
-    /// Closes Global Addons; a changed choice is saved and deployed to every game with ReShade.
+    /// Closes the Addons panel; a changed choice is saved and deployed to every game with ReShade.
     fn apply_addons(&mut self, context: &ComponentContext<Self>) {
         let panel = self.reshade_panel.take();
         let (Some(ReshadePanel::Addons(Some(enabled))), Some(Ok(library))) =
@@ -304,7 +304,7 @@ impl GameManager {
         });
     }
 
-    /// The Global Shaders panel's messages.
+    /// The Shaders panel's messages.
     pub(crate) fn handle_shaders(&mut self, message: Message, context: &ComponentContext<Self>) {
         let library = self
             .shader_library
@@ -324,7 +324,7 @@ impl GameManager {
                     ));
                 }
                 if let Err(error) = &loaded {
-                    self.error = Some(format!("Global Shaders: {error}"));
+                    self.error = Some(format!("ReShade shaders: {error}"));
                     self.reshade_panel = None;
                 }
                 self.shader_library = Some(loaded);
@@ -533,7 +533,7 @@ impl GameManager {
                     .map(|e| e.to_string());
             }
             Message::DeployShaders => self.deploy_shaders(context),
-            // Escape on Global Addons closes it like its Close button: the switches apply.
+            // Escape on the Addons panel closes it like its Close button: the switches apply.
             Message::CloseReshadePanel
                 if matches!(self.reshade_panel, Some(ReshadePanel::Addons(_))) =>
             {
@@ -549,7 +549,7 @@ impl GameManager {
     fn change_profiles(
         &mut self,
         context: &ComponentContext<Self>,
-        change: impl FnOnce(&mut GlobalSettings, &mut ShadersDraft),
+        change: impl FnOnce(&mut ReshadeSettings, &mut ShadersDraft),
     ) {
         let (Some(ReshadePanel::Shaders(Some(draft))), Some(Ok(library))) =
             (&mut self.reshade_panel, &mut self.shader_library)
@@ -821,7 +821,6 @@ impl GameManager {
                 CUSTOM,
                 "General",
                 "Your own shaders, in Game Manager's custom folder",
-                false,
                 &custom,
                 true,
                 draft,
@@ -892,7 +891,6 @@ impl GameManager {
                 &pack.id,
                 &pack.name,
                 &pack.description,
-                category == Category::Essential,
                 &effects.unwrap_or_default(),
                 cached,
                 draft,
@@ -912,24 +910,18 @@ impl GameManager {
         id: &str,
         name: &str,
         description: &str,
-        essential: bool,
         effects: &[String],
         cached: bool,
         draft: &ShadersDraft,
         context: &ViewContext<Self>,
     ) -> View {
-        let state = if essential {
-            Some(true)
-        } else {
-            draft.state(id, effects)
-        };
+        let state = draft.state(id, effects);
         let expanded = draft.expanded.contains(id)
             || (!draft.search.is_empty()
                 && effects.iter().any(|file| matches(file, &draft.search)));
         let key = id.to_owned();
         let check = CheckBox::new()
             .is_checked(state)
-            .is_enabled(!essential)
             .automation_name(name)
             .vertical_alignment(VerticalAlignment::Top)
             .margin(Thickness::new(0.0, 2.0, 0.0, 0.0))
@@ -1010,8 +1002,7 @@ impl GameManager {
                 let (pack, effect) = (id.to_owned(), file.clone());
                 boxes.push(
                     CheckBox::new()
-                        .is_checked(essential || draft.takes(id, file))
-                        .is_enabled(!essential)
+                        .is_checked(draft.takes(id, file))
                         .content(effect_name(file))
                         .automation_name(effect_name(file))
                         .on_is_checked_changed(context.callback(move |on: Option<bool>| {

@@ -1,4 +1,4 @@
-//! The user's ReShade choices for every game (ReShade ▸ Global Shaders and Global Addons), in
+//! The user's ReShade choices for every game (ReShade ▸ Shaders and Addons), in
 //! `%APPDATA%\Game Manager\reshade.json`: the shader selection (`shader_packs::Selection`; the
 //! packs' defaults until the user chooses), the add-ons switched on, and named profiles of
 //! shader selections. Fields this version does not know are kept.
@@ -12,7 +12,7 @@ const SETTINGS_FILE: &str = "reshade.json";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GlobalSettings {
+pub struct ReshadeSettings {
     /// `None` until the user chooses; then `Selection::defaults`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shaders: Option<Selection>,
@@ -28,7 +28,7 @@ pub struct GlobalSettings {
     other: serde_json::Map<String, serde_json::Value>,
 }
 
-impl GlobalSettings {
+impl ReshadeSettings {
     /// The shader selection to deploy.
     pub fn selection(&self, catalog: &Catalog) -> Selection {
         self.shaders
@@ -111,16 +111,16 @@ fn file() -> Result<PathBuf> {
 }
 
 /// The user's choices; the defaults when there is no file yet. Blocking.
-pub fn load() -> Result<GlobalSettings> {
+pub fn load() -> Result<ReshadeSettings> {
     json_file::load(&file()?)
 }
 
 /// Saves the user's choices. Blocking.
-pub fn save(settings: &GlobalSettings) -> Result<()> {
+pub fn save(settings: &ReshadeSettings) -> Result<()> {
     save_to(&file()?, settings)
 }
 
-fn save_to(file: &Path, settings: &GlobalSettings) -> Result<()> {
+fn save_to(file: &Path, settings: &ReshadeSettings) -> Result<()> {
     json_file::save(file, settings)
 }
 
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn profiles_are_made_saved_renamed_and_deleted() {
-        let mut settings = GlobalSettings::default();
+        let mut settings = ReshadeSettings::default();
         let mut sweet = Selection::default();
         sweet.packs.insert("SweetFX".into(), Pick::default());
         // Saving with no current profile makes one.
@@ -159,7 +159,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join(SETTINGS_FILE);
         fs::write(&file, r#"{ "addons": ["swapchain"], "theme": "dark" }"#).unwrap();
-        let mut settings: GlobalSettings = json_file::load(&file).unwrap();
+        let mut settings: ReshadeSettings = json_file::load(&file).unwrap();
         assert_eq!(settings.addons, ["swapchain"]);
         assert_eq!(settings.shaders, None);
 
@@ -175,7 +175,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(json["theme"], "dark");
         assert!(json["shaders"]["packs"]["SweetFX"].is_object());
-        let again: GlobalSettings = json_file::load(&file).unwrap();
+        let again: ReshadeSettings = json_file::load(&file).unwrap();
         assert_eq!(again, settings);
         assert_eq!(again.selection(&Catalog::default()), chosen);
         fs::remove_dir_all(dir).unwrap();
