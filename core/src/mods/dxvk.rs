@@ -360,6 +360,22 @@ impl fmt::Display for Blocked {
     }
 }
 
+/// The DLLs DXVK replaces for `api` (DXVK's README); `None` for the APIs it does not translate.
+fn dlls(api: GraphicsApi) -> Option<&'static [&'static str]> {
+    match api {
+        GraphicsApi::DirectX8 => Some(&["d3d8.dll", "d3d9.dll"]),
+        GraphicsApi::DirectX9 => Some(&["d3d9.dll"]),
+        GraphicsApi::DirectX10 => Some(&["d3d10core.dll", "d3d11.dll", "dxgi.dll"]),
+        GraphicsApi::DirectX11 => Some(&["d3d11.dll", "dxgi.dll"]),
+        GraphicsApi::DirectX12 | GraphicsApi::OpenGl | GraphicsApi::Vulkan => None,
+    }
+}
+
+/// Whether DXVK runs `api` on Vulkan: Direct3D 8 to 11.
+pub fn translates(api: GraphicsApi) -> bool {
+    dlls(api).is_some()
+}
+
 /// What DXVK installs for this game running on `api`, or why it can't.
 pub fn target(game: &Game, api: Option<GraphicsApi>) -> Result<Target, Blocked> {
     let folder = game
@@ -373,15 +389,7 @@ pub fn target(game: &Game, api: Option<GraphicsApi>) -> Result<Target, Blocked> 
         Arch::Arm64 | Arch::Arm => return Err(Blocked::Arm),
     };
     let api = api.ok_or(Blocked::NoApi)?;
-    let dlls: &'static [&'static str] = match api {
-        GraphicsApi::DirectX8 => &["d3d8.dll", "d3d9.dll"],
-        GraphicsApi::DirectX9 => &["d3d9.dll"],
-        GraphicsApi::DirectX10 => &["d3d10core.dll", "d3d11.dll", "dxgi.dll"],
-        GraphicsApi::DirectX11 => &["d3d11.dll", "dxgi.dll"],
-        GraphicsApi::DirectX12 | GraphicsApi::OpenGl | GraphicsApi::Vulkan => {
-            return Err(Blocked::Unsupported(api));
-        }
-    };
+    let dlls = dlls(api).ok_or(Blocked::Unsupported(api))?;
     Ok(Target {
         bits,
         api,
@@ -794,7 +802,9 @@ mod tests {
 
         for api in [DirectX12, OpenGl, Vulkan] {
             assert_eq!(target(&x64, Some(api)), Err(Blocked::Unsupported(api)));
+            assert!(!translates(api));
         }
+        assert!([DirectX8, DirectX9, DirectX10, DirectX11].map(translates) == [true; 4]);
         assert_eq!(target(&x64, None), Err(Blocked::NoApi));
         assert_eq!(
             target(&game(None), Some(DirectX9)),

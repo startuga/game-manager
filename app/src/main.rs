@@ -149,7 +149,8 @@ enum Message {
     ShowLaaInfo,
     /// The Enhancements expander was opened or closed.
     EnhancementsExpanded(bool),
-    /// What a game's ReShade row reads from the disk: DXVK in its folder, the Vulkan layer.
+    /// What a game's ReShade row and graphics line read from the disk: DXVK in its folder, the
+    /// Vulkan layer.
     ReshadeLoaded(String, ReshadeStatus),
     /// Installs ReShade in the selected game, or reinstalls it.
     InstallReshade,
@@ -565,8 +566,10 @@ impl GameManager {
 
     /// The game's graphics API chosen in Game settings, else the detected ones with where they
     /// come from as a tooltip; "Checking…" while they are looked up, nothing when none was found.
+    /// With DXVK in the game's folder, a Direct3D 8–11 game shows "→ Vulkan (DXVK)".
     fn graphics_view(&self, game: &Game) -> Option<View> {
         let chosen = game.edits.as_ref().and_then(|edits| edits.graphics_api);
+        let dxvk = self.reshade.get(&game.id).is_some_and(|status| status.dxvk);
         let (text, tooltip) = match (chosen, self.graphics.get(&game.id)) {
             (Some(api), _) => (api.label().to_owned(), CHOSEN.to_owned()),
             (None, Some(Some(info))) => {
@@ -590,6 +593,25 @@ impl GameManager {
                 "Checking graphics APIs…".to_owned(),
                 "Looking on PCGamingWiki, then in the game's files".to_owned(),
             ),
+        };
+        let shown = chosen.map_or_else(
+            || match self.graphics.get(&game.id) {
+                Some(Some(info)) => info.apis.clone(),
+                _ => Vec::new(),
+            },
+            |api| vec![api],
+        );
+        let (text, tooltip) = if dxvk && shown.iter().any(|&api| dxvk::translates(api)) {
+            (
+                format!("{text} \u{2192} Vulkan (DXVK)"),
+                format!(
+                    "{}. DXVK is in the game's folder: it runs the game's Direct3D on Vulkan, so \
+                     overlays and ReShade see a Vulkan game.",
+                    tooltip.trim_end_matches('.')
+                ),
+            )
+        } else {
+            (text, tooltip)
         };
         Some(
             TextBlock::new()

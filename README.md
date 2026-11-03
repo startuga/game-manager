@@ -23,7 +23,8 @@ The game panel also shows the game's **graphics APIs** (DirectX 8–12, OpenGL, 
 PCGamingWiki's API table when the wiki has the game (looked up once, when you select it, and cached
 in `%LOCALAPPDATA%\Game Manager\cache`), otherwise read from the game's files, which can list APIs
 the game does not use. Hover over them to see where they come from. When several are shown, choose
-the one the game runs on in Game settings.
+the one the game runs on in Game settings. With DXVK in the game's folder (installed by Game
+Manager or by hand), a Direct3D 8–11 game shows **→ Vulkan (DXVK)**: it then runs on Vulkan.
 
 The **Enhancements** expander installs [ReShade](https://reshade.me), post-processing effects for
 games. **Install ReShade** copies ReShade as the game's graphics DLL (`d3d9.dll`, `dxgi.dll` or
