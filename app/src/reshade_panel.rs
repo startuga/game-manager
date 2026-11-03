@@ -10,11 +10,12 @@
 //! - **Addons** lists every add-on with an On/Off switch. A switch takes effect when the panel
 //!   closes (Close or Escape): the choice is saved and deployed like the shaders.
 //!
-//! **Apply to**: each panel shows and applies either the shared choice ("All games with ReShade",
-//! leaving out the games with their own) or the own choice of the game selected in the library
-//! when it opened ("Only <game>"; `ReshadeSettings::games`). It opens on the game when that game
-//! has its own choice. "Use all games' selection" drops the game's own choice and deploys the
-//! shared one to it.
+//! **Apply to**: each panel shows and applies either the own choice of the game selected in the
+//! library when it opened ("Only <game>", the first item and the default;
+//! `ReshadeSettings::games`), or the shared choice ("All games with ReShade", leaving out the games
+//! with their own; the only item when no game is selected). A game without its own choice shows
+//! the shared one. "Use all games' selection" drops the game's own choice and deploys the shared
+//! one to it.
 
 use crate::mods_view::ModKind;
 use crate::{GameManager, Message, icon_label};
@@ -113,10 +114,11 @@ pub(crate) enum PanelKind {
 }
 
 impl ReshadePanel {
+    /// A panel for `game` when one is selected (its own choice), else for every game.
     fn new(game: Option<(String, String)>, kind: PanelKind) -> Self {
         Self {
+            only_game: game.is_some(),
             game,
-            only_game: false,
             kind,
         }
     }
@@ -314,7 +316,8 @@ impl GameManager {
                 let Some(panel) = &mut self.reshade_panel else {
                     return;
                 };
-                panel.only_game = index == 1 && panel.game.is_some();
+                // With a game selected, its item is first.
+                panel.only_game = index == 0 && panel.game.is_some();
                 let target = panel.target().map(str::to_owned);
                 match &mut panel.kind {
                     PanelKind::Shaders(Some(draft)) => {
@@ -394,10 +397,6 @@ impl GameManager {
             Message::AddonLibraryLoaded(loaded) => {
                 match (&loaded, &mut self.reshade_panel) {
                     (Ok(library), Some(panel)) if matches!(panel.kind, PanelKind::Addons(None)) => {
-                        panel.only_game = panel
-                            .game
-                            .as_ref()
-                            .is_some_and(|(id, _)| library.settings.has_own(id, Part::Addons));
                         panel.kind = PanelKind::Addons(Some(shown_addons(
                             &library.settings,
                             panel.target(),
@@ -478,10 +477,6 @@ impl GameManager {
                 if let (Ok(library), Some(panel)) = (&loaded, &mut self.reshade_panel)
                     && matches!(panel.kind, PanelKind::Shaders(None))
                 {
-                    panel.only_game = panel
-                        .game
-                        .as_ref()
-                        .is_some_and(|(id, _)| library.settings.has_own(id, Part::Shaders));
                     panel.kind = PanelKind::Shaders(Some(ShadersDraft::new(shown_shaders(
                         library,
                         panel.target(),
@@ -826,10 +821,12 @@ impl GameManager {
         settings: Option<&ReshadeSettings>,
         context: &ViewContext<Self>,
     ) -> StackPanel {
-        let mut items = vec!["All games with ReShade".to_owned()];
+        // "Only <game>" first, as the default.
+        let mut items = Vec::new();
         if let Some((_, name)) = &panel.game {
             items.push(format!("Only {name}"));
         }
+        items.push("All games with ReShade".to_owned());
         let selector = StackPanel::new()
             .orientation(Orientation::Horizontal)
             .spacing(8.0)
@@ -841,7 +838,7 @@ impl GameManager {
                     .vertical_alignment(VerticalAlignment::Center),
                 ComboBox::new()
                     .items_source(items)
-                    .selected_index(Some(usize::from(panel.only_game)))
+                    .selected_index(Some(usize::from(panel.game.is_some() && !panel.only_game)))
                     .is_enabled(panel.game.is_some() && settings.is_some())
                     .min_width(280.0)
                     .automation_name("Apply to")
