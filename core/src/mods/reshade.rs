@@ -318,8 +318,8 @@ pub fn target(game: &Game, api: Option<GraphicsApi>, dxvk: bool) -> Result<Targe
     })
 }
 
-/// What the ReShade row needs that takes reading the disk: whether DXVK is in the game's folder,
-/// and the Vulkan layer.
+/// What the ReShade row needs that takes reading the disk: whether DXVK is in the game's folder
+/// (which the game's graphics line shows too), and the Vulkan layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReshadeStatus {
     pub dxvk: bool,

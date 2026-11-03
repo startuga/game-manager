@@ -167,9 +167,9 @@ impl GameManager {
         });
     }
 
-    /// Reads what the selected game's ReShade row needs from the disk (DXVK in its folder, the
-    /// Vulkan layer) in the background, once (it is read again after a scan, a mod job or
-    /// `mods.json` loading, which clear it).
+    /// Reads what the selected game's ReShade row and graphics line need from the disk (DXVK in
+    /// its folder, the Vulkan layer) in the background, once (it is read again after a scan, a mod
+    /// job or `mods.json` loading, which clear it).
     pub(crate) fn request_reshade(&mut self, context: &ComponentContext<Self>) {
         let Some(game) = self.selected_game() else {
             return;
