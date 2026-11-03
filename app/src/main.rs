@@ -159,7 +159,7 @@ enum Message {
     ShowReshadeSettings,
     /// The variant picked in ReShade settings; `None` (the list losing its selection) is ignored.
     ReshadeVariantChosen(Option<usize>),
-    /// The key of the top bar's ReShade menu item picked: `shaders` opens Global Shaders.
+    /// The key of the top bar's ReShade menu item picked: `shaders` opens the Shaders panel.
     ReshadeMenu(String),
     /// The shader pack list, the user's choices and the cached packs' effects, or what failed.
     ShaderLibraryLoaded(Result<ShaderLibrary, String>),
@@ -174,11 +174,11 @@ enum Message {
     ShaderSearch(String),
     /// A pack downloaded for its effects, or what failed.
     ShaderPackDownloaded(String, Result<Vec<String>, String>),
-    /// Saves the Global Shaders and deploys them to every game with ReShade.
+    /// Saves the shader selection and deploys it to every game with ReShade.
     DeployShaders,
     /// Cancel or Escape in the ReShade panel.
     CloseReshadePanel,
-    /// Global Shaders' profiles, by name: load, start or end renaming (an empty name ends it),
+    /// The Shaders panel's profiles, by name: load, start or end renaming (an empty name ends it),
     /// the name typed, delete, and Save and New with the selection.
     ProfileLoad(String),
     ProfileRename(String),
@@ -202,11 +202,11 @@ enum Message {
     OpenCustomFolder,
     /// Every add-on, the user's choices and what is cached, or what failed.
     AddonLibraryLoaded(Result<AddonLibrary, String>),
-    /// An add-on's switch in Global Addons: id, on.
+    /// An add-on's switch in the Addons panel: id, on.
     AddonSwitched(String, bool),
     /// Opens the folder for the user's own add-ons.
     OpenAddonFolder,
-    /// Global Addons' Close: saves and deploys a changed choice.
+    /// The Addons panel's Close: saves and deploys a changed choice.
     CloseAddons,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
@@ -261,7 +261,7 @@ struct GameManager {
     /// What each game's ReShade row read from the disk, by id.
     reshade: HashMap<String, ReshadeStatus>,
     reshade_pending: HashSet<String>,
-    /// ReShade ▸ Global Shaders, while open.
+    /// ReShade ▸ Shaders, while open.
     reshade_panel: Option<ReshadePanel>,
     /// What the panels read: read again each time one opens.
     shader_library: Option<Result<ShaderLibrary, String>>,
@@ -394,7 +394,7 @@ impl GameManager {
         let status = if self.scanning {
             "Scanning libraries…".to_owned()
         } else if deploying {
-            "Deploying the Global Shaders…".to_owned()
+            "Deploying ReShade's shaders and add-ons…".to_owned()
         } else {
             format!("{} games", self.games.len())
         };

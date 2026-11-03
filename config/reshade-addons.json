@@ -1,5 +1,5 @@
 {
-  "_doc": "ReShade add-ons offered in ReShade > Global Addons besides ReShade's own list (crosire/reshade-shaders, Addons.ini). 'source' is a GitHub repository's latest release (its .addon32/.addon64 files, or a ZIP holding them), direct links to the two files, or a ZIP. After RHI's extras (github.com/RankFTW/RHI); its DLSS5 tools are left out, as they need DLLs placed per game.",
+  "_doc": "ReShade add-ons offered in ReShade > Addons besides ReShade's own list (crosire/reshade-shaders, Addons.ini). 'source' is a GitHub repository's latest release (its .addon32/.addon64 files, or a ZIP holding them), direct links to the two files, or a ZIP. After RHI's extras (github.com/RankFTW/RHI); its DLSS5 tools are left out, as they need DLLs placed per game.",
   "addons": [
     { "id": "reshade-hdr-metadata", "name": "ReShade HDR Metadata",
       "description": "Writes HDR metadata (MaxCLL, MaxFALL, MinCLL) to the swap chain, so Windows and TVs read ReShade's HDR signal right. Helps displays that tone map by metadata; DirectX 11 and 12.",

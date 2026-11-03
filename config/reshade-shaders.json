@@ -1,5 +1,5 @@
 {
-  "_doc": "ReShade shader packs offered in ReShade > Global Shaders. 'source' is a GitHub repository's latest release (with the asset's extension) or a download address. 'default' packs are selected until the user chooses; Essential packs are always deployed; 'requires' packs come along. The first pack to supply a file wins, in this order. Pack list after RHI (github.com/RankFTW/RHI).",
+  "_doc": "ReShade shader packs offered in ReShade > Shaders. 'source' is a GitHub repository's latest release (with the asset's extension) or a download address. 'default' and Essential packs are selected until the user chooses; 'requires' packs come along. The first pack to supply a file wins, in this order. Pack list after RHI (github.com/RankFTW/RHI).",
   "excludedFiles": ["BX_XIV_ChromakeyPlus.fx", "GrainSpread.fx", "NTSCCustom.fx", "NTSC_XOT.fx"],
   "headersPack": "CrosireMaster",
   "headers": ["ReShade.fxh", "ReShadeUI.fxh"],

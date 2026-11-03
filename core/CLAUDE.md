@@ -28,10 +28,10 @@ holds the rules and facts that span them.
   - `mods/reshade.rs` (Stable, Development, No Addons; the DLL, `ReShade.ini`, the
     `reshade-shaders` folder, `deploy`) and `mods/reshade_layer.rs` (ReShade's global Vulkan
     layer, shared with ReShade's own setup).
-  - `mods/shader_packs.rs` (Global Shaders: the shipped `config/reshade-shaders.json`, the pack
+  - `mods/shader_packs.rs` (ReShade ▸ Shaders: the shipped `config/reshade-shaders.json`, the pack
     cache, layout and staging) and `mods/reshade_settings.rs` (`reshade.json`: the selection,
     add-ons and profiles).
-  - `mods/reshade_addons.rs` (Global Addons: ReShade's `Addons.ini`, the shipped
+  - `mods/reshade_addons.rs` (ReShade ▸ Addons: ReShade's `Addons.ini`, the shipped
     `config/reshade-addons.json` and the user's own; the add-on cache).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).

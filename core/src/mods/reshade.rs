@@ -22,11 +22,14 @@
 //!   Vulkan layer instead. Direct3D 8 needs d3d8to9 or DXVK, so it is refused without DXVK.
 //! - **`ReShade.ini`**, only when there is none: the shader paths, the overlay key (Home) and no
 //!   proxy DLL. ReShade saves its settings into it, so Reinstall keeps it once changed.
-//! - **Effects**: the user's Global Shaders (`shader_packs`, `reshade_settings`), laid out as
-//!   `reshade-shaders\Shaders` and `\Textures`. That folder is Game Manager's: a game's own one is
-//!   set aside as `reshade-shaders.gm-backup` on the first install and put back on uninstall,
-//!   and Reinstall or Deploy replaces the whole folder (`DeleteTree` then `CopyTree`, two short
-//!   operations a game). `deploy` brings a changed selection to every game with ReShade.
+//! - **Effects**: the shaders chosen in ReShade ▸ Shaders (`shader_packs`, `reshade_settings`),
+//!   laid out as `reshade-shaders\Shaders` and `\Textures`. That folder is Game Manager's: a
+//!   game's own one is set aside as `reshade-shaders.gm-backup` on the first install and put back
+//!   on uninstall, and Reinstall or Deploy replaces the whole folder (`DeleteTree` then
+//!   `CopyTree`, two short operations a game). `deploy` brings a changed selection to every game
+//!   with ReShade.
+//! - **Add-ons** chosen in ReShade ▸ Addons go next to the program, for its bitness, in builds
+//!   that load add-ons.
 //! - **In a protected folder**, `ReShade.ini`, `ReShadePreset.ini` and `ReShade.log` are created
 //!   and given to the user, as ReShade's setup does, so ReShade can save into them.
 //!
@@ -82,8 +85,8 @@ Variants:
 • No Addons: the latest release without add-on support, for online games whose anti-cheat \
 accepts ReShade.
 
-Install also adds your Global Shaders (ReShade ▸ Global Shaders) in reshade-shaders; Deploy \
-there brings a new selection to every game with ReShade.
+Install also adds the shaders and add-ons chosen in the top bar's ReShade menu; Deploy in \
+ReShade ▸ Shaders brings a new selection to every game with ReShade.
 
 Vulkan games, and games with DXVK, use ReShade's Vulkan layer: one install for the whole \
 computer, shared with ReShade's own setup; installing updates it for every game on its list.
@@ -154,7 +157,7 @@ pub struct ReshadeState {
     /// The variant of the installed build (`variant` is the next install's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built: Option<ReshadeVariant>,
-    /// The Global Addons' files Game Manager put next to the program.
+    /// The add-on files (ReShade ▸ Addons) Game Manager put next to the program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addons: Option<Installed>,
 }
@@ -858,17 +861,17 @@ fn fresh_staging(name: &str) -> Result<PathBuf> {
     Ok(staging)
 }
 
-/// The Global Shaders and Global Addons, laid out for a job.
-struct Global {
+/// The chosen shaders and add-ons, laid out for a job.
+struct Chosen {
     /// The add-ons switched on, with their folders.
     addons: Vec<(Addon, PathBuf)>,
     /// What could not be had: "Name: what failed".
     failed: Vec<String>,
 }
 
-/// Lays out the user's Global Shaders under `tree`, with the effects of the Global Addons, and
-/// gets those add-ons. Blocking: downloads what is not cached and what changed.
-fn stage_global(tree: &Path) -> Result<Global> {
+/// Lays out the chosen shaders under `tree`, with the effects of the chosen add-ons, and gets
+/// those add-ons. Blocking: downloads what is not cached and what changed.
+fn stage_choice(tree: &Path) -> Result<Chosen> {
     let catalog = shader_packs::catalog()?;
     let settings = reshade_settings::load()?;
     let staged = shader_packs::stage(&catalog, &settings.selection(&catalog), tree, true)?;
@@ -889,10 +892,10 @@ fn stage_global(tree: &Path) -> Result<Global> {
             }
         }
     }
-    Ok(Global { addons, failed })
+    Ok(Chosen { addons, failed })
 }
 
-/// The operations that put the Global Addons' files for a 64-bit or 32-bit game into `folder`,
+/// The operations that put the chosen add-ons' files for a 64-bit or 32-bit game into `folder`,
 /// replacing `previous`'s, and the record of them (`None` when there are none). A build without
 /// add-on support gets none. An add-on without a file for the game's bitness is named in
 /// `missing`.
@@ -932,8 +935,8 @@ fn incomplete(done: &str, failed: &[String]) -> Error {
     Error::Incomplete(format!("{done}, but not all of it:\n{}", failed.join("\n")))
 }
 
-/// Installs the latest build of the game's ReShade variant for `api`, with the Global Shaders,
-/// replacing an earlier install, and returns `mods.json` as saved. Blocking: downloads, 7-Zip and
+/// Installs the latest build of the game's ReShade variant for `api`, with the chosen shaders and
+/// add-ons, replacing an earlier install, and returns `mods.json` as saved. Blocking: downloads, 7-Zip and
 /// file copies (as administrator when the folder or the Vulkan layer needs it). Shader packs that
 /// cannot be downloaded are left out, and named in an `Error::Incomplete` after the install.
 pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
@@ -944,8 +947,8 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let cache = cached_build(state.variant, &build)?;
     let staging = fresh_staging("reshade")?;
     let effects = staging.join("effects");
-    let global = stage_global(&effects)?;
-    let mut failed = global.failed;
+    let chosen = stage_choice(&effects)?;
+    let mut failed = chosen.failed;
     let sid = if folder_writable(&target.folder)? {
         None
     } else {
@@ -964,7 +967,7 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         &reshade_layer::status(),
         sid.as_deref(),
     )?;
-    // The Global Addons, for the build being installed.
+    // The chosen add-ons, for the build being installed.
     let built = ReshadeState {
         built: Some(state.variant),
         ..state.clone()
@@ -973,7 +976,7 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         &built,
         &target.folder,
         target.is_64_bit,
-        &global.addons,
+        &chosen.addons,
         &mut failed,
     )?;
     prepared.job.ops.extend(ops);
@@ -1015,7 +1018,7 @@ pub fn uninstall(game: &Game) -> Result<ModsFile> {
     })
 }
 
-/// Brings the Global Shaders and Global Addons to every game where Game Manager installed
+/// Brings the chosen shaders and add-ons to every game where Game Manager installed
 /// ReShade, replacing each one's `reshade-shaders` and add-on files, and returns `mods.json` as
 /// saved. Writable folders are changed directly, the protected ones together as administrator
 /// (one UAC prompt). `games` names them in messages and gives their bitness (a game not among
@@ -1034,8 +1037,8 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
     }
     let staging = fresh_staging("reshade-deploy")?;
     let effects = staging.join("effects");
-    let global = stage_global(&effects)?;
-    let mut failed = global.failed;
+    let chosen = stage_choice(&effects)?;
+    let mut failed = chosen.failed;
     let name = |id: &str| {
         games
             .iter()
@@ -1067,7 +1070,7 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
                             state,
                             &installed.folder,
                             is_64_bit,
-                            &global.addons,
+                            &chosen.addons,
                             &mut missing,
                         )?;
                         ops.extend(more);
@@ -1132,7 +1135,7 @@ pub fn deploy(games: &[Game]) -> Result<ModsFile> {
         Ok(saved)
     } else {
         Err(incomplete(
-            "ReShade's global settings were deployed",
+            "ReShade's shaders and add-ons were deployed",
             &failed,
         ))
     }

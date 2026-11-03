@@ -33,7 +33,7 @@ pub(crate) enum ModKind {
     Dxvk,
     Laa,
     Reshade,
-    /// The Global Shaders going to every game with ReShade.
+    /// ReShade's shaders and add-ons going to games with ReShade.
     Deploy,
 }
 
@@ -350,8 +350,8 @@ impl GameManager {
                 }
                 (None, Some(Ok(target))) => match target.mode {
                     Mode::Dll(_) => format!(
-                        "Installs the latest {} build: {}, with your Global Shaders in \
-                         reshade-shaders, into {}.",
+                        "Installs the latest {} build: {}, with the shaders chosen in ReShade ▸ \
+                         Shaders, into {}.",
                         variant.name(),
                         target.summary(),
                         shown_path(game, &target.folder)
@@ -365,7 +365,7 @@ impl GameManager {
                         };
                         format!(
                             "Installs the latest {} build through ReShade's Vulkan layer{why}, with \
-                             your Global Shaders in reshade-shaders.{}",
+                             the shaders chosen in ReShade ▸ Shaders.{}",
                             variant.name(),
                             layer_note(apps)
                         )
