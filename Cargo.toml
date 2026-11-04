@@ -16,6 +16,7 @@ windows-collections = { git = "https://github.com/microsoft/windows-rs" }
 windows-core = { git = "https://github.com/microsoft/windows-rs" }
 windows-pickers = { git = "https://github.com/microsoft/windows-rs" }
 windows-reactor = { git = "https://github.com/microsoft/windows-rs" }
+windows-reference = { git = "https://github.com/microsoft/windows-rs" }
 windows-registry = { git = "https://github.com/microsoft/windows-rs" }
 roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
