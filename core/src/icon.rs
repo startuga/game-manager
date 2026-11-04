@@ -53,7 +53,7 @@ impl IconExtractor {
         let bitmap = unsafe { self.factory.CreateBitmapFromHICON(icon.0) }?;
         // SAFETY: no initial data, so the stream starts empty.
         let stream =
-            unsafe { SHCreateMemStream(None) }.ok_or_else(windows::core::Error::from_thread)?;
+            unsafe { SHCreateMemStream(None, 0) }.ok_or_else(windows::core::Error::from_thread)?;
         // SAFETY: no vendor means "any encoder", as WIC documents.
         let encoder = unsafe { self.factory.CreateEncoder(&GUID_ContainerFormatPng, None) }?;
         // SAFETY: `stream` is the live stream created above.
