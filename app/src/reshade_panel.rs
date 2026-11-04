@@ -29,10 +29,11 @@ use windows_reactor::*;
 
 /// The user's own shaders, listed like a pack.
 pub(crate) const CUSTOM: &str = "__custom__";
-/// The panel's largest size, and its margin from the window's edges.
-const PANEL_WIDTH: f64 = 1100.0;
-const PANEL_HEIGHT: f64 = 860.0;
-const PANEL_MARGIN: f64 = 32.0;
+/// The panel's largest size, and its margin from the window's edges. Like its spacing, about three
+/// quarters of what it was before Compact sizing (1100 × 860, 32), with text at its usual sizes.
+const PANEL_WIDTH: f64 = 840.0;
+const PANEL_HEIGHT: f64 = 640.0;
+const PANEL_MARGIN: f64 = 24.0;
 
 /// What the Shaders panel reads from the disk.
 #[derive(Clone)]
@@ -792,7 +793,7 @@ impl GameManager {
         let card = Border::new()
             .width(width)
             .height(height)
-            .padding(Thickness::uniform(28.0))
+            .padding(Thickness::uniform(20.0))
             .corner_radius(8.0)
             .background(ThemeBrush::SolidBackground)
             .border_brush(ThemeBrush::CardStroke)
@@ -846,7 +847,7 @@ impl GameManager {
             ));
         let top = Grid::new()
             .columns([GridLength::Star(1.0), GridLength::Auto])
-            .column_spacing(16.0)
+            .column_spacing(12.0)
             .children((
                 TextBlock::new()
                     .text(title)
@@ -951,7 +952,7 @@ impl GameManager {
         }
         Grid::new()
             .columns([GridLength::Star(1.0), GridLength::Auto])
-            .column_spacing(16.0)
+            .column_spacing(12.0)
             .children(line)
             .into()
     }
@@ -988,7 +989,7 @@ impl GameManager {
                     .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
                     .content(
                         StackPanel::new()
-                            .spacing(12.0)
+                            .spacing(8.0)
                             .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
                             .children(cards),
                     )
@@ -996,7 +997,7 @@ impl GameManager {
             }
             _ => StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(12.0)
+                .spacing(8.0)
                 .children((
                     ProgressRing::new().is_active(true).width(20.0).height(20.0),
                     TextBlock::new().text("Reading the add-on list…"),
@@ -1012,7 +1013,7 @@ impl GameManager {
             .grid_row(2);
         Grid::new()
             .rows([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
-            .row_spacing(20.0)
+            .row_spacing(16.0)
             .children((header, Border::new().grid_row(1).content(body), close))
             .into()
     }
@@ -1035,8 +1036,8 @@ impl GameManager {
             .grid_row(0);
         let body: View = match (draft, library) {
             (Some(draft), Some(library)) => Grid::new()
-                .columns([GridLength::Star(1.0), GridLength::Pixel(300.0)])
-                .column_spacing(32.0)
+                .columns([GridLength::Star(1.0), GridLength::Pixel(240.0)])
+                .column_spacing(24.0)
                 .children((
                     Border::new()
                         .grid_column(0)
@@ -1048,7 +1049,7 @@ impl GameManager {
                 .into(),
             _ => StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(12.0)
+                .spacing(8.0)
                 .children((
                     ProgressRing::new().is_active(true).width(20.0).height(20.0),
                     TextBlock::new().text("Reading the shader packs…"),
@@ -1057,7 +1058,7 @@ impl GameManager {
         };
         let buttons = Grid::new()
             .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
-            .column_spacing(16.0)
+            .column_spacing(12.0)
             .grid_row(2)
             .children((
                 Button::new()
@@ -1085,7 +1086,7 @@ impl GameManager {
             ));
         Grid::new()
             .rows([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
-            .row_spacing(20.0)
+            .row_spacing(16.0)
             .children((title, Border::new().grid_row(1).content(body), buttons))
             .into()
     }
@@ -1105,7 +1106,7 @@ impl GameManager {
         };
         let toolbar = StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(12.0)
+            .spacing(8.0)
             .grid_row(0)
             .children((
                 Button::new()
@@ -1119,7 +1120,7 @@ impl GameManager {
                 TextBox::new()
                     .text(draft.search.as_str())
                     .placeholder_text("Search packs or shaders…")
-                    .width(320.0)
+                    .width(240.0)
                     .automation_name("Search packs or shaders")
                     .on_text_changed(context.callback(|text: std::rc::Rc<str>| {
                         Message::ShaderSearch(text.to_string())
@@ -1166,14 +1167,14 @@ impl GameManager {
             .grid_row(1)
             .content(
                 StackPanel::new()
-                    .spacing(14.0)
+                    .spacing(10.0)
                     // Room for the scroll bar, so it never covers the rows.
                     .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
                     .children(rows),
             );
         Grid::new()
             .rows([GridLength::Auto, GridLength::Star(1.0)])
-            .row_spacing(16.0)
+            .row_spacing(12.0)
             .children((toolbar, list))
             .into()
     }
@@ -1249,7 +1250,8 @@ impl GameManager {
             .is_checked(state)
             .automation_name(name)
             .vertical_alignment(VerticalAlignment::Top)
-            .margin(Thickness::new(0.0, 2.0, 0.0, 0.0))
+            // The compact box (centred in 24) level with the name (16 px text, 21 high).
+            .margin(Thickness::new(0.0, -1.0, 0.0, 0.0))
             .on_is_checked_changed(
                 context
                     .callback(move |on: Option<bool>| Message::ShaderPackChecked(key.clone(), on)),
@@ -1293,7 +1295,7 @@ impl GameManager {
         let mut lines: Vec<View> = vec![
             StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(10.0)
+                .spacing(8.0)
                 .children(title)
                 .into(),
             TextBlock::new()
@@ -1348,7 +1350,7 @@ impl GameManager {
         }
         Grid::new()
             .columns([GridLength::Auto, GridLength::Star(1.0)])
-            .column_spacing(12.0)
+            .column_spacing(8.0)
             .children((
                 check,
                 StackPanel::new()
@@ -1479,7 +1481,7 @@ fn profiles_column(
     }
     ScrollViewer::new()
         .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-        .content(StackPanel::new().spacing(10.0).children(rows))
+        .content(StackPanel::new().spacing(8.0).children(rows))
         .into()
 }
 
@@ -1519,7 +1521,7 @@ fn addon_card(
     let mut lines: Vec<View> = vec![
         StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(10.0)
+            .spacing(8.0)
             .children(title)
             .into(),
         TextBlock::new()
@@ -1547,7 +1549,7 @@ fn addon_card(
         .vertical_alignment(VerticalAlignment::Center)
         .on_toggled(context.callback(move |on: bool| Message::AddonSwitched(id.clone(), on)));
     Border::new()
-        .padding(Thickness::uniform(16.0))
+        .padding(Thickness::uniform(12.0))
         .corner_radius(8.0)
         .background(ThemeBrush::CardBackground)
         .border_brush(ThemeBrush::CardStroke)
@@ -1555,7 +1557,7 @@ fn addon_card(
         .content(
             Grid::new()
                 .columns([GridLength::Star(1.0), GridLength::Auto])
-                .column_spacing(24.0)
+                .column_spacing(16.0)
                 .children((
                     StackPanel::new()
                         .spacing(4.0)
@@ -1572,7 +1574,7 @@ fn heading(text: &str) -> View {
         .text(text)
         .font_size(20.0)
         .font_weight(FontWeight::SEMI_BOLD)
-        .margin(Thickness::new(0.0, 10.0, 0.0, 0.0))
+        .margin(Thickness::new(0.0, 8.0, 0.0, 0.0))
         .into()
 }
 

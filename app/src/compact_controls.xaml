@@ -1,12 +1,12 @@
 <!--
-    Compact sizes for the controls WinUI's DensityStyles/Compact.xaml leaves out: buttons, check
-    boxes, toggle switches and expanders, about 24 DIP high like its text boxes. Loaded by
-    compact.rs (see its doc) after Compact.xaml.
+    Compact sizes for the controls WinUI's DensityStyles/Compact.xaml leaves out, or leaves taller
+    than its text boxes (about 24 DIP): buttons, combo boxes and their items, menu items, check
+    boxes, toggle switches and expanders. Loaded by compact.rs (see its doc) after Compact.xaml.
 
     WinUI's styles read most of these sizes as StaticResources, which a later dictionary cannot
     override by key, so the styles below are based on WinUI's and set the sizes themselves. Keys
-    read as ThemeResources (ButtonPadding by HyperlinkButton, the ToggleSwitch margins) are
-    overridden directly. Every WinUI<key> style is WinUI's own <key>, which compact.rs adds
+    read as ThemeResources (ButtonPadding by HyperlinkButton, the ComboBox and ToggleSwitch ones)
+    are overridden directly. Every WinUI<key> style is WinUI's own <key>, which compact.rs adds
     before this dictionary (BASES).
 -->
 <ResourceDictionary
@@ -18,6 +18,13 @@
     <!-- WinUI: 10 each. The switch's track keeps its own 0,5 margin, so 5 is the least. -->
     <x:Double x:Key="ToggleSwitchPreContentMargin">5</x:Double>
     <x:Double x:Key="ToggleSwitchPostContentMargin">5</x:Double>
+    <!-- The runtime's ComboBox is at least ComboBoxMinHeight + 8 high (Compact.xaml's 24 gave 32),
+         so the floor goes below the content and the padding sets the height: measured like the
+         text boxes. WinUI: 12,5,0,7 and 32; Compact.xaml: 12,1,0,3 and 24. -->
+    <Thickness x:Key="ComboBoxPadding">12,-2,0,0</Thickness>
+    <x:Double x:Key="ComboBoxMinHeight">16</x:Double>
+    <!-- The drop-down's items. WinUI: 11,5,11,7. -->
+    <Thickness x:Key="ComboBoxItemThemePadding">11,1,11,3</Thickness>
 
     <!-- Looked up by key: dialogs' buttons (DefaultButtonStyle) and the reactor's
          ButtonStyle::Accent and ::Subtle. -->
@@ -38,6 +45,10 @@
     <!-- DropDownButton and Expander keep their look from their default style (see compact.rs). -->
     <Style TargetType="DropDownButton">
         <Setter Property="Padding" Value="{StaticResource ButtonPadding}" />
+    </Style>
+    <!-- The items of menus (the ReShade button's). WinUI: 11,8,11,9. -->
+    <Style TargetType="MenuFlyoutItem" BasedOn="{StaticResource WinUIDefaultMenuFlyoutItemStyle}">
+        <Setter Property="Padding" Value="11,2,11,3" />
     </Style>
     <!-- WinUI: MinHeight 32, Padding 8,5,0,0 (the text's top, beside the 20 px box). -->
     <Style TargetType="CheckBox" BasedOn="{StaticResource WinUIDefaultCheckBoxStyle}">
