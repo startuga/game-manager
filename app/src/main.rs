@@ -116,6 +116,9 @@ enum Message {
     /// The selected game's edits were saved or reset; a rescan applies them.
     EditsSaved(Result<(), String>),
     DismissError,
+    /// The first frame is drawn: merge the compact styles of controls it does not show
+    /// (`compact::LATER`).
+    CompactLater,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
     /// The chosen program; `None` when the dialog was cancelled.
@@ -257,6 +260,8 @@ struct GameManager {
     error: Option<String>,
     /// Compact sizing's failure, shown again with each scan's errors until dismissed.
     compact_error: Option<String>,
+    /// Sends `CompactLater` (dropping it would cancel it).
+    compact_later: Option<ComponentTimer>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
     picking: bool,
     /// The custom game being set up in the Add a game dialog.
@@ -1165,6 +1170,7 @@ impl Component for GameManager {
             scanning: false,
             error: compact.clone(),
             compact_error: compact,
+            compact_later: Some(context.set_timeout(compact::LATER_DELAY, Message::CompactLater)),
             picking: false,
             draft: None,
             removing: None,
@@ -1628,6 +1634,14 @@ impl GameManager {
             Message::DismissError => {
                 self.error = None;
                 self.compact_error = None;
+            }
+            Message::CompactLater => {
+                self.compact_later = None;
+                if let Err(e) = compact::use_later_styles() {
+                    let e = format!("Compact sizing could not be loaded: {e}");
+                    self.compact_error = Some(e.clone());
+                    self.error = Some(e);
+                }
             }
             Message::AddGame => {
                 // Owned by the app's window, which is disabled while the dialog is open.
