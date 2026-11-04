@@ -11,6 +11,9 @@ rust-version = "1.99.1"
 # Cargo.lock pins the commit; `cargo update` moves them all to the latest one.
 [workspace.dependencies]
 windows = { git = "https://github.com/microsoft/windows-rs" }
+windows-bindgen = { git = "https://github.com/microsoft/windows-rs" }
+windows-collections = { git = "https://github.com/microsoft/windows-rs" }
+windows-core = { git = "https://github.com/microsoft/windows-rs" }
 windows-pickers = { git = "https://github.com/microsoft/windows-rs" }
 windows-reactor = { git = "https://github.com/microsoft/windows-rs" }
 windows-registry = { git = "https://github.com/microsoft/windows-rs" }

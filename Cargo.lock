@@ -7,7 +7,11 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "gm-core",
+ "serde_json",
  "windows",
+ "windows-bindgen",
+ "windows-collections",
+ "windows-core",
  "windows-pickers",
  "windows-reactor",
 ]
@@ -168,6 +172,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-bindgen"
+version = "0.100.0"
+source = "git+https://github.com/microsoft/windows-rs#73c74c0d79282e1295af1856e6c8987c51b7ccdd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "windows-default",
+ "windows-metadata",
+]
+
+[[package]]
 name = "windows-collections"
 version = "0.100.0"
 source = "git+https://github.com/microsoft/windows-rs#73c74c0d79282e1295af1856e6c8987c51b7ccdd"
@@ -186,6 +201,11 @@ dependencies = [
  "windows-result",
  "windows-strings",
 ]
+
+[[package]]
+name = "windows-default"
+version = "0.100.0"
+source = "git+https://github.com/microsoft/windows-rs#73c74c0d79282e1295af1856e6c8987c51b7ccdd"
 
 [[package]]
 name = "windows-future"
@@ -219,6 +239,11 @@ dependencies = [
 
 [[package]]
 name = "windows-link"
+version = "0.100.0"
+source = "git+https://github.com/microsoft/windows-rs#73c74c0d79282e1295af1856e6c8987c51b7ccdd"
+
+[[package]]
+name = "windows-metadata"
 version = "0.100.0"
 source = "git+https://github.com/microsoft/windows-rs#73c74c0d79282e1295af1856e6c8987c51b7ccdd"
 
