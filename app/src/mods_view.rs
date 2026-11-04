@@ -210,7 +210,7 @@ impl GameManager {
             .header("Enhancements")
             .content(
                 StackPanel::new()
-                    .spacing(16.0)
+                    .spacing(12.0)
                     .children(vec![self.reshade_row(game, context)]),
             )
             .into()
@@ -402,7 +402,7 @@ impl GameManager {
             .automation_name("Mods")
             .header("Mods")
             .content(
-                StackPanel::new().spacing(16.0).children(
+                StackPanel::new().spacing(12.0).children(
                     std::iter::once(self.dxvk_row(game, context))
                         .chain(self.laa_row(game, context))
                         .collect::<Vec<_>>(),
@@ -726,7 +726,7 @@ impl GameManager {
                     .title("Large Address Aware (LAA)")
                     .close_button_text("OK")
                     .content(
-                        StackPanel::new().spacing(12.0).children((
+                        StackPanel::new().spacing(8.0).children((
                             TextBlock::new()
                                 .text(LAA_INFO)
                                 .text_wrapping(TextWrapping::Wrap),
@@ -752,7 +752,7 @@ impl GameManager {
                     }
                 });
                 dialog.title("ReShade").close_button_text("OK").content(
-                    StackPanel::new().spacing(12.0).children((
+                    StackPanel::new().spacing(8.0).children((
                         TextBlock::new()
                             .text(reshade::INFO)
                             .text_wrapping(TextWrapping::Wrap),
@@ -773,7 +773,7 @@ impl GameManager {
                     .close_button_text("Cancel")
                     .default_button(ContentDialogButton::Primary)
                     .content(
-                        StackPanel::new().spacing(16.0).min_width(420.0).children((
+                        StackPanel::new().spacing(12.0).min_width(420.0).children((
                             RadioButtons::new()
                                 .header("Version")
                                 .items_source(ReshadeVariant::ALL.map(ReshadeVariant::label))
@@ -797,7 +797,7 @@ impl GameManager {
                             Err(blocked) => format!("For this game: {blocked}"),
                         });
                 dialog.title("DXVK").close_button_text("OK").content(
-                    StackPanel::new().spacing(12.0).children((
+                    StackPanel::new().spacing(8.0).children((
                         TextBlock::new()
                             .text(dxvk::INFO)
                             .text_wrapping(TextWrapping::Wrap),
@@ -834,7 +834,7 @@ impl GameManager {
         rows.extend([
             StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(32.0)
+                .spacing(24.0)
                 .children((
                     ToggleSwitch::new()
                         .header("HDR")
@@ -889,7 +889,7 @@ impl GameManager {
             .max_height(height)
             .content(
                 StackPanel::new()
-                    .spacing(16.0)
+                    .spacing(12.0)
                     .min_width(420.0)
                     // Room for the scroll bar, so it never covers the controls.
                     .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))

@@ -6,9 +6,10 @@
 //!   merged into the application's resources, after the reactor's `XamlControlsResources`, whose
 //!   sizes it overrides. This also reaches dialogs and ComboBox drop-downs, which are outside the
 //!   window's tree.
-//! - **The rest** (`compact_controls.xaml`): buttons, check boxes, toggle switches and expanders,
-//!   which Compact.xaml leaves out. WinUI's styles read their sizes as StaticResources, which a
-//!   later dictionary cannot override by key, so it holds styles based on WinUI's.
+//! - **The rest** (`compact_controls.xaml`): buttons, menu items, check boxes, toggle switches and
+//!   expanders, which Compact.xaml leaves out, and combo boxes and their items, which it leaves
+//!   taller than its text boxes. WinUI's styles read most of these sizes as StaticResources,
+//!   which a later dictionary cannot override by key, so it holds styles based on WinUI's.
 //!   - It replaces `DefaultButtonStyle` (dialogs' buttons), `AccentButtonStyle` (the reactor's
 //!     `ButtonStyle::Accent`, and a dialog's default button) and `SubtleButtonStyle`, which are
 //!     looked up by key.
@@ -18,11 +19,15 @@
 //!     `DefaultDropDownButtonStyle` in the runtime, whatever WinUI's source says). Their look is
 //!     their default style (`DefaultStyleKey`), which WinUI applies under any implicit style, so
 //!     their compact styles need no base.
-//! - **What stays standard**: the check box's 20 px square, the switch's 40×20 track and the
-//!   expander's chevron, which are fixed in WinUI's templates.
-//! - **Measured** at 225% (physical px, standard → compact): buttons 74 → 56 (text boxes 55),
-//!   expander headers 108 → 76, check boxes 72 → 54, switches 91 → 67, dialog buttons (the
-//!   default one too) 71 → 53.
+//! - **What stays standard**: these are fixed in WinUI's templates.
+//!   - Radio buttons stay 32 high: their circle sits in a 32 px grid. A smaller padding would only
+//!     lift their text off the circle.
+//!   - The check box's 20 px square, the switch's 40×20 track and the expander's chevron.
+//! - **Measured** at 225% (physical px, standard → compact):
+//!   - Buttons 74 → 56, text boxes 73 → 55, combo boxes 90 → 56.
+//!   - Menu items 80 → 53, expander headers 108 → 76.
+//!   - Check boxes 72 → 54, switches 91 → 67.
+//!   - Dialog buttons, the default one too, 71 → 53.
 //! - **Why the app does it itself**: windows-reactor has no API for application resources, so this
 //!   goes through `winui_bindings.rs`, generated for these calls.
 //! - **When**: `GameManager::create`, which runs after the reactor's `OnLaunched` merged
@@ -37,10 +42,11 @@ const COMPACT: &str = "ms-appx:///Microsoft.UI.Xaml/DensityStyles/Compact.xaml";
 /// Buttons, check boxes, toggle switches and expanders.
 const CONTROLS: &str = include_str!("compact_controls.xaml");
 /// WinUI's styles that `compact_controls.xaml` is based on, which it finds as `WinUI<key>`.
-const BASES: [&str; 4] = [
+const BASES: [&str; 5] = [
     "DefaultButtonStyle",
     "AccentButtonStyle",
     "SubtleButtonStyle",
+    "DefaultMenuFlyoutItemStyle",
     "DefaultCheckBoxStyle",
 ];
 

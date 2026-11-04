@@ -47,8 +47,10 @@ const ICON_PIXELS: u32 = 128;
 const LIST_ICON_SIZE: f64 = 32.0;
 const HEADER_ICON_SIZE: f64 = 96.0;
 const SIDEBAR_WIDTH: f64 = 340.0;
-/// A list row's width inside the sidebar, so a right-click anywhere on the row reaches it.
-const ROW_WIDTH: f64 = SIDEBAR_WIDTH - 56.0;
+const SIDEBAR_PADDING: f64 = 8.0;
+/// A list row's width inside the sidebar, so a right-click anywhere on the row reaches it: what
+/// the sidebar's padding leaves, less the 32 a list item keeps around its content.
+const ROW_WIDTH: f64 = SIDEBAR_WIDTH - 2.0 * SIDEBAR_PADDING - 32.0;
 /// The game menu's size, to keep it inside the window.
 const MENU_WIDTH: f64 = 240.0;
 /// Two compact items of about 25, 2 between them, 4 of padding and 1 of border on each side.
@@ -423,7 +425,7 @@ impl GameManager {
 
         let title = StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(12.0)
+            .spacing(8.0)
             .grid_column(0)
             .children((
                 FontIcon::new()
@@ -437,7 +439,7 @@ impl GameManager {
             ));
         let controls = StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(12.0)
+            .spacing(8.0)
             .grid_column(2)
             .children((
                 ProgressRing::new()
@@ -463,7 +465,7 @@ impl GameManager {
             ));
 
         Border::new()
-            .padding(Thickness::xy(20.0, 10.0))
+            .padding(Thickness::xy(16.0, 8.0))
             .border_brush(ThemeBrush::CardStroke)
             .border_thickness(Thickness::new(0.0, 0.0, 0.0, 1.0))
             .grid_row(0)
@@ -509,7 +511,7 @@ impl GameManager {
             let game = &self.games[index];
             let row = StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(12.0)
+                .spacing(8.0)
                 .margin(Thickness::xy(0.0, 4.0))
                 .children((
                     self.icon_view(game, LIST_ICON_SIZE),
@@ -572,7 +574,7 @@ impl GameManager {
 
         Border::new()
             .width(SIDEBAR_WIDTH)
-            .padding(Thickness::uniform(12.0))
+            .padding(Thickness::uniform(SIDEBAR_PADDING))
             .background(ThemeBrush::CardBackground)
             .border_brush(ThemeBrush::CardStroke)
             .border_thickness(Thickness::new(0.0, 0.0, 1.0, 0.0))
@@ -771,7 +773,7 @@ impl GameManager {
         );
         let header = StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(20.0)
+            .spacing(16.0)
             .children((
                 self.icon_view(game, HEADER_ICON_SIZE),
                 StackPanel::new()
@@ -836,7 +838,7 @@ impl GameManager {
             .text(format!("Store: {}", game.store.name()))
             .opacity(0.7)
             .vertical_alignment(VerticalAlignment::Center)
-            .margin(Thickness::new(12.0, 0.0, 0.0, 0.0));
+            .margin(Thickness::new(8.0, 0.0, 0.0, 0.0));
         let arch_chosen = game
             .edits
             .as_ref()
@@ -858,7 +860,7 @@ impl GameManager {
             .map(|view| KeyedView::new("graphics", view));
         let actions = StackPanel::new()
             .orientation(Orientation::Horizontal)
-            .spacing(12.0)
+            .spacing(8.0)
             .keyed_children(
                 std::iter::once(KeyedView::new("play", play))
                     .chain(alternatives)
@@ -874,8 +876,8 @@ impl GameManager {
             .grid_column(1)
             .content(
                 StackPanel::new()
-                    .spacing(28.0)
-                    .margin(Thickness::uniform(32.0))
+                    .spacing(20.0)
+                    .margin(Thickness::uniform(24.0))
                     .children((
                         header,
                         actions,
@@ -975,7 +977,7 @@ impl GameManager {
         let form = StackPanel::new().spacing(6.0).children((
             label("Name"),
             text_box(EditField::Name, "Game name"),
-            label("Launch .exe").margin(Thickness::new(0.0, 10.0, 0.0, 0.0)),
+            label("Launch .exe").margin(Thickness::new(0.0, 8.0, 0.0, 0.0)),
             with_browse(
                 text_box(EditField::Launch, "Launch .exe")
                     .placeholder_text(format!("Empty: the game starts through {store}")),
@@ -985,10 +987,10 @@ impl GameManager {
             hint(format!(
                 "The program Play starts. Leave it empty to start the game through {store}."
             )),
-            label("Arguments").margin(Thickness::new(0.0, 10.0, 0.0, 0.0)),
+            label("Arguments").margin(Thickness::new(0.0, 8.0, 0.0, 0.0)),
             text_box(EditField::Args, "Arguments").is_enabled(args_enabled),
             hint(args_hint),
-            label("Game program").margin(Thickness::new(0.0, 10.0, 0.0, 0.0)),
+            label("Game program").margin(Thickness::new(0.0, 8.0, 0.0, 0.0)),
             with_browse(
                 text_box(EditField::Program, "Game program"),
                 EditField::Program,
@@ -997,8 +999,8 @@ impl GameManager {
             hint("The game's own .exe: used for its bitness, Open folder and mods.".to_owned()),
             StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(24.0)
-                .margin(Thickness::new(0.0, 10.0, 0.0, 0.0))
+                .spacing(16.0)
+                .margin(Thickness::new(0.0, 8.0, 0.0, 0.0))
                 .children((
                     drop_down(EditChoice::Bitness, "Bitness", detected_arch),
                     drop_down(EditChoice::GraphicsApi, "Graphics API", detected_api),
@@ -1010,8 +1012,8 @@ impl GameManager {
             ),
             StackPanel::new()
                 .orientation(Orientation::Horizontal)
-                .spacing(12.0)
-                .margin(Thickness::new(0.0, 12.0, 0.0, 0.0))
+                .spacing(8.0)
+                .margin(Thickness::new(0.0, 8.0, 0.0, 0.0))
                 .children((
                     Button::new()
                         .style(ButtonStyle::Accent)
@@ -1756,7 +1758,7 @@ impl GameManager {
             .severity(InfoBarSeverity::Error)
             .is_open(self.error.is_some())
             .on_closed(context.message(Message::DismissError))
-            .margin(Thickness::xy(20.0, 8.0))
+            .margin(Thickness::xy(16.0, 8.0))
             .grid_row(1);
 
         let body = Grid::new()
