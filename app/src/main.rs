@@ -51,7 +51,8 @@ const SIDEBAR_WIDTH: f64 = 340.0;
 const ROW_WIDTH: f64 = SIDEBAR_WIDTH - 56.0;
 /// The game menu's size, to keep it inside the window.
 const MENU_WIDTH: f64 = 240.0;
-const MENU_HEIGHT: f64 = 92.0;
+/// Two compact items of about 25, 2 between them, 4 of padding and 1 of border on each side.
+const MENU_HEIGHT: f64 = 64.0;
 /// The tooltip of a bitness or graphics API the user chose.
 const CHOSEN: &str = "Chosen in Game settings";
 /// "Game" glyph from Segoe Fluent Icons, shown while an icon loads or when a game has none.
@@ -250,6 +251,8 @@ struct GameManager {
     graphics_pending: HashSet<String>,
     scanning: bool,
     error: Option<String>,
+    /// Compact sizing's failure, shown again with each scan's errors until dismissed.
+    compact_error: Option<String>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
     picking: bool,
     /// The custom game being set up in the Add a game dialog.
@@ -1156,7 +1159,8 @@ impl Component for GameManager {
             graphics: HashMap::new(),
             graphics_pending: HashSet::new(),
             scanning: false,
-            error: compact,
+            error: compact.clone(),
+            compact_error: compact,
             picking: false,
             draft: None,
             removing: None,
@@ -1223,6 +1227,8 @@ impl GameManager {
                 // A program may have changed (an update, or another one chosen).
                 self.laa.clear();
                 self.reshade.clear();
+                let errors: Vec<String> =
+                    self.compact_error.iter().cloned().chain(errors).collect();
                 self.error = (!errors.is_empty()).then(|| errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
@@ -1615,7 +1621,10 @@ impl GameManager {
                     Err(e) => self.error = Some(e),
                 }
             }
-            Message::DismissError => self.error = None,
+            Message::DismissError => {
+                self.error = None;
+                self.compact_error = None;
+            }
             Message::AddGame => {
                 // Owned by the app's window, which is disabled while the dialog is open.
                 self.picking =
