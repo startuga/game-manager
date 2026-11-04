@@ -1,11 +1,13 @@
 //! Generates `app/src/winui_bindings.rs`: the few WinUI calls the app makes itself, because
-//! windows-reactor has no API for them (`compact.rs` merges WinUI's Compact sizing into the
+//! windows-reactor has no API for them (`compact.rs` builds the compact styles and sizes into the
 //! application's resources).
 //!
-//! The WinUI metadata is the reactor's own, from the windows-rs checkout that `Cargo.lock` pins
-//! (`crates/tools/reactor-metadata/winmd`), found through `cargo metadata`, and the options are
-//! those its binding tool uses (`crates/tools/reactor/src/main.rs`). Run it after updating
-//! windows-rs: `cargo run -p app --example winui_bindings`.
+//! - **Metadata**: the reactor's own WinUI metadata, from the windows-rs checkout that
+//!   `Cargo.lock` pins (`crates/tools/reactor-metadata/winmd`), found through `cargo metadata`.
+//! - **Not minimal**: the full bindings take strings as `&HSTRING`, so `compact.rs` passes the
+//!   `h!` literals stored in the binary as they are. Minimal ones take `&str` and convert each to
+//!   a new HSTRING.
+//! - Run it after updating windows-rs: `cargo run -p app --example winui_bindings`.
 
 #![allow(
     clippy::expect_used,
@@ -16,14 +18,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What the app calls, in windows-bindgen's filter syntax.
-const FILTERS: [&str; 7] = [
+const FILTERS: [&str; 14] = [
+    "Microsoft::UI::Xaml::Markup::XamlBindingHelper::ConvertValue",
     "Microsoft::UI::Xaml::Application::Current",
     "Microsoft::UI::Xaml::IApplication::get_Resources",
-    "Microsoft::UI::Xaml::Markup::XamlReader::Load",
     "Microsoft::UI::Xaml::ResourceDictionary::CreateInstance",
-    "Microsoft::UI::Xaml::IResourceDictionary::{get_MergedDictionaries, put_Source}",
-    "Windows::Foundation::PropertyValue::CreateString",
-    "Windows::Foundation::Uri::CreateUri",
+    "Microsoft::UI::Xaml::IResourceDictionary::get_MergedDictionaries",
+    "Microsoft::UI::Xaml::Style::CreateInstance",
+    "Microsoft::UI::Xaml::IStyle::{get_Setters, put_BasedOn, put_TargetType}",
+    "Microsoft::UI::Xaml::Setter::CreateInstance",
+    "Microsoft::UI::Xaml::ISetter::{put_Property, put_Value}",
+    "Microsoft::UI::Xaml::Controls::Control::PaddingProperty",
+    "Microsoft::UI::Xaml::FrameworkElement::MinHeightProperty",
+    "Microsoft::UI::Xaml::Controls::TextBlock::FontSizeProperty",
+    "Windows::UI::Xaml::Interop::TypeName",
+    "Windows::Foundation::PropertyValue::{CreateDouble, CreateString}",
 ];
 
 /// The doc the generated file starts with (the project wants one on every source file).
@@ -39,7 +48,6 @@ fn main() {
         .input(winmd_dir(manifest))
         .input_default()
         .output(&output)
-        .minimal()
         .dead_code()
         .flat()
         .filters(FILTERS)

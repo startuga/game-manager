@@ -14,6 +14,7 @@ dependencies = [
  "windows-core",
  "windows-pickers",
  "windows-reactor",
+ "windows-reference",
 ]
 
 [[package]]
