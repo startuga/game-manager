@@ -134,6 +134,36 @@ pub struct IDependencyObject_Vtbl {
     pub base__: windows_core::IInspectable_Vtbl,
 }
 windows_core::imp::define_interface!(
+    IPropertyValueStatics,
+    IPropertyValueStatics_Vtbl,
+    0x629bdbc8_d932_4ff4_96b9_8d96c5c1e858
+);
+impl windows_core::RuntimeType for IPropertyValueStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IPropertyValueStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    CreateEmpty: usize,
+    CreateUInt8: usize,
+    CreateInt16: usize,
+    CreateUInt16: usize,
+    CreateInt32: usize,
+    CreateUInt32: usize,
+    CreateInt64: usize,
+    CreateUInt64: usize,
+    CreateSingle: usize,
+    CreateDouble: usize,
+    CreateChar16: usize,
+    CreateBoolean: usize,
+    pub CreateString: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
     IResourceDictionary,
     IResourceDictionary_Vtbl,
     0x1b690975_a710_5783_a6e1_15836f6186c2
@@ -230,6 +260,61 @@ pub struct IUriRuntimeClassFactory_Vtbl {
         *mut core::ffi::c_void,
         *mut *mut core::ffi::c_void,
     ) -> windows_core::HRESULT,
+}
+windows_core::imp::define_interface!(
+    IXamlReader,
+    IXamlReader_Vtbl,
+    0x54ce54c8_38c6_50d9_ac98_4b03eddbde9f
+);
+impl windows_core::RuntimeType for IXamlReader {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IXamlReader_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+}
+windows_core::imp::define_interface!(
+    IXamlReaderStatics,
+    IXamlReaderStatics_Vtbl,
+    0x82a4cd9e_435e_5aeb_8c4f_300cece45cae
+);
+impl windows_core::RuntimeType for IXamlReaderStatics {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_interface::<Self>();
+}
+#[repr(C)]
+pub struct IXamlReaderStatics_Vtbl {
+    pub base__: windows_core::IInspectable_Vtbl,
+    pub Load: unsafe extern "system" fn(
+        *mut core::ffi::c_void,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> windows_core::HRESULT,
+}
+pub struct PropertyValue;
+impl PropertyValue {
+    pub(crate) fn CreateString(value: &str) -> windows_core::Result<windows_core::IInspectable> {
+        Self::IPropertyValueStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).CreateString)(
+                windows_core::Interface::as_raw(this),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(value)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IPropertyValueStatics<R, F: FnOnce(&IPropertyValueStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<PropertyValue, IPropertyValueStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeName for PropertyValue {
+    const NAME: &'static str = "Windows.Foundation.PropertyValue";
 }
 #[repr(transparent)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -331,3 +416,50 @@ impl windows_core::RuntimeName for Uri {
 }
 unsafe impl Send for Uri {}
 unsafe impl Sync for Uri {}
+#[repr(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XamlReader(windows_core::IUnknown);
+windows_core::imp::interface_hierarchy!(
+    XamlReader,
+    windows_core::IUnknown,
+    windows_core::IInspectable
+);
+impl XamlReader {
+    pub(crate) fn Load(xaml: &str) -> windows_core::Result<windows_core::IInspectable> {
+        Self::IXamlReaderStatics(|this| unsafe {
+            let mut result__ = core::mem::zeroed();
+            (windows_core::Interface::vtable(this).Load)(
+                windows_core::Interface::as_raw(this),
+                core::mem::transmute_copy(&windows_core::HSTRING::from(xaml)),
+                &mut result__,
+            )
+            .and_then(|| windows_core::imp::Type::from_abi(result__))
+        })
+    }
+    fn IXamlReaderStatics<R, F: FnOnce(&IXamlReaderStatics) -> windows_core::Result<R>>(
+        callback: F,
+    ) -> windows_core::Result<R> {
+        static SHARED: windows_core::imp::FactoryCache<XamlReader, IXamlReaderStatics> =
+            windows_core::imp::FactoryCache::new();
+        SHARED.call(callback)
+    }
+}
+impl windows_core::RuntimeType for XamlReader {
+    const SIGNATURE: windows_core::imp::ConstBuffer =
+        windows_core::imp::ConstBuffer::for_class::<Self, IXamlReader>();
+}
+unsafe impl windows_core::Interface for XamlReader {
+    type Vtable = <IXamlReader as windows_core::Interface>::Vtable;
+    const IID: windows_core::GUID = <IXamlReader as windows_core::Interface>::IID;
+}
+impl core::ops::Deref for XamlReader {
+    type Target = IXamlReader;
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::mem::transmute(self) }
+    }
+}
+impl windows_core::RuntimeName for XamlReader {
+    const NAME: &'static str = "Microsoft.UI.Xaml.Markup.XamlReader";
+}
+unsafe impl Send for XamlReader {}
+unsafe impl Sync for XamlReader {}

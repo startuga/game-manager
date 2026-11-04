@@ -16,11 +16,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What the app calls, in windows-bindgen's filter syntax.
-const FILTERS: [&str; 5] = [
+const FILTERS: [&str; 7] = [
     "Microsoft::UI::Xaml::Application::Current",
     "Microsoft::UI::Xaml::IApplication::get_Resources",
+    "Microsoft::UI::Xaml::Markup::XamlReader::Load",
     "Microsoft::UI::Xaml::ResourceDictionary::CreateInstance",
     "Microsoft::UI::Xaml::IResourceDictionary::{get_MergedDictionaries, put_Source}",
+    "Windows::Foundation::PropertyValue::CreateString",
     "Windows::Foundation::Uri::CreateUri",
 ];
 
