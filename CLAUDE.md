@@ -14,12 +14,17 @@ games plus games added by hand, starts them, and installs mods (ReShade, DXVK, L
 
 ## Toolchain
 - Rust 1.99.1 (`rust-toolchain.toml`), edition 2024, MSVC target.
-- **windows-rs**: `windows`, `windows-registry`, `windows-reactor` and `windows-pickers` always
-  come from https://github.com/microsoft/windows-rs master, never crates.io.
+- **windows-rs**: `windows`, `windows-registry`, `windows-reactor`, `windows-pickers`,
+  `windows-core`, `windows-collections` and `windows-bindgen` always come from
+  https://github.com/microsoft/windows-rs master, never crates.io.
   - They are declared once in the root `[workspace.dependencies]`, and `Cargo.lock` pins the
     commit.
   - To update, run `cargo update -p windows -p windows-pickers -p windows-reactor -p
-    windows-registry`, then fix what its API changes break.
+    windows-registry -p windows-core -p windows-collections -p windows-bindgen`.
+    - Then regenerate the app's WinUI bindings with `cargo run -p app --example winui_bindings`.
+    - Then fix what the API changes break.
+  - **Adding another windows-rs crate** moves them all to the latest master, since they share
+    one git source. Put them back with `cargo update -p windows --precise <the locked commit>`.
   - The first fetch downloads the whole repository (about 1.4 GB).
 - **Windows App Runtime**: WinUI apps need version 2.x installed.
 - **7-Zip**: `tools/7-Zip` holds `7z.exe`, `7z.dll` (26.05 x64) and `License.txt`.

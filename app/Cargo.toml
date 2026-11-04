@@ -13,3 +13,11 @@ gm-core = { path = "../core" }
 windows = { workspace = true, features = ["winuser", "winerror"] }
 windows-pickers = { workspace = true, features = ["reactor"] }
 windows-reactor = { workspace = true }
+# For the WinUI calls the reactor has no API for (`winui_bindings.rs`, generated).
+windows-collections = { workspace = true }
+windows-core = { workspace = true }
+
+[dev-dependencies]
+# `examples/winui_bindings.rs`, which generates `src/winui_bindings.rs`.
+serde_json = { workspace = true }
+windows-bindgen = { workspace = true }
