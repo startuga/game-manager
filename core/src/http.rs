@@ -143,7 +143,7 @@ impl Response {
         })
         .map_err(Error::windows(url))?;
         // SAFETY: a live request handle; no extra headers and no body.
-        unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }
+        unsafe { WinHttpSendRequest(request.0, None, 0, None, 0, 0, 0) }
             .ok()
             .map_err(Error::windows(url))?;
         // SAFETY: the request was sent; the reserved argument must be null. Redirects have been

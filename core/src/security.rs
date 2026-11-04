@@ -139,7 +139,7 @@ pub(crate) fn grant(path: &Path, sid: &str, rights: u32) -> Result<()> {
     } else {
         0
     };
-    let entry = EXPLICIT_ACCESS_W {
+    let mut entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: rights,
         grfAccessMode: GRANT_ACCESS,
         grfInheritance: inheritance,
@@ -151,9 +151,9 @@ pub(crate) fn grant(path: &Path, sid: &str, rights: u32) -> Result<()> {
         },
     };
     let mut new_dacl: PACL = std::ptr::null_mut();
-    // SAFETY: `entry` names the live SID; `dacl` is the file's list, alive with `_descriptor`;
-    // `new_dacl` is a valid out-pointer, freed by `_new_dacl`.
-    let code = unsafe { SetEntriesInAclW(Some(&[entry]), Some(dacl), &mut new_dacl) };
+    // SAFETY: a list of one entry, `entry`, which names the live SID; `dacl` is the file's list,
+    // alive with `_descriptor`; `new_dacl` is a valid out-pointer, freed by `_new_dacl`.
+    let code = unsafe { SetEntriesInAclW(1, Some(&raw mut entry), Some(dacl), &mut new_dacl) };
     let _new_dacl = Local(new_dacl.cast());
     check(code)?;
     // SAFETY: `name` is null-terminated and `new_dacl` a valid list until `_new_dacl` drops.

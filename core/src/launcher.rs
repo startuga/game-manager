@@ -110,7 +110,7 @@ fn select_in_folder(file: &Path) -> bool {
     let item = ItemIdList(pidl);
     // SAFETY: `item` holds a valid absolute item ID list from ILCreateFromPathW. Without child
     // items, the Shell opens the item's parent folder and selects the item.
-    let result = unsafe { SHOpenFolderAndSelectItems(item.0.cast_const(), None, 0) };
+    let result = unsafe { SHOpenFolderAndSelectItems(item.0.cast_const(), 0, None, 0) };
     result.is_ok()
 }
 
