@@ -535,8 +535,15 @@ fn apply_nvidia(
         action: "find the NVIDIA driver",
         status: nvidia::NVIDIA_DEVICE_NOT_FOUND,
     })?;
-    let new_profile = format!("{} (Game Manager)", game.name);
-    let (plan, original) = nvidia::plan(&exe, &new_profile, &now, wanted, original);
+    // A profile the DLSS overrides created is Game Manager's too.
+    let ours = match now.profile.as_deref() {
+        Some(profile) => super::load()?
+            .dlss_override(&game.id)
+            .is_some_and(|other| other.original.created(profile)),
+        None => false,
+    };
+    let new_profile = nvidia::new_profile_name(&game.name);
+    let (plan, original) = nvidia::plan(&exe, &new_profile, &now, wanted, original, ours);
     nvidia::run(&plan)?;
     Ok(original)
 }

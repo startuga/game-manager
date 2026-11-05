@@ -1,7 +1,17 @@
-//! NVIDIA driver profile settings: the ones DXVK needs for HDR on NVIDIA GPUs, "Vulkan/OpenGL
-//! Present Method" (`0x20D690F8`) and its flags (`0x20324987`, `OGL_DX_PRESENT_DEBUG`), in the
-//! driver profile that holds the game's `.exe` (the database the NVIDIA Control Panel and
-//! nvidiaProfileInspector edit; ids and values from the inspector's `CustomSettingNames.xml`).
+//! NVIDIA driver profile settings, in the driver profile that holds the game's `.exe` (the
+//! database the NVIDIA Control Panel and nvidiaProfileInspector edit; ids and values from the
+//! inspector's `CustomSettingNames.xml`):
+//! - DXVK's for HDR on NVIDIA GPUs, "Vulkan/OpenGL Present Method" (`0x20D690F8`) and its flags
+//!   (`0x20324987`, `OGL_DX_PRESENT_DEBUG`): `read` and `plan`, recorded as `NvidiaOriginal`.
+//! - Any DWORD settings, such as the DLSS overrides (`mods::dlss_override`): `read_settings` and
+//!   `plan_settings`, recorded as `Originals`. DXVK's two go through the same planner.
+//! - The driver's version (`driver_version`), and the versions of the DLSS and Streamline DLLs it
+//!   keeps in its NGX models folder (`ngx_version`).
+//!
+//! **Planning**: a setting changed for the first time has the user's value recorded first, and
+//! going back sets it again (or takes the setting out when there was none). A profile Game
+//! Manager created is deleted once it is empty. DXVK and the overrides may share one profile,
+//! so either record's "created" counts for both (`ours`).
 //!
 //! NVAPI's driver settings (DRS) functions come from `nvapi64.dll`, which the driver installs in
 //! System32 and which exports only `nvapi_QueryInterface`: each function is asked for by its id
@@ -17,7 +27,9 @@ use crate::elevate;
 use crate::text::{percent_decode, percent_encode};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::ffi::c_void;
+use std::path::PathBuf;
 use windows::Win32::{
     FreeLibrary, GetProcAddress, HMODULE, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
@@ -110,13 +122,90 @@ pub struct SettingState {
     pub user_value: Option<u32>,
 }
 
-/// The `.exe`'s driver profile, as far as these settings go.
+/// The `.exe`'s driver profile, as far as DXVK's settings go.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProfileState {
     /// The profile's name; `None`: no profile holds the `.exe`.
     pub profile: Option<String>,
     pub method: SettingState,
     pub flags: SettingState,
+}
+
+/// The `.exe`'s driver profile, as far as the settings asked for go.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Profile {
+    /// The profile's name; `None`: no profile holds the `.exe`.
+    pub name: Option<String>,
+    /// Each setting asked for, in the order asked.
+    pub settings: Vec<(u32, SettingState)>,
+}
+
+impl Profile {
+    pub fn setting(&self, id: u32) -> SettingState {
+        self.settings
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map_or_else(SettingState::default, |(_, state)| *state)
+    }
+}
+
+/// What the `.exe`'s driver profile held before Game Manager changed some of its settings, to put
+/// it back.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Originals {
+    pub profile: String,
+    /// Game Manager created the profile (the `.exe` had none, or another of its records says it
+    /// made the profile), so going back deletes it once nothing else is in it.
+    #[serde(default)]
+    pub created_profile: bool,
+    /// Each setting Game Manager changed, with the value the user had set before (`None`: none,
+    /// NVIDIA's or inherited). Settings not listed were never changed.
+    #[serde(default)]
+    pub values: BTreeMap<u32, Option<u32>>,
+}
+
+impl Originals {
+    /// Whether this record says Game Manager created `profile`.
+    pub fn created(&self, profile: &str) -> bool {
+        self.created_profile && self.profile == profile
+    }
+}
+
+impl NvidiaOriginal {
+    /// Whether this record says Game Manager created `profile`.
+    pub fn created(&self, profile: &str) -> bool {
+        self.created_profile && self.profile == profile
+    }
+}
+
+/// The name of a profile Game Manager creates for a game whose `.exe` has none.
+pub fn new_profile_name(game: &str) -> String {
+    format!("{game} (Game Manager)")
+}
+
+impl From<&NvidiaOriginal> for Originals {
+    fn from(original: &NvidiaOriginal) -> Self {
+        Self {
+            profile: original.profile.clone(),
+            created_profile: original.created_profile,
+            values: BTreeMap::from([
+                (PRESENT_METHOD, original.method),
+                (PRESENT_FLAGS, original.flags),
+            ]),
+        }
+    }
+}
+
+impl From<Originals> for NvidiaOriginal {
+    fn from(original: Originals) -> Self {
+        Self {
+            method: original.values.get(&PRESENT_METHOD).copied().flatten(),
+            flags: original.values.get(&PRESENT_FLAGS).copied().flatten(),
+            profile: original.profile,
+            created_profile: original.created_profile,
+        }
+    }
 }
 
 /// Changes to one `.exe`'s driver profile, saved together.
@@ -147,59 +236,99 @@ impl DrsPlan {
     }
 }
 
-/// The plan that gives the `.exe`'s profile (`state`) the `wanted` values, and the originals to
-/// keep afterwards: `None` once everything is as it was. `new_profile` names a profile to create
-/// when the `.exe` has none.
+/// DXVK's Present Method settings through `plan_settings`: both settings are recorded together,
+/// as `NvidiaOriginal` keeps them. `ours`: another record of Game Manager says it created the
+/// profile that holds the `.exe` now.
 pub fn plan(
     exe: &str,
     new_profile: &str,
     state: &ProfileState,
     wanted: NvidiaChoice,
     original: Option<&NvidiaOriginal>,
+    ours: bool,
 ) -> (DrsPlan, Option<NvidiaOriginal>) {
-    let mut plan = DrsPlan {
-        exe: exe.to_owned(),
-        ..DrsPlan::default()
+    let profile = Profile {
+        name: state.profile.clone(),
+        settings: vec![(PRESENT_METHOD, state.method), (PRESENT_FLAGS, state.flags)],
     };
-    let changing = !wanted.is_original();
     let original = match original {
-        Some(original) => original.clone(),
-        None if changing => NvidiaOriginal {
+        Some(original) => Some(Originals::from(original)),
+        // The first change records both settings, as `NvidiaOriginal` always has.
+        None if !wanted.is_original() => Some(Originals {
             profile: state
                 .profile
                 .clone()
                 .unwrap_or_else(|| new_profile.to_owned()),
-            created_profile: state.profile.is_none(),
-            method: state.method.user_value,
-            flags: state.flags.user_value,
+            created_profile: state.profile.is_none() || ours,
+            values: BTreeMap::from([
+                (PRESENT_METHOD, state.method.user_value),
+                (PRESENT_FLAGS, state.flags.user_value),
+            ]),
+        }),
+        None => None,
+    };
+    let wanted = [
+        (PRESENT_METHOD, wanted.present_method),
+        (PRESENT_FLAGS, wanted.present_flags),
+    ];
+    let (plan, original) =
+        plan_settings(exe, new_profile, &profile, &wanted, original.as_ref(), ours);
+    (plan, original.map(NvidiaOriginal::from))
+}
+
+/// The plan that gives the `.exe`'s profile (`state`) the `wanted` values (`None`: as it was
+/// before Game Manager changed it), and the originals to keep afterwards: `None` once everything
+/// is as it was. `new_profile` names a profile to create when the `.exe` has none; `ours`:
+/// another record of Game Manager says it created the profile that holds the `.exe` now.
+///
+/// A setting changed for the first time has its user value recorded first. Going back sets the
+/// recorded value again, or takes the setting out of the profile when there was none; settings
+/// never changed are left alone. A profile Game Manager created is deleted at the end, when
+/// nothing else is in it.
+pub fn plan_settings(
+    exe: &str,
+    new_profile: &str,
+    state: &Profile,
+    wanted: &[(u32, Option<u32>)],
+    original: Option<&Originals>,
+    ours: bool,
+) -> (DrsPlan, Option<Originals>) {
+    let mut plan = DrsPlan {
+        exe: exe.to_owned(),
+        ..DrsPlan::default()
+    };
+    let changing = wanted.iter().any(|(_, value)| value.is_some());
+    let mut original = match original {
+        Some(original) => original.clone(),
+        None if changing => Originals {
+            profile: state.name.clone().unwrap_or_else(|| new_profile.to_owned()),
+            created_profile: state.name.is_none() || ours,
+            values: BTreeMap::new(),
         },
         // Nothing changed before, nothing to change now.
         None => return (plan, None),
     };
-    if state.profile.is_none() {
+    if state.name.is_none() {
         if !changing {
             // The profile is gone already: nothing is left to put back.
             return (plan, None);
         }
         plan.create_profile = Some(new_profile.to_owned());
     }
-    for (id, wanted, before, now) in [
-        (
-            PRESENT_METHOD,
-            wanted.present_method,
-            original.method,
-            state.method,
-        ),
-        (
-            PRESENT_FLAGS,
-            wanted.present_flags,
-            original.flags,
-            state.flags,
-        ),
-    ] {
+    for &(id, wanted) in wanted {
+        let now = state.setting(id).user_value;
+        let before = match original.values.get(&id) {
+            Some(&before) => before,
+            None if wanted.is_some() => {
+                original.values.insert(id, now);
+                now
+            }
+            // Never changed: not Game Manager's to put back.
+            None => continue,
+        };
         match (wanted, before) {
             (Some(value), _) | (None, Some(value)) => plan.set.push((id, value)),
-            (None, None) if now.user_value.is_some() => plan.delete.push(id),
+            (None, None) if now.is_some() => plan.delete.push(id),
             (None, None) => {}
         }
     }
@@ -210,20 +339,91 @@ pub fn plan(
     (plan, None)
 }
 
-/// The `.exe`'s profile and both settings; `None` without an NVIDIA graphics driver.
+/// The `.exe`'s profile and both of DXVK's settings; `None` without an NVIDIA graphics driver.
 pub fn read(exe: &str) -> Result<Option<ProfileState>> {
+    Ok(
+        read_settings(exe, &[PRESENT_METHOD, PRESENT_FLAGS])?.map(|profile| ProfileState {
+            method: profile.setting(PRESENT_METHOD),
+            flags: profile.setting(PRESENT_FLAGS),
+            profile: profile.name,
+        }),
+    )
+}
+
+/// The `.exe`'s profile and the settings `ids`; `None` without an NVIDIA graphics driver.
+pub fn read_settings(exe: &str, ids: &[u32]) -> Result<Option<Profile>> {
     let Some(api) = Nvapi::load()? else {
         return Ok(None);
     };
     let session = api.session()?;
     let Some(profile) = session.find(exe)? else {
-        return Ok(Some(ProfileState::default()));
+        return Ok(Some(Profile {
+            name: None,
+            settings: ids
+                .iter()
+                .map(|&id| (id, SettingState::default()))
+                .collect(),
+        }));
     };
-    Ok(Some(ProfileState {
-        profile: Some(session.profile_name(profile)?),
-        method: session.setting(profile, PRESENT_METHOD)?,
-        flags: session.setting(profile, PRESENT_FLAGS)?,
+    Ok(Some(Profile {
+        name: Some(session.profile_name(profile)?),
+        settings: ids
+            .iter()
+            .map(|&id| Ok((id, session.setting(profile, id)?)))
+            .collect::<Result<_>>()?,
     }))
+}
+
+/// The driver's version, e.g. 62112 for 621.12; `None` without an NVIDIA graphics driver.
+pub fn driver_version() -> Result<Option<u32>> {
+    let Some(api) = Nvapi::load()? else {
+        return Ok(None);
+    };
+    let mut version = 0;
+    let mut branch = [0u8; 64];
+    // SAFETY: NVAPI is initialized; both out-pointers are valid, the branch buffer is
+    // `NvAPI_ShortString`'s 64 bytes.
+    let status = unsafe { (api.driver_version)(&mut version, branch.as_mut_ptr()) };
+    check(status, "read the driver's version")?;
+    Ok(Some(version))
+}
+
+/// A driver version as NVIDIA writes it: 62112 → "621.12".
+pub fn driver_label(version: u32) -> String {
+    format!("{}.{:02}", version / 100, version % 100)
+}
+
+/// The folder where the driver keeps its own DLSS and Streamline DLLs, one subfolder per model
+/// (`dlss`, `dlssd`, `dlssg`, `sl_common_0`, …), each with `versions\<n>`.
+fn ngx_models() -> Option<PathBuf> {
+    Some(
+        PathBuf::from(std::env::var_os("ProgramData")?)
+            .join("NVIDIA")
+            .join("NGX")
+            .join("models"),
+    )
+}
+
+/// The newest version the driver has downloaded of an NGX model (`dlss`): "310.9.16".
+pub fn ngx_version(model: &str) -> Option<String> {
+    let folder = ngx_models()?.join(model).join("versions");
+    std::fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .max()
+        .map(ngx_label)
+}
+
+/// An NGX `versions` folder's number: major << 16 | minor << 8 | patch.
+fn ngx_label(number: u32) -> String {
+    format!(
+        "{}.{}.{}",
+        number >> 16,
+        (number >> 8) & 0xFF,
+        number & 0xFF
+    )
 }
 
 /// Applies the plan, as administrator when the driver asks for it.
@@ -269,7 +469,8 @@ pub fn run_encoded(encoded: &str) -> u32 {
     }
 }
 
-fn apply(plan: &DrsPlan) -> Result<()> {
+/// Applies the plan in this process; `run` elevates when the driver asks for it.
+pub(crate) fn apply(plan: &DrsPlan) -> Result<()> {
     let api = Nvapi::load()?.ok_or(Error::Nvapi {
         action: "find the NVIDIA driver",
         status: NVIDIA_DEVICE_NOT_FOUND,
@@ -472,6 +673,7 @@ type GetSetting = unsafe extern "C" fn(SessionHandle, ProfileHandle, u32, *mut S
 type SetSetting = unsafe extern "C" fn(SessionHandle, ProfileHandle, *mut Setting) -> Status;
 type ProfileSettingCall = unsafe extern "C" fn(SessionHandle, ProfileHandle, u32) -> Status;
 type ProfileCall = unsafe extern "C" fn(SessionHandle, ProfileHandle) -> Status;
+type GetDriverVersion = unsafe extern "C" fn(*mut u32, *mut u8) -> Status;
 
 /// `nvapi64.dll`, freed when dropped.
 struct Library(HMODULE);
@@ -499,6 +701,7 @@ struct Nvapi {
     set_setting: SetSetting,
     delete_setting: ProfileSettingCall,
     delete_profile: ProfileCall,
+    driver_version: GetDriverVersion,
     // Last, so it is freed after `Drop::drop` unloaded NVAPI.
     _library: Library,
 }
@@ -574,6 +777,8 @@ impl Nvapi {
             delete_setting: unsafe { function(query, 0xE4A2_6362) }?,
             // SAFETY: NvAPI_DRS_DeleteProfile.
             delete_profile: unsafe { function(query, 0x1709_3206) }?,
+            // SAFETY: NvAPI_SYS_GetDriverAndBranchVersion.
+            driver_version: unsafe { function(query, 0x2926_AAAD) }?,
             _library: library,
         }))
     }
@@ -730,6 +935,15 @@ mod tests {
     }
 
     #[test]
+    fn driver_and_ngx_versions_read_as_nvidia_writes_them() {
+        assert_eq!(driver_label(62112), "621.12");
+        assert_eq!(driver_label(57186), "571.86");
+        assert_eq!(driver_label(57605), "576.05");
+        assert_eq!(ngx_label(20_318_480), "310.9.16");
+        assert_eq!(ngx_label(134_672), "2.14.16");
+    }
+
+    #[test]
     fn values_have_names() {
         assert_eq!(method_label(1), "Prefer layered on DXGI Swapchain");
         assert_eq!(method_label(9), "0x00000009");
@@ -865,7 +1079,7 @@ mod tests {
             return;
         };
         assert_eq!(before.profile, None, "{exe} already has a profile");
-        let (first, original) = plan(exe, name, &before, WANTED, None);
+        let (first, original) = plan(exe, name, &before, WANTED, None, false);
         match apply(&first) {
             Err(Error::Nvapi {
                 status: INVALID_USER_PRIVILEGE,
@@ -888,6 +1102,7 @@ mod tests {
             &during,
             NvidiaChoice::default(),
             original.as_ref(),
+            false,
         );
         assert_eq!(kept, None);
         apply(&back).unwrap();
@@ -905,6 +1120,7 @@ mod tests {
             state,
             wanted,
             original,
+            false,
         )
     }
 }

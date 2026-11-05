@@ -93,6 +93,19 @@ Intel's own, from their GitHub repositories, and each DLL must carry a valid sig
 lists every version with Download and Delete. An online game's anti-cheat may object to changed
 files, and a game update puts the game's own DLL back.
 
+On NVIDIA GPUs, the expander's last row, **NVIDIA overrides**, sets NVIDIA's driver-level DLSS
+override in the game's driver profile, as the NVIDIA app does, without changing the game's files:
+- **Latest DLLs**: the driver's own DLSS Super Resolution, Ray Reconstruction, Frame Generation
+  and Streamline, with their versions.
+- **Model presets**: Super Resolution's and Ray Reconstruction's.
+- **Resolution**: the mode, a scaling ratio, every mode as DLAA, and Performance as Ultra
+  Performance.
+- **Frame generation**: the frame generation count, and Smooth Motion.
+
+Each drop-down starts with what the profile held, and **Reset to original** puts it back (a profile
+Game Manager created is deleted). Settings the driver is too old for are not shown. The settings
+come from `config/nvidia-overrides.json`.
+
 Files of the game that a mod replaces are kept as `<name>.gm-backup` and put back on uninstall.
 When a game is in a protected folder (such as `C:\Program Files`), Windows asks for administrator
 rights. What is installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are

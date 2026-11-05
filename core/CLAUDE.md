@@ -38,7 +38,10 @@ holds the rules and facts that span them.
     are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).
-  - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
+  - `nvidia.rs` (the game's NVIDIA driver profile through NVAPI: any DWORD settings read,
+    planned and saved, with DXVK's Present Method and its flags; the driver's version and its NGX
+    DLLs) and `mods/dlss_override.rs` (the DLSS overrides: `config/nvidia-overrides.json`,
+    recorded in `mods.json` under `dlssOverride`).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
   - `json_file.rs` (where files live, load/save).
@@ -179,3 +182,24 @@ holds the rules and facts that span them.
     "2,14,16,0", so the fixed file version is used.
   - `cargo test -p gm-core live_upscalers -- --ignored --nocapture` downloads the oldest
     version of every kind (about 450 MB, Streamline's archive included) and checks each DLL.
+- **NVIDIA DLSS overrides** (`mods/dlss_override.rs`):
+  - **Settings**: from nvidiaProfileInspector's `CustomSettingNames.xml`, group "05 - Upscaling
+    and Frame Generation", copied into `config/nvidia-overrides.json` with each one's minimum
+    driver. NVIDIA adds presets with drivers: add them there.
+  - **Rights**: with driver 621.12 all of them were written without administrator rights.
+  - **The driver's DLLs**: `%ProgramData%\NVIDIA\NGX\models\<model>\versions\<n>`, with n =
+    major << 16 | minor << 8 | patch (20318480 = 310.9.16). The models are `dlss`, `dlssd`,
+    `dlssg` and `sl_*_0`.
+  - **The driver's version**: `NvAPI_SYS_GetDriverAndBranchVersion` (`0x2926AAAD`), 62112 for
+    621.12.
+  - **What the NVIDIA app writes**: resetting its DLSS override writes every setting as Off or
+    N/A, as the user's own values in the profile. Most profiles inherit them from the base
+    profile instead.
+  - **One profile for two records**: DXVK's Present Method and the overrides share the `.exe`'s
+    profile. Each keeps its own originals. A profile either record says Game Manager created
+    counts as created for the other too (the `ours` argument of `nvidia::plan_settings`), and
+    `apply` deletes it only once it is empty.
+  - **Checks**:
+    - `cargo test -p gm-core live_overrides_round_trip -- --ignored` writes to a made-up `.exe`'s
+      new profile, alone and shared with DXVK's.
+    - `scan --nvidia` lists what each profile holds.
