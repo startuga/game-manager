@@ -10,6 +10,10 @@
 //!   catalog has a heading, and each setting the driver knows a drop-down whose first item is
 //!   "Original: …" (as in DXVK settings). Reset to original sets every one back to it; Save runs
 //!   `dlss_override::save` as a mod job (`ModKind::Overrides`).
+//! - **Changed elsewhere**: the NVIDIA app writes the same settings (resetting its DLSS override
+//!   writes them all as Off or N/A), and may delete a profile. When the profile no longer holds
+//!   what Game Manager set (`OverrideState::changed_elsewhere`), a warning names each setting with
+//!   its value now, and Save sets them again even when the choice is unchanged.
 //! - The dialog doesn't scroll by itself, so its content is in a `ScrollViewer` fitted to the
 //!   window, as DXVK settings' is.
 
@@ -53,6 +57,48 @@ fn load_driver() -> Result<Option<OverrideLibrary>, String> {
     let catalog = dlss_override::catalog().map_err(|e| e.to_string())?;
     let driver = dlss_override::driver(&catalog).map_err(|e| e.to_string())?;
     Ok(driver.map(|driver| OverrideLibrary { catalog, driver }))
+}
+
+/// The overrides the profile no longer holds as Game Manager set them: the NVIDIA app or
+/// another tool changed them, or deleted the profile. Nothing when all are as set.
+fn changed_warning(state: &OverrideState, catalog: &Catalog) -> Option<View> {
+    let changed = state.changed_elsewhere();
+    if changed.is_empty() {
+        return None;
+    }
+    let text = if state.profile.name.is_none() {
+        "⚠ The driver profile Game Manager set these in is gone: the NVIDIA app or another tool \
+         deleted it. Save creates it again with them; Reset to original and Save forget them."
+            .to_owned()
+    } else {
+        let settings: Vec<String> = changed
+            .iter()
+            .map(|&(id, now)| {
+                let (name, now) = match catalog.setting(id) {
+                    Some(setting) => (
+                        setting.name.clone(),
+                        now.map_or_else(|| "driver default".to_owned(), |v| setting.label(v)),
+                    ),
+                    None => (
+                        format!("0x{id:08X}"),
+                        now.map_or_else(|| "driver default".to_owned(), |v| format!("0x{v:08X}")),
+                    ),
+                };
+                format!("{name} (now {now})")
+            })
+            .collect();
+        format!(
+            "⚠ Changed since Game Manager set them, by the NVIDIA app or another tool: {}. Save \
+             sets them again; Reset to original and Save put back what the profile held first.",
+            settings.join(", ")
+        )
+    };
+    Some(
+        TextBlock::new()
+            .text(text)
+            .text_wrapping(TextWrapping::Wrap)
+            .into(),
+    )
 }
 
 /// A setting's values as the drop-down shows them, after "Original".
@@ -155,9 +201,11 @@ impl GameManager {
         draft: OverrideDraft,
         context: &ComponentContext<Self>,
     ) {
-        if draft.game != game.id || draft.loaded().is_none() {
+        let Some(state) = draft.loaded().filter(|_| draft.game == game.id) else {
             return;
-        }
+        };
+        // Saving the same choice again sets back what another tool changed.
+        let changed_elsewhere = !state.changed_elsewhere().is_empty();
         let saved = self
             .mods
             .dlss_override(&game.id)
@@ -169,7 +217,7 @@ impl GameManager {
         else {
             return;
         };
-        if draft.choice == saved {
+        if draft.choice == saved && !changed_elsewhere {
             return;
         }
         self.mod_job = Some((game.id.clone(), ModKind::Overrides));
@@ -338,6 +386,9 @@ impl GameManager {
                 ))
             }
         });
+        if let (Some(state), Some(library)) = (state, self.override_library()) {
+            rows.extend(changed_warning(state, &library.catalog));
+        }
         if let Some(library) = self.override_library() {
             let version = Some(library.driver.version);
             for group in &library.catalog.groups {

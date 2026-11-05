@@ -245,6 +245,23 @@ impl OverrideState {
             .map(|record| record.choice.clone())
             .unwrap_or_default()
     }
+
+    /// The settings Game Manager set that the profile no longer holds, with what it holds now
+    /// (`None`: nothing of its own): the NVIDIA app or another tool changed them since, or
+    /// deleted the profile. Saving the choice again sets them back.
+    pub fn changed_elsewhere(&self) -> Vec<(u32, Option<u32>)> {
+        let Some(record) = &self.record else {
+            return Vec::new();
+        };
+        record
+            .choice
+            .iter()
+            .filter_map(|(&id, &chosen)| {
+                let now = self.profile.setting(id).user_value;
+                (now != Some(chosen)).then_some((id, now))
+            })
+            .collect()
+    }
 }
 
 /// The `.exe` whose profile the overrides go into: the one recorded, else the game's program's.
@@ -501,6 +518,39 @@ mod tests {
         assert_eq!(back.delete, [SR]);
         assert!(back.delete_profile);
         assert_eq!(kept, None);
+    }
+
+    #[test]
+    fn settings_changed_by_another_tool_are_found() {
+        let record = DlssOverride {
+            exe: "game.exe".into(),
+            choice: BTreeMap::from([(SR, 1), (PRESET, 11)]),
+            original: Originals {
+                profile: "Game".into(),
+                created_profile: false,
+                values: BTreeMap::from([(SR, None), (PRESET, None)]),
+            },
+        };
+        let state = |profile: Profile| OverrideState {
+            exe: "game.exe".into(),
+            profile,
+            record: Some(record.clone()),
+        };
+        // As Game Manager left it.
+        let ours = state(profile(Some("Game"), &[(SR, Some(1)), (PRESET, Some(11))]));
+        assert!(ours.changed_elsewhere().is_empty());
+        // The NVIDIA app wrote its N/A over the preset.
+        let changed = state(profile(Some("Game"), &[(SR, Some(1)), (PRESET, Some(0))]));
+        assert_eq!(changed.changed_elsewhere(), [(PRESET, Some(0))]);
+        // The profile is gone: every setting.
+        let gone = state(profile(None, &[(SR, None), (PRESET, None)]));
+        assert_eq!(gone.changed_elsewhere(), [(PRESET, None), (SR, None)]);
+        // No record, nothing of Game Manager's.
+        let none = OverrideState {
+            record: None,
+            ..changed
+        };
+        assert!(none.changed_elsewhere().is_empty());
     }
 
     #[test]

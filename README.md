@@ -104,7 +104,8 @@ override in the game's driver profile, as the NVIDIA app does, without changing 
 
 Each drop-down starts with what the profile held, and **Reset to original** puts it back (a profile
 Game Manager created is deleted). Settings the driver is too old for are not shown. The settings
-come from `config/nvidia-overrides.json`.
+come from `config/nvidia-overrides.json`. The NVIDIA app writes the same settings: when it (or
+another tool) has changed them since, the dialog says which, and Save sets them again.
 
 Files of the game that a mod replaces are kept as `<name>.gm-backup` and put back on uninstall.
 When a game is in a protected folder (such as `C:\Program Files`), Windows asks for administrator
