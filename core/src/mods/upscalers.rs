@@ -7,6 +7,9 @@
 //!   games. A kind is one DLL, or a set swapped together whose first file is the one looked for:
 //!   Streamline's `sl.*.dll`, whose plugins must match its interposer, and FidelityFX SDK 2's
 //!   loader with its effects.
+//! - **Compatible versions**: a kind marked `sameMajor` takes only versions of the game's own
+//!   major version (`Kind::fits`): a Streamline 1 game can't load Streamline 2. The game's version
+//!   is its DLL's, or for a row already swapped the one it had before (`Found::game_version`).
 //! - **Versions**: only the vendors' own DLLs, from their GitHub repositories, within each
 //!   kind's layouts (the folder that holds them from one tag to another).
 //!   - `files`: every DLL sits in a folder of the repository at each tag, so one is downloaded on
@@ -96,6 +99,9 @@ pub struct Kind {
     /// For a set: what the library downloads without a game to say which files it uses.
     #[serde(default)]
     download: Vec<String>,
+    /// Only versions of the game's own major version work in it.
+    #[serde(default, rename = "sameMajor")]
+    same_major: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -160,6 +166,24 @@ impl Kind {
         }
     }
 
+    /// Whether `available` can replace a DLL whose game version is `game`: any, unless the kind
+    /// needs the game's own major version (Streamline 1 games can't load Streamline 2), which an
+    /// unknown version can't be checked against.
+    pub fn fits(&self, game: Option<&str>, available: &Available) -> bool {
+        !self.same_major
+            || game
+                .and_then(Version::parse)
+                .is_some_and(|game| game.major() == available.version.major())
+    }
+
+    /// The versions among `versions` that fit `found`, in their order.
+    pub fn offered<'a>(&self, found: &Found, versions: &'a [Available]) -> Vec<&'a Available> {
+        versions
+            .iter()
+            .filter(|available| self.fits(found.game_version(), available))
+            .collect()
+    }
+
     /// The release asset holding `version`'s DLLs.
     fn asset_name(&self, version: &Version) -> String {
         self.asset.replace("{version}", &version.to_string())
@@ -212,6 +236,11 @@ pub struct Version {
 }
 
 impl Version {
+    /// Its first number: 2 for `2.14.16`.
+    pub fn major(&self) -> Option<u32> {
+        self.numbers.first().copied()
+    }
+
     /// `v310.9.16`, `3.1.0a`; `None` for other tags (`fsr3-v3.0.4`).
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.strip_prefix('v').unwrap_or(text);
@@ -666,6 +695,17 @@ pub struct Found {
     pub state: State,
 }
 
+impl Found {
+    /// The game's own version: its DLL's, or for a row Game Manager swapped, the one it had
+    /// before.
+    pub fn game_version(&self) -> Option<&str> {
+        match &self.state {
+            State::Swapped { original, .. } => original.as_deref(),
+            State::Game | State::Replaced => self.version.as_deref(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
     /// The game's own DLL.
@@ -825,6 +865,15 @@ pub fn swap(game: &Game, found: &Found, available: &Available) -> Result<ModsFil
         return Err(Error::NotInstallable(format!(
             "This game's {} is not a 64-bit DLL; only 64-bit builds are offered.",
             kind.name
+        )));
+    }
+    if !kind.fits(found.game_version(), available) {
+        return Err(Error::NotInstallable(format!(
+            "This game's {} is {}, which only versions of its own major version can replace; {} \
+             is not one.",
+            kind.name,
+            found.game_version().unwrap_or("of an unknown version"),
+            available.version
         )));
     }
     let mods = super::load()?;
@@ -1057,6 +1106,53 @@ mod tests {
             offered[0].asset,
             Some(("https://example.com/a.zip".to_owned(), 276_016_170))
         );
+    }
+
+    #[test]
+    fn streamline_takes_only_versions_of_the_games_major_version() {
+        let catalog = shipped();
+        let versions: Vec<Available> = ["v2.14.16", "v2.7.32"]
+            .iter()
+            .map(|tag| Available {
+                version: Version::parse(tag).unwrap(),
+                tag: (*tag).to_owned(),
+                asset: None,
+            })
+            .collect();
+        let found = |version: Option<&str>, state: State| Found {
+            kind: "streamline".to_owned(),
+            folder: PathBuf::from(r"C:\Game"),
+            files: vec!["sl.interposer.dll".to_owned()],
+            version: version.map(str::to_owned),
+            x64: true,
+            state,
+        };
+        let offered = |found: &Found| -> Vec<String> {
+            catalog
+                .kind("streamline")
+                .unwrap()
+                .offered(found, &versions)
+                .iter()
+                .map(|available| available.version.to_string())
+                .collect()
+        };
+        // Streamline 1 can't load Streamline 2.
+        assert!(offered(&found(Some("1.0.0.0"), State::Game)).is_empty());
+        assert_eq!(
+            offered(&found(Some("2.10.3"), State::Game)),
+            ["2.14.16", "2.7.32"]
+        );
+        // An unknown version can't be checked: nothing is offered.
+        assert!(offered(&found(None, State::Game)).is_empty());
+        // Swapped already, the game's own version counts, not the one swapped in.
+        let swapped = State::Swapped {
+            version: "2.7.32".to_owned(),
+            original: Some("1.0.0.0".to_owned()),
+        };
+        assert!(offered(&found(Some("2.7.32"), swapped)).is_empty());
+        // DLSS takes any version.
+        let dlss = catalog.kind("dlss").unwrap();
+        assert!(dlss.fits(Some("2.2.16"), &versions[0]));
     }
 
     #[test]

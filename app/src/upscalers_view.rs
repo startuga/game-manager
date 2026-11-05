@@ -159,7 +159,7 @@ impl GameManager {
                 let Some((game, found)) = self.upscaler_row(&key) else {
                     return;
                 };
-                let Some(available) = self.chosen_version(&key, &found.kind).cloned() else {
+                let Some(available) = self.chosen_version(&key, &found).cloned() else {
                     return;
                 };
                 self.mod_job = Some((game.id.clone(), ModKind::Upscaler));
@@ -301,14 +301,26 @@ impl GameManager {
         Some((game.clone(), found.clone()))
     }
 
-    /// The version picked in the row `key` (the newest until one is picked).
-    fn chosen_version(&self, key: &str, kind: &str) -> Option<&Available> {
+    /// The versions that fit the row's DLLs, newest first (a Streamline 1 game gets no Streamline
+    /// 2).
+    fn offered_versions(&self, found: &Found) -> Vec<&Available> {
         let Some(Ok(library)) = &self.upscalers.library else {
-            return None;
+            return Vec::new();
         };
-        let versions = library.versions.get(kind)?;
+        match (
+            library.catalog.kind(&found.kind),
+            library.versions.get(&found.kind),
+        ) {
+            (Some(kind), Some(versions)) => kind.offered(found, versions),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The version picked in the row `key` (the newest that fits until one is picked).
+    fn chosen_version(&self, key: &str, found: &Found) -> Option<&Available> {
+        let offered = self.offered_versions(found);
         let index = self.upscalers.choice.get(key).copied().unwrap_or(0);
-        versions.get(index).or_else(|| versions.first())
+        offered.get(index).or_else(|| offered.first()).copied()
     }
 
     pub(crate) fn upscalers_expander(&self, game: &Game, context: &ViewContext<Self>) -> View {
@@ -400,8 +412,24 @@ impl GameManager {
             }
             State::Replaced => format!("{version}, the game's again since an update"),
         };
+        let listed = library
+            .and_then(|library| library.versions.get(&found.kind))
+            .is_some_and(|versions| !versions.is_empty());
+        let versions = self.offered_versions(found);
         if !found.x64 {
             state.push_str(": 32-bit, which no version is offered for");
+        } else if listed && versions.is_empty() {
+            // Versions are listed, but none of the game's major version (Streamline 1).
+            let major = found
+                .game_version()
+                .and_then(upscalers::Version::parse)
+                .and_then(|version| version.major());
+            match major {
+                Some(major) => state.push_str(&format!(
+                    ": only versions {major}.x work with it, and none is offered"
+                )),
+                None => state.push_str(": its version is unknown, so no version can be checked"),
+            }
         }
         let place = format!(
             "{} in {}",
@@ -425,10 +453,6 @@ impl GameManager {
             ))
             .tooltip(place);
 
-        let versions = library
-            .and_then(|library| library.versions.get(&found.kind))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
         let chosen = self
             .upscalers
             .choice
@@ -452,6 +476,8 @@ impl GameManager {
             ComboBox::new()
                 .items_source(if has_versions {
                     items
+                } else if listed {
+                    vec!["No version fits this one".to_owned()]
                 } else {
                     vec!["No version listed".to_owned()]
                 })

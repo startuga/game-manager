@@ -81,7 +81,8 @@ as a changed program may not start.
 
 The **Upscalers** expander lists the upscaler DLLs in the game's folder and below:
 - **DLSS** Super Resolution, Ray Reconstruction and Frame Generation.
-- **NVIDIA Streamline**, swapped as one set, as its plugins must match.
+- **NVIDIA Streamline**, swapped as one set, as its plugins must match. A game with Streamline 1
+  can't use Streamline 2, so it is offered none.
 - **FSR 3.1** (DirectX 12, Vulkan) and the **FidelityFX SDK 2** set.
 - **XeSS** Super Resolution (and its DirectX 11 build), Frame Generation and Xe Low Latency.
 
