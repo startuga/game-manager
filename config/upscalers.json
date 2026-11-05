@@ -1,5 +1,5 @@
 {
-  "_doc": "The upscaler DLLs Game Manager swaps in games (core/src/mods/upscalers.rs): technologies, never games. Each kind: its id, name and vendor; files, the first being the one looked for in a game, and with set every file of that folder matching one of them is swapped together (* matches any text), download naming what the library fetches for a set without a game; the GitHub repository with the vendor's own signed DLLs; source, files (each DLL is in folder at the tag) or release (inside the release's asset, {version} standing for the version, in folder); and layouts, the tags (since, and until when the layout changed) that hold the files at folder.",
+  "_doc": "The upscaler DLLs Game Manager swaps in games (core/src/mods/upscalers.rs): technologies, never games. Each kind: its id, name and vendor; files, the first being the one looked for in a game, and with set every file of that folder matching one of them is swapped together (* matches any text), download naming what the library fetches for a set without a game, and sameMajor when only versions of the game's own major version work in it (Streamline 1 games can't load Streamline 2); the GitHub repository with the vendor's own signed DLLs; source, files (each DLL is in folder at the tag) or release (inside the release's asset, {version} standing for the version, in folder); and layouts, the tags (since, and until when the layout changed) that hold the files at folder.",
   "kinds": [
     {
       "id": "dlss",
@@ -31,6 +31,7 @@
       "vendor": "NVIDIA",
       "files": ["sl.interposer.dll", "sl.*.dll"],
       "set": true,
+      "sameMajor": true,
       "repo": "NVIDIA-RTX/Streamline",
       "source": "release",
       "asset": "streamline-sdk-v{version}.zip",

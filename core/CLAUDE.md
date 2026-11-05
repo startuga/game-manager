@@ -169,7 +169,10 @@ holds the rules and facts that span them.
     - intel/xess `bin` (SR since 1.2.0, as 1.0 and 1.1 need more DLLs; DX11, FG, XeLL 2.0.1).
     - FidelityFX-SDK `PrebuiltSignedDLL` (1.1.x) and `Kits/FidelityFX/signedbin` (2.x).
     - Streamline only inside its release archives since 2.7.32, `bin\x64\` (production;
-      `bin\x64\development\` is not).
+      `bin\x64\development\` is not). Older tags hold Git LFS pointers (real files on
+      `media.githubusercontent.com`).
+  - **Streamline 1 games can't load Streamline 2**: the catalog's `sameMajor` offers only
+    versions of the game's own major version, and every listed version is 2.x.
   - **No community archive**: DLSS Swapper's is GPL-3.0, and its author pays for its hosting.
   - **Versions**: the SDK's tag is not always the DLL's version. DLSS SDK 2.2.1 ships DLL
     2.2.16, FidelityFX SDK 1.1.4 DLL 1.0.1, XeSS SDK 3.0.2 DLL 2.0.2. Version strings can read
