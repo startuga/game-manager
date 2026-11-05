@@ -1,0 +1,225 @@
+{
+  "source": "nvidiaProfileInspector's CustomSettingNames.xml, group 05 - Upscaling and Frame Generation",
+  "groups": [
+    {
+      "name": "Latest DLLs",
+      "settings": [
+        {
+          "id": "0x10E41E01",
+          "name": "DLSS Super Resolution DLL",
+          "ngx": "dlss",
+          "values": [
+            { "value": 0, "name": "Off: the game's DLL" },
+            { "value": 1, "name": "On: the driver's latest" }
+          ]
+        },
+        {
+          "id": "0x10E41E02",
+          "name": "DLSS Ray Reconstruction DLL",
+          "ngx": "dlssd",
+          "values": [
+            { "value": 0, "name": "Off: the game's DLL" },
+            { "value": 1, "name": "On: the driver's latest" }
+          ]
+        },
+        {
+          "id": "0x10E41E03",
+          "name": "DLSS Frame Generation DLL",
+          "ngx": "dlssg",
+          "values": [
+            { "value": 0, "name": "Off: the game's DLL" },
+            { "value": 1, "name": "On: the driver's latest" }
+          ]
+        },
+        {
+          "id": "0x10E41E06",
+          "name": "Streamline DLLs",
+          "ngx": "sl_common_override_0",
+          "minDriver": "616.56",
+          "values": [
+            { "value": 0, "name": "Off: the game's DLLs" },
+            { "value": 1, "name": "On: the driver's latest" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Model presets",
+      "settings": [
+        {
+          "id": "0x00634291",
+          "name": "Preset profile",
+          "values": [
+            { "value": 0, "name": "N/A" },
+            { "value": 1, "name": "Recommended" },
+            { "value": 2, "name": "Custom" }
+          ]
+        },
+        {
+          "id": "0x10E41DF3",
+          "name": "Super Resolution preset",
+          "values": [
+            { "value": 0, "name": "N/A: the game's" },
+            { "value": "0x00FFFFFF", "name": "Recommended (latest model)" },
+            { "value": 1, "name": "Preset A (CNN)" },
+            { "value": 2, "name": "Preset B (CNN)" },
+            { "value": 3, "name": "Preset C (CNN)" },
+            { "value": 4, "name": "Preset D (CNN)" },
+            { "value": 5, "name": "Preset E (CNN)" },
+            { "value": 6, "name": "Preset F (CNN)" },
+            { "value": 10, "name": "Preset J (Transformer)" },
+            { "value": 11, "name": "Preset K (Transformer)" },
+            { "value": 12, "name": "Preset L (Transformer 2)" },
+            { "value": 13, "name": "Preset M (Transformer 2)" },
+            { "value": 14, "name": "Preset N" },
+            { "value": 15, "name": "Preset O" }
+          ]
+        },
+        {
+          "id": "0x10E41DF7",
+          "name": "Ray Reconstruction preset",
+          "hint": "Ray Reconstruction's letters name other models than Super Resolution's.",
+          "values": [
+            { "value": 0, "name": "N/A: the game's" },
+            { "value": "0x00FFFFFF", "name": "Recommended (latest model)" },
+            { "value": 1, "name": "Preset A (CNN)" },
+            { "value": 2, "name": "Preset B (CNN)" },
+            { "value": 3, "name": "Preset C (CNN)" },
+            { "value": 4, "name": "Preset D (Transformer)" },
+            { "value": 5, "name": "Preset E (Transformer)" },
+            { "value": 6, "name": "Preset F (Transformer 2)" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Resolution",
+      "settings": [
+        {
+          "id": "0x10AFB768",
+          "name": "Super Resolution mode",
+          "values": [
+            { "value": 3, "name": "N/A: the game's" },
+            { "value": 5, "name": "Ultra Performance" },
+            { "value": 0, "name": "Performance" },
+            { "value": 1, "name": "Balanced" },
+            { "value": 2, "name": "Quality" },
+            { "value": 4, "name": "DLAA" },
+            { "value": 6, "name": "Custom (scaling ratio)" }
+          ]
+        },
+        {
+          "id": "0x10E41DF5",
+          "name": "Super Resolution scaling ratio",
+          "hint": "The share of the output resolution the game renders at, with the mode Custom.",
+          "minDriver": "572.83",
+          "values": [{ "value": 0, "name": "Off" }],
+          "range": {
+            "from": 33,
+            "to": 100,
+            "unit": "%",
+            "named": {
+              "33": "Ultra Performance",
+              "50": "Performance",
+              "58": "Balanced",
+              "67": "Quality",
+              "77": "Ultra Quality",
+              "100": "DLAA"
+            }
+          }
+        },
+        {
+          "id": "0x10BD9423",
+          "name": "Ray Reconstruction mode",
+          "values": [
+            { "value": 3, "name": "N/A: the game's" },
+            { "value": 5, "name": "Ultra Performance" },
+            { "value": 0, "name": "Performance" },
+            { "value": 1, "name": "Balanced" },
+            { "value": 2, "name": "Quality" },
+            { "value": 4, "name": "DLAA" },
+            { "value": 6, "name": "Custom (scaling ratio)" }
+          ]
+        },
+        {
+          "id": "0x10C7D4A2",
+          "name": "Ray Reconstruction scaling ratio",
+          "minDriver": "572.83",
+          "values": [{ "value": 0, "name": "Off" }],
+          "range": {
+            "from": 33,
+            "to": 100,
+            "unit": "%",
+            "named": {
+              "33": "Ultra Performance",
+              "50": "Performance",
+              "58": "Balanced",
+              "67": "Quality",
+              "77": "Ultra Quality",
+              "100": "DLAA"
+            }
+          }
+        },
+        {
+          "id": "0x10E41DF4",
+          "name": "Every mode as DLAA",
+          "values": [
+            { "value": 0, "name": "Off" },
+            { "value": 1, "name": "On" }
+          ]
+        },
+        {
+          "id": "0x10AFB76C",
+          "name": "Performance as Ultra Performance",
+          "values": [
+            { "value": 0, "name": "Off" },
+            { "value": 1, "name": "On" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Frame generation",
+      "settings": [
+        {
+          "id": "0x104D6667",
+          "name": "Frame generation count",
+          "hint": "More than 2x is multi frame generation, for RTX 50 series GPUs.",
+          "values": [
+            { "value": 0, "name": "N/A: the game's" },
+            { "value": 1, "name": "2x" },
+            { "value": 2, "name": "3x" },
+            { "value": 3, "name": "4x" },
+            { "value": 4, "name": "5x" },
+            { "value": 5, "name": "6x" }
+          ]
+        },
+        {
+          "id": "0xB0D384C0",
+          "name": "Smooth Motion",
+          "hint": "The driver's own frame generation, for games without DLSS Frame Generation (RTX 40 and 50 series).",
+          "minDriver": "571.86",
+          "values": [
+            { "value": 0, "name": "Off" },
+            { "value": 1, "name": "On" }
+          ]
+        },
+        {
+          "id": "0xB0CC0875",
+          "name": "Smooth Motion APIs",
+          "minDriver": "571.86",
+          "values": [
+            { "value": 0, "name": "None" },
+            { "value": 1, "name": "DirectX 12" },
+            { "value": 2, "name": "DirectX 11" },
+            { "value": 3, "name": "DirectX 12 and 11" },
+            { "value": 4, "name": "Vulkan" },
+            { "value": 5, "name": "DirectX 12 and Vulkan" },
+            { "value": 6, "name": "DirectX 11 and Vulkan" },
+            { "value": 7, "name": "All" }
+          ]
+        }
+      ]
+    }
+  ]
+}

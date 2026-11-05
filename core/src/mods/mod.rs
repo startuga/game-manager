@@ -10,6 +10,7 @@
 //! up empty, once everything succeeded. Folders of many files (ReShade's shaders) travel as one
 //! `CopyTree` or `DeleteFiles`, so an elevated run's command line stays short.
 
+pub mod dlss_override;
 pub mod dxvk;
 pub mod laa;
 pub mod reshade;
@@ -69,6 +70,11 @@ impl ModsFile {
     pub fn upscalers(&self, id: &str) -> &[upscalers::Swap] {
         self.games.get(id).map_or(&[], |entry| &entry.upscalers)
     }
+
+    /// The game's NVIDIA DLSS overrides, while Game Manager has set some.
+    pub fn dlss_override(&self, id: &str) -> Option<&dlss_override::DlssOverride> {
+        self.games.get(id)?.dlss_override.as_ref()
+    }
 }
 
 /// One game's mods.
@@ -84,6 +90,13 @@ pub struct GameMods {
     /// Upscaler DLLs swapped for another version, one per place in the game's folder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upscalers: Vec<upscalers::Swap>,
+    /// NVIDIA's DLSS overrides in the game's driver profile, with what it held before.
+    #[serde(
+        default,
+        rename = "dlssOverride",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dlss_override: Option<dlss_override::DlssOverride>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -94,6 +107,7 @@ impl GameMods {
             && self.laa.is_none()
             && self.reshade.is_none()
             && self.upscalers.is_empty()
+            && self.dlss_override.is_none()
             && self.other.is_empty()
     }
 }

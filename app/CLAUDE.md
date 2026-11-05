@@ -25,6 +25,14 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
     `UpscalerState`.
   - Scanning walks the game's folder, so it runs only while the expander is open, and is cleared
     after a library scan, a mod job or `ModsLoaded`.
+  - `dlss_override_view.rs` – the expander's last row, NVIDIA overrides, shown with an NVIDIA
+    driver (read once, `UpscalerState::driver`), and its dialog (`ModDialog::Overrides`).
+    - The dialog reads the game's profile when it opens (`OverridesLoaded`); its drop-downs and
+      Save wait for it.
+    - Each drop-down starts with "Original: …" (`mods_view::original_label`, shared with DXVK
+      settings). Save runs `dlss_override::save` as a mod job (`ModKind::Overrides`).
+    - A setting's label and its drop-down share a name, so UI Automation finds the drop-down by
+      `ControlType.ComboBox`.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
   UI-free and unit-tested: put logic there, not in views.
 - `compact.rs` makes every control compact, from `GameManager::create`, before the first

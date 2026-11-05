@@ -5,8 +5,9 @@
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 //! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
 //! side (no cache; the wiki is asked about once a second), and the API chosen in its settings.
-//! `--nvidia` prints each game's NVIDIA driver profile and its Vulkan/OpenGL Present Method and
-//! flags (read only).
+//! `--nvidia` prints the driver's version and its own DLSS DLLs, then each game's NVIDIA driver
+//! profile with its Vulkan/OpenGL Present Method and flags and the DLSS override settings it
+//! holds (read only).
 
 #![allow(
     clippy::expect_used,
@@ -70,7 +71,7 @@ fn main() {
 
     if nvidia {
         use gm_core::nvidia::{SettingState, flags_label, method_label};
-        let show = |setting: SettingState, label: fn(u32) -> String| match setting {
+        let show = |setting: SettingState, label: &dyn Fn(u32) -> String| match setting {
             SettingState {
                 user_value: Some(value),
                 ..
@@ -80,6 +81,13 @@ fn main() {
             } => format!("{} (NVIDIA)", label(value)),
             _ => "global".to_owned(),
         };
+        let overrides = gm_core::mods::dlss_override::catalog().expect("read the overrides");
+        match gm_core::mods::dlss_override::driver(&overrides) {
+            Ok(Some(driver)) => println!("driver {}, its DLLs {:?}", driver.label(), driver.dlls),
+            Ok(None) => println!("no NVIDIA driver"),
+            Err(error) => println!("driver: {error}"),
+        }
+        let ids: Vec<u32> = overrides.settings().map(|setting| setting.id).collect();
         for game in &report.games {
             let Some(exe) = game
                 .program
@@ -90,14 +98,32 @@ fn main() {
             };
             let exe = exe.to_string_lossy();
             match gm_core::nvidia::read(&exe) {
-                Ok(Some(state)) => println!(
-                    "{:<50} {:<28} {:<45} method: {}, flags: {}",
-                    game.name,
-                    exe,
-                    state.profile.as_deref().unwrap_or("-"),
-                    show(state.method, method_label),
-                    show(state.flags, flags_label)
-                ),
+                Ok(Some(state)) => {
+                    println!(
+                        "{:<50} {:<28} {:<45} method: {}, flags: {}",
+                        game.name,
+                        exe,
+                        state.profile.as_deref().unwrap_or("-"),
+                        show(state.method, &method_label),
+                        show(state.flags, &flags_label)
+                    );
+                    let Ok(Some(profile)) = gm_core::nvidia::read_settings(&exe, &ids) else {
+                        continue;
+                    };
+                    for (id, setting) in &profile.settings {
+                        if setting.value.is_none() {
+                            continue;
+                        }
+                        let Some(known) = overrides.setting(*id) else {
+                            continue;
+                        };
+                        println!(
+                            "    {}: {}",
+                            known.name,
+                            show(*setting, &|value| known.label(value))
+                        );
+                    }
+                }
                 Ok(None) => {
                     println!("no NVIDIA driver");
                     break;

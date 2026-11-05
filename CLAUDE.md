@@ -1,8 +1,9 @@
 # Game Manager
 
 Native Windows 11 game launcher and library in Rust. It finds Steam, Epic, GOG, EA and Xbox
-games plus games added by hand, starts them, installs mods (ReShade, DXVK, LAA), and swaps their
-upscaler DLLs (DLSS, Streamline, FSR, XeSS) for other versions.
+games plus games added by hand, starts them, installs mods (ReShade, DXVK, LAA), swaps their
+upscaler DLLs (DLSS, Streamline, FSR, XeSS) for other versions, and sets NVIDIA's driver-level
+DLSS overrides in their driver profiles.
 
 - `app/` – the WinUI 3 window (windows-reactor); see `app/CLAUDE.md`.
 - `core/` (crate `gm-core`) – scanners, launching, configuration, graphics detection and mods,
@@ -47,8 +48,8 @@ upscaler DLLs (DLSS, Streamline, FSR, XeSS) for other versions.
   - `-- -v` prints launch commands, icons, programs and wiki links.
   - `-- --graphics` prints the wiki's and the files' APIs, about 2 s a game.
   - `-- --icons <dir>` saves every icon as a PNG.
-  - `-- --nvidia` prints each game's NVIDIA driver profile with its Present Method and flags (read
-    only).
+  - `-- --nvidia` prints the driver's version and DLLs, then each game's NVIDIA driver profile
+    with its Present Method, flags and DLSS overrides (read only).
   - To verify bitness, compare a `program` with `GetBinaryTypeW` and `dumpbin /headers`. Parse
     scan lines from the right, as names can be wider than their column.
 - **Before finishing a change**: `cargo fmt`, `cargo clippy --all-targets` (no warnings),

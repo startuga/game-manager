@@ -4,6 +4,7 @@
 //! open (Info or settings). WinUI shows one dialog at a time, so the mod buttons wait while any
 //! dialog is open.
 
+use crate::dlss_override_view::OverrideDraft;
 use crate::{GameManager, Message, icon_label};
 use gm_core::graphics::GraphicsApi;
 use gm_core::mods::dxvk::{self, Blocked, DxvkConfig, DxvkVariant, Hud};
@@ -26,6 +27,9 @@ pub(crate) enum ModDialog {
     /// ReShade settings: the variant being chosen.
     ReshadeSettings(ReshadeVariant),
     UpscalerInfo,
+    /// NVIDIA's DLSS overrides for the game's driver profile, being edited.
+    Overrides(OverrideDraft),
+    OverridesInfo,
 }
 
 /// Which mod a job works on, so only its row shows "Working…".
@@ -39,6 +43,8 @@ pub(crate) enum ModKind {
     Deploy,
     /// An upscaler DLL swapped or restored; `UpscalerState::row` says which.
     Upscaler,
+    /// NVIDIA's DLSS overrides saved in the game's driver profile.
+    Overrides,
 }
 
 /// The columns of every mod row, fixed so the rows line up: name, version or status, Info, the
@@ -76,6 +82,34 @@ pub(crate) enum DxvkSettingsEdit {
     PresentFlags(Option<usize>),
     /// Both NVIDIA settings back to "Original".
     ResetNvidia,
+}
+
+/// A driver setting's "Original" item: what was there before Game Manager changed it (`recorded`:
+/// the user's value then, `Some(None)` for none), else what is there now.
+pub(crate) fn original_label(
+    recorded: Option<Option<u32>>,
+    now: SettingState,
+    label: &dyn Fn(u32) -> String,
+) -> String {
+    let text = match (recorded, now) {
+        (Some(Some(value)), _) => label(value),
+        (Some(None), _) => "driver default".to_owned(),
+        (
+            None,
+            SettingState {
+                user_value: Some(value),
+                ..
+            },
+        ) => label(value),
+        (
+            None,
+            SettingState {
+                value: Some(value), ..
+            },
+        ) => format!("{} (NVIDIA)", label(value)),
+        (None, _) => "driver default".to_owned(),
+    };
+    format!("Original: {text}")
 }
 
 /// The value at a drop-down's `index` among `values`, after "Original" (0, `None`).
@@ -707,6 +741,15 @@ impl GameManager {
             .is_open(self.mod_dialog.is_some())
             .on_closed(context.callback(Message::ModDialogClosed));
         match &self.mod_dialog {
+            Some(ModDialog::Overrides(draft)) => self.overrides_dialog(dialog, draft, context),
+            Some(ModDialog::OverridesInfo) => dialog
+                .title("NVIDIA overrides")
+                .close_button_text("OK")
+                .content(
+                    TextBlock::new()
+                        .text(gm_core::mods::dlss_override::INFO)
+                        .text_wrapping(TextWrapping::Wrap),
+                ),
             Some(ModDialog::UpscalerInfo) => {
                 dialog.title("Upscalers").close_button_text("OK").content(
                     TextBlock::new()
@@ -943,29 +986,6 @@ impl GameManager {
                 )
             }
         };
-        // "Original" shows what was there before Game Manager changed it, else what is there now.
-        let original_label =
-            |recorded: Option<Option<u32>>, now: SettingState, label: fn(u32) -> String| {
-                let text = match (recorded, now) {
-                    (Some(Some(value)), _) => label(value),
-                    (Some(None), _) => "driver default".to_owned(),
-                    (
-                        None,
-                        SettingState {
-                            user_value: Some(value),
-                            ..
-                        },
-                    ) => label(value),
-                    (
-                        None,
-                        SettingState {
-                            value: Some(value), ..
-                        },
-                    ) => format!("{} (NVIDIA)", label(value)),
-                    (None, _) => "driver default".to_owned(),
-                };
-                format!("Original: {text}")
-            };
         let now = profile.cloned().unwrap_or_default();
         let enabled = profile.is_some();
         let picker =
@@ -1000,7 +1020,7 @@ impl GameManager {
                         original_label(
                             original.map(|o| o.method),
                             now.method,
-                            nvidia::method_label,
+                            &nvidia::method_label,
                         ),
                         settings.nvidia.present_method,
                         "Vulkan/OpenGL present method",
@@ -1009,7 +1029,7 @@ impl GameManager {
                     TextBlock::new().text("Present method flags"),
                     picker(
                         &PRESENT_FLAG_VALUES,
-                        original_label(original.map(|o| o.flags), now.flags, nvidia::flags_label),
+                        original_label(original.map(|o| o.flags), now.flags, &nvidia::flags_label),
                         settings.nvidia.present_flags,
                         "Present method flags",
                         DxvkSettingsEdit::PresentFlags,

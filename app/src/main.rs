@@ -9,6 +9,7 @@
 #![windows_subsystem = "windows"]
 
 mod compact;
+mod dlss_override_view;
 mod edit;
 mod library;
 mod mods_view;
@@ -1549,6 +1550,7 @@ impl GameManager {
                             Message::ModJobDone(saved.map_err(|e| e.to_string()))
                         });
                     }
+                    Some(ModDialog::Overrides(draft)) => self.save_overrides(game, draft, context),
                     _ => {}
                 }
             }

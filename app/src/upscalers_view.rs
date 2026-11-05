@@ -11,10 +11,14 @@
 //! - **Swap and Restore** are mod jobs (`ModKind::Upscaler`, one at a time like the others);
 //!   `UpscalerState::row` says which row shows "Working…". A swap downloads what the cache lacks,
 //!   so the cache is read again after each job.
+//! - **NVIDIA overrides**: with an NVIDIA driver, a last row opens the driver-level DLSS overrides
+//!   dialog (`dlss_override_view.rs`).
 
+use crate::dlss_override_view::OverrideLibrary;
 use crate::mods_view::{ModDialog, ModKind, UNINSTALL_GLYPH, shown_path};
 use crate::{GameManager, Message};
 use gm_core::Game;
+use gm_core::mods::dlss_override::OverrideState;
 use gm_core::mods::upscalers::{self, Available, Catalog, Downloaded, Found, State};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use windows_reactor::*;
@@ -38,6 +42,10 @@ pub(crate) struct UpscalerState {
     pub download: Option<(String, String)>,
     /// Top bar ▸ Upscalers, while open.
     pub panel: bool,
+    /// NVIDIA's override settings and the driver's facts, read once when the expander opens
+    /// (`Ok(None)`: no NVIDIA driver).
+    pub driver: Option<Result<Option<OverrideLibrary>, String>>,
+    pub driver_pending: bool,
 }
 
 /// The kinds, every kind's versions (newest first) with what GitHub could not list, and the
@@ -105,6 +113,16 @@ pub(crate) enum UpscalerMessage {
     /// The cache after a download, a delete or a mod job, or what failed.
     DownloadsChanged(Result<Vec<Downloaded>, String>),
     OpenCacheFolder,
+    /// NVIDIA's override settings and the driver's facts, or what failed (`dlss_override_view.rs`).
+    DriverLoaded(Result<Option<OverrideLibrary>, String>),
+    ShowOverrides,
+    ShowOverridesInfo,
+    /// A game's driver profile for the overrides dialog, by id (`None`: no NVIDIA driver).
+    OverridesLoaded(String, Result<Option<OverrideState>, String>),
+    /// A setting's drop-down in the dialog: its id and the index picked (0 is "Original");
+    /// `None` is ignored.
+    OverrideChosen(u32, Option<usize>),
+    ResetOverrides,
 }
 
 impl From<UpscalerMessage> for Message {
@@ -240,6 +258,12 @@ impl GameManager {
                     .err()
                     .map(|e| e.to_string());
             }
+            message @ (UpscalerMessage::DriverLoaded(_)
+            | UpscalerMessage::ShowOverrides
+            | UpscalerMessage::ShowOverridesInfo
+            | UpscalerMessage::OverridesLoaded(..)
+            | UpscalerMessage::OverrideChosen(..)
+            | UpscalerMessage::ResetOverrides) => self.handle_overrides(message, context),
         }
     }
 
@@ -272,6 +296,7 @@ impl GameManager {
         if self.upscalers.library.is_none() {
             self.load_upscaler_library(false, context);
         }
+        self.request_driver(context);
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -370,6 +395,7 @@ impl GameManager {
                 );
             }
         }
+        rows.extend(self.overrides_row(game, context));
         Expander::new()
             .is_expanded(self.upscalers.open)
             .on_is_expanded_changed(
