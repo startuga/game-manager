@@ -21,8 +21,9 @@ const HTTPS_PORT: INTERNET_PORT = 443;
 const TIMEOUT_MS: i32 = 10_000;
 /// Larger answers are refused; a wiki page's text or a release's JSON is far smaller.
 const MAX_BODY: usize = 8 * 1024 * 1024;
-/// Larger downloads are refused; a DXVK build is under 50 MB.
-const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
+/// Larger downloads are refused; a DXVK build is under 50 MB, Streamline's release archive about
+/// 280 MB.
+const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 
 /// Who is asking: PCGamingWiki and GitHub ask API users for a descriptive agent with contact
 /// details.

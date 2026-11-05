@@ -18,6 +18,13 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
     `mod_job` then holds that game's id, else an empty one.
   - Profile changes are saved at once (`ReshadeSettings`' profile methods); the selection itself
     only by Deploy. Export puts a ZIP on the clipboard; Import takes one through the Open dialog.
+- `upscalers_view.rs` (`impl GameManager`) – the Upscalers expander: one row per DLL or set
+  found, with a version drop-down, Swap and ✕. `upscalers_panel.rs` – the top bar's Upscalers
+  library (Download, Delete), on `panel_layer` like ReShade's panels.
+  - Their messages are `Message::Upscalers(UpscalerMessage)`, and their state is
+    `UpscalerState`.
+  - Scanning walks the game's folder, so it runs only while the expander is open, and is cleared
+    after a library scan, a mod job or `ModsLoaded`.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
   UI-free and unit-tested: put logic there, not in views.
 - `compact.rs` makes every control compact, from `GameManager::create`, before the first

@@ -1,7 +1,8 @@
 # Game Manager
 
 Native Windows 11 game launcher and library in Rust. It finds Steam, Epic, GOG, EA and Xbox
-games plus games added by hand, starts them, and installs mods (ReShade, DXVK, LAA).
+games plus games added by hand, starts them, installs mods (ReShade, DXVK, LAA), and swaps their
+upscaler DLLs (DLSS, Streamline, FSR, XeSS) for other versions.
 
 - `app/` – the WinUI 3 window (windows-reactor); see `app/CLAUDE.md`.
 - `core/` (crate `gm-core`) – scanners, launching, configuration, graphics detection and mods,
@@ -68,7 +69,7 @@ games plus games added by hand, starts them, and installs mods (ReShade, DXVK, L
   - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
   - The user's own runs are not redirected.
 - **Live downloads**: `cargo test -p gm-core live_builds -- --ignored` fetches each ReShade
-  variant and the default effects.
+  variant and the default effects; `live_upscalers` one version of each upscaler DLL.
 - **The user's files**: back up `%APPDATA%\Game Manager\*.json` before a check and restore them
   after, comparing first that only the test changed them.
 - **The user's window**: never close or kill it. If `target\debug\app.exe` is locked, build into
@@ -80,6 +81,8 @@ games plus games added by hand, starts them, and installs mods (ReShade, DXVK, L
   - Add an entry to `custom-games.json` and `"graphicsApi": "DirectX9"` to `game-settings.json`.
   - Drive Install, Settings, Reinstall and Uninstall, then compare the folder with how it started.
   - `app.exe --file-ops <percent-encoded ops>` can be run directly (not elevated).
+  - **Upscalers**: give the throwaway game real old vendor DLLs (from the upscaler cache after
+    `live_upscalers`) in a subfolder, then swap, swap again and restore, and compare the folder.
   - **ReShade ▸ Shaders' Deploy and closing ReShade ▸ Addons with "All games with ReShade" reach
     every game with ReShade in `mods.json`** that has no choice of its own, the user's real ones
     too. Before clicking them, check that only throwaway games have a `reshade` record (or test

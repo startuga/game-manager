@@ -33,6 +33,9 @@ holds the rules and facts that span them.
     selection and add-ons, games' own ones, and profiles).
   - `mods/reshade_addons.rs` (ReShade ▸ Addons: ReShade's `Addons.ini`, the shipped
     `config/reshade-addons.json` and the user's own; the add-on cache).
+  - `mods/upscalers.rs` (DLSS, Streamline, FSR 3.1+, XeSS DLLs: the shipped
+    `config/upscalers.json`, the vendors' versions, the cache, `scan`, `swap`, `restore`; swaps
+    are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).
   - `nvidia.rs` (the game's NVIDIA driver profile: Present Method and its flags, through NVAPI).
@@ -41,7 +44,7 @@ holds the rules and facts that span them.
   - `json_file.rs` (where files live, load/save).
   - `security.rs` (the user's SID, whether elevated, granting file rights).
   - `clipboard.rs` (a file on the clipboard, `CF_HDROP`, through a message-only window).
-  - `version_info.rs` (a file's `ProductName`/`ProductVersion`).
+  - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
   - `text.rs`.
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v`, `--graphics`, `--icons <dir>`.
@@ -160,3 +163,16 @@ holds the rules and facts that span them.
   - **Add-ons**: some entries of `Addons.ini` link a plain `.addon` as `DownloadUrl64`; it is
     kept as `.addon64`. Its links can be broken (ShaderToggler's 32-bit one): one bitness that
     downloads is enough. `live_addons` downloads every add-on. A No Addons build gets none.
+- **Upscalers**:
+  - **Sources**: only the vendors' own signed DLLs, from their GitHub repositories at each tag.
+    - NVIDIA/DLSS `lib/Windows_x86_64/rel` (SR since 2.2.1, RR 310.1.0, FG 310.4.0).
+    - intel/xess `bin` (SR since 1.2.0, as 1.0 and 1.1 need more DLLs; DX11, FG, XeLL 2.0.1).
+    - FidelityFX-SDK `PrebuiltSignedDLL` (1.1.x) and `Kits/FidelityFX/signedbin` (2.x).
+    - Streamline only inside its release archives since 2.7.32, `bin\x64\` (production;
+      `bin\x64\development\` is not).
+  - **No community archive**: DLSS Swapper's is GPL-3.0, and its author pays for its hosting.
+  - **Versions**: the SDK's tag is not always the DLL's version. DLSS SDK 2.2.1 ships DLL
+    2.2.16, FidelityFX SDK 1.1.4 DLL 1.0.1, XeSS SDK 3.0.2 DLL 2.0.2. Version strings can read
+    "2,14,16,0", so the fixed file version is used.
+  - `cargo test -p gm-core live_upscalers -- --ignored --nocapture` downloads the oldest
+    version of every kind (about 450 MB, Streamline's archive included) and checks each DLL.

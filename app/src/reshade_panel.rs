@@ -783,13 +783,19 @@ impl GameManager {
     /// The panel layer, while one is open: a dimmed backdrop and the panel centred on it.
     pub(crate) fn reshade_panel_view(&self, context: &ViewContext<Self>) -> Option<View> {
         let panel = self.reshade_panel.as_ref()?;
-        let (width, height) = self.window_size;
-        let width = (width - 2.0 * PANEL_MARGIN).clamp(480.0, PANEL_WIDTH);
-        let height = (height - 2.0 * PANEL_MARGIN).clamp(360.0, PANEL_HEIGHT);
         let content = match &panel.kind {
             PanelKind::Shaders(draft) => self.shaders_panel(panel, draft.as_ref(), context),
             PanelKind::Addons(enabled) => self.addons_panel(panel, enabled.as_ref(), context),
         };
+        Some(self.panel_layer(content))
+    }
+
+    /// A panel drawn over the window (ReShade's, the upscalers'): a dimmed backdrop that takes
+    /// every click, and `content` in a card centred on it, as large as the window allows.
+    pub(crate) fn panel_layer(&self, content: View) -> View {
+        let (width, height) = self.window_size;
+        let width = (width - 2.0 * PANEL_MARGIN).clamp(480.0, PANEL_WIDTH);
+        let height = (height - 2.0 * PANEL_MARGIN).clamp(360.0, PANEL_HEIGHT);
         let card = Border::new()
             .width(width)
             .height(height)
@@ -803,13 +809,11 @@ impl GameManager {
             .content(content);
         // The backdrop has a background, so it takes the clicks meant for what is under it.
         let backdrop = Border::new().background(Color::argb(0x99, 0, 0, 0));
-        Some(
-            Grid::new()
-                .grid_row(0)
-                .grid_row_span(3)
-                .children((backdrop, card))
-                .into(),
-        )
+        Grid::new()
+            .grid_row(0)
+            .grid_row_span(3)
+            .children((backdrop, card))
+            .into()
     }
 
     /// A panel's title with "Apply to" beside it, and under them what applying does: for every
