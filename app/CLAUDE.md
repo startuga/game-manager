@@ -31,6 +31,12 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
       Save wait for it.
     - Each drop-down starts with "Original: …" (`mods_view::original_label`, shared with DXVK
       settings). Save runs `dlss_override::save` as a mod job (`ModKind::Overrides`).
+    - The NVIDIA app writes the same settings. When the profile no longer holds what Game
+      Manager set (`OverrideState::changed_elsewhere`), a warning names them, and Save sets them
+      again even with the choice unchanged.
+    - To change a profile from outside in a check, run `app.exe --nvidia-ops` with a plan
+      (`[uri]::EscapeDataString` of its JSON). An empty plan (`{"exe":"x.exe"}`) exits
+      `0xE00000A6` when no profile holds `x.exe`.
     - A setting's label and its drop-down share a name, so UI Automation finds the drop-down by
       `ControlType.ComboBox`.
 - `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
