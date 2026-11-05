@@ -1,6 +1,8 @@
 //! A program's or DLL's version information (the "Details" tab of its file properties): the name
-//! for a newly added game, and which mod a DLL in a game's folder belongs to (DXVK's say
-//! "DXVK" as their product name, ReShade's "ReShade").
+//! for a newly added game, which mod a DLL in a game's folder belongs to (DXVK's say "DXVK" as
+//! their product name, ReShade's "ReShade"), and an upscaler DLL's version (its fixed file
+//! version, which every vendor sets, unlike the strings: Streamline's FileVersion string reads
+//! "2,14,16,0").
 
 use std::path::Path;
 use windows::Win32::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
@@ -15,6 +17,32 @@ pub(crate) fn product_name(file: &Path) -> Option<String> {
 pub(crate) fn product_version(file: &Path) -> Option<String> {
     VersionInfo::read(file)?.string("ProductVersion")
 }
+
+/// The file's fixed file version (`VS_FIXEDFILEINFO`), as four numbers: `[310, 9, 16, 0]`.
+pub(crate) fn file_version(file: &Path) -> Option<[u16; 4]> {
+    let mut info = VersionInfo::read(file)?;
+    // The root block is a VS_FIXEDFILEINFO: its signature, its structure's version, then the
+    // file version's high and low 32 bits. Read as u16 pairs, as the block is only u16-aligned.
+    let words = info.query(r"\")?;
+    let dword = |index: usize| -> Option<u32> {
+        let low = u32::from(*words.get(index * 2)?);
+        let high = u32::from(*words.get(index * 2 + 1)?);
+        Some(low | high << 16)
+    };
+    if dword(0)? != FIXED_FILE_INFO_SIGNATURE {
+        return None;
+    }
+    let (high, low) = (dword(2)?, dword(3)?);
+    Some([
+        (high >> 16) as u16,
+        high as u16,
+        (low >> 16) as u16,
+        low as u16,
+    ])
+}
+
+/// `VS_FIXEDFILEINFO::dwSignature`.
+const FIXED_FILE_INFO_SIGNATURE: u32 = 0xFEEF_04BD;
 
 /// A program's version-information block.
 pub(crate) struct VersionInfo {

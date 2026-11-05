@@ -15,7 +15,7 @@ use std::path::Path;
 use windows_reactor::*;
 
 /// "Cancel" glyph from Segoe Fluent Icons, for Uninstall.
-const UNINSTALL_GLYPH: &str = "\u{E711}";
+pub(crate) const UNINSTALL_GLYPH: &str = "\u{E711}";
 
 /// The open mod dialog.
 pub(crate) enum ModDialog {
@@ -25,6 +25,7 @@ pub(crate) enum ModDialog {
     ReshadeInfo,
     /// ReShade settings: the variant being chosen.
     ReshadeSettings(ReshadeVariant),
+    UpscalerInfo,
 }
 
 /// Which mod a job works on, so only its row shows "Working…".
@@ -36,6 +37,8 @@ pub(crate) enum ModKind {
     /// ReShade's shaders and add-ons going to games with ReShade: to every game when the job's
     /// game id is empty.
     Deploy,
+    /// An upscaler DLL swapped or restored; `UpscalerState::row` says which.
+    Upscaler,
 }
 
 /// The columns of every mod row, fixed so the rows line up: name, version or status, Info, the
@@ -186,17 +189,18 @@ impl GameManager {
         });
     }
 
-    /// Any dialog is open: WinUI shows one at a time. The ReShade panel counts too: what is
-    /// under it cannot be clicked.
+    /// Any dialog is open: WinUI shows one at a time. The ReShade and Upscalers panels count too:
+    /// what is under them cannot be clicked.
     pub(crate) fn dialog_open(&self) -> bool {
         self.mod_dialog.is_some()
             || self.draft.is_some()
             || self.removing.is_some()
             || self.reshade_panel.is_some()
+            || self.upscalers.panel
     }
 
     /// Any work that the mod buttons wait for.
-    fn mods_busy(&self) -> bool {
+    pub(crate) fn mods_busy(&self) -> bool {
         self.mod_job.is_some() || self.dialog_open() || self.scanning || self.saving || self.picking
     }
 
@@ -703,6 +707,13 @@ impl GameManager {
             .is_open(self.mod_dialog.is_some())
             .on_closed(context.callback(Message::ModDialogClosed));
         match &self.mod_dialog {
+            Some(ModDialog::UpscalerInfo) => {
+                dialog.title("Upscalers").close_button_text("OK").content(
+                    TextBlock::new()
+                        .text(gm_core::mods::upscalers::INFO)
+                        .text_wrapping(TextWrapping::Wrap),
+                )
+            }
             Some(ModDialog::LaaInfo) => {
                 let this_game = self
                     .selected_game()
@@ -1086,7 +1097,7 @@ impl GameManager {
 }
 
 /// `path` inside the install folder when it can be shown that way ("bin\x64").
-fn shown_path(game: &Game, path: &Path) -> String {
+pub(crate) fn shown_path(game: &Game, path: &Path) -> String {
     let shown = game
         .install_dir
         .as_deref()

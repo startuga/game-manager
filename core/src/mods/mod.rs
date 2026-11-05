@@ -17,6 +17,7 @@ pub mod reshade_addons;
 pub mod reshade_layer;
 pub mod reshade_settings;
 pub mod shader_packs;
+pub mod upscalers;
 
 pub use crate::elevate::FILE_OPS_ARG;
 use crate::text::{fnv1a, percent_decode, percent_encode};
@@ -63,6 +64,11 @@ impl ModsFile {
     pub fn reshade(&self, id: &str) -> Option<&reshade::ReshadeState> {
         self.games.get(id)?.reshade.as_ref()
     }
+
+    /// The game's upscaler DLLs Game Manager swapped, one per place.
+    pub fn upscalers(&self, id: &str) -> &[upscalers::Swap] {
+        self.games.get(id).map_or(&[], |entry| &entry.upscalers)
+    }
 }
 
 /// One game's mods.
@@ -75,13 +81,20 @@ pub struct GameMods {
     pub laa: Option<Installed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reshade: Option<reshade::ReshadeState>,
+    /// Upscaler DLLs swapped for another version, one per place in the game's folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upscalers: Vec<upscalers::Swap>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GameMods {
     fn is_empty(&self) -> bool {
-        self.dxvk.is_none() && self.laa.is_none() && self.reshade.is_none() && self.other.is_empty()
+        self.dxvk.is_none()
+            && self.laa.is_none()
+            && self.reshade.is_none()
+            && self.upscalers.is_empty()
+            && self.other.is_empty()
     }
 }
 

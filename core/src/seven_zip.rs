@@ -43,6 +43,32 @@ pub(crate) fn extract(archive: &Path, dest: &Path) -> Result<()> {
     fs::remove_dir_all(&inner).map_err(Error::io(&inner))
 }
 
+/// Unpacks only the files of `archive` that match `filters` (paths inside it, `*` matching any
+/// text: `bin\x64\sl.*.dll`) into `dest`, without their folders.
+pub(crate) fn extract_matching(archive: &Path, dest: &Path, filters: &[String]) -> Result<()> {
+    let tool = tool()?;
+    let mut out = OsString::from("-o");
+    out.push(dest);
+    let status = Command::new(&tool)
+        .args(["e", "-y", "-bso0", "-bsp0", "-bse0"])
+        .arg(out)
+        .arg(archive)
+        .args(filters)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW as u32)
+        .status()
+        .map_err(Error::io(&tool))?;
+    match status.code() {
+        Some(0 | 1) => Ok(()),
+        code => Err(Error::Extract {
+            archive: archive.to_path_buf(),
+            code: code.unwrap_or(-1),
+        }),
+    }
+}
+
 /// Packs `folder` (with its name) into the ZIP `archive`, replacing one that is there.
 pub(crate) fn zip_folder(folder: &Path, archive: &Path) -> Result<()> {
     let tool = tool()?;

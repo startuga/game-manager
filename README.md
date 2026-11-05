@@ -79,6 +79,19 @@ program may use 4 GB of memory instead of 2 GB, and **Enable LAA** to patch it (
 kept as `<program>.gm-backup`, and ✕ puts it back). Programs wrapped by Steam's DRM get a warning,
 as a changed program may not start.
 
+The **Upscalers** expander lists the upscaler DLLs in the game's folder and below:
+- **DLSS** Super Resolution, Ray Reconstruction and Frame Generation.
+- **NVIDIA Streamline**, swapped as one set, as its plugins must match.
+- **FSR 3.1** (DirectX 12, Vulkan) and the **FidelityFX SDK 2** set.
+- **XeSS** Super Resolution (and its DirectX 11 build), Frame Generation and Xe Low Latency.
+
+Each shows its version. Pick another of its vendor's versions and **Swap** to upgrade or downgrade
+it without a game update; ✕ puts the game's own DLL back. The versions are NVIDIA's, AMD's and
+Intel's own, from their GitHub repositories, and each DLL must carry a valid signature. FSR 2 and
+3.0, and DLSS 1, are built into games and can't be swapped. The top bar's **Upscalers** button
+lists every version with Download and Delete. An online game's anti-cheat may object to changed
+files, and a game update puts the game's own DLL back.
+
 Files of the game that a mod replaces are kept as `<name>.gm-backup` and put back on uninstall.
 When a game is in a protected folder (such as `C:\Program Files`), Windows asks for administrator
 rights. What is installed is saved in `%APPDATA%\Game Manager\mods.json`; downloaded builds are

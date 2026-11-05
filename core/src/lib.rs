@@ -21,6 +21,7 @@ pub mod pe;
 mod security;
 mod seven_zip;
 mod shortcut;
+mod signature;
 pub mod snapshot;
 pub mod steam;
 mod text;

@@ -1,7 +1,8 @@
 //! Game Manager's window: a WinUI 3 app built with windows-reactor (Elm style: `Message`s go
 //! through `update`, `render` draws the state). Top bar, library sidebar and the selected game's
-//! panel with its Game settings, Enhancements and Mods expanders; `mods_view.rs` holds the mod
-//! expanders, `edit.rs` and `library.rs` the UI-free logic. Started with `--file-ops`,
+//! panel with its Game settings, Enhancements, Mods and Upscalers expanders; `mods_view.rs` holds
+//! the mod expanders, `upscalers_view.rs` and `upscalers_panel.rs` the upscaler DLLs, `edit.rs`
+//! and `library.rs` the UI-free logic. Started with `--file-ops`,
 //! `--reshade-ops` or `--nvidia-ops`, it is the copy that changes a protected game folder,
 //! ReShade's Vulkan layer or NVIDIA driver settings as administrator, and shows no window.
 
@@ -12,6 +13,8 @@ mod edit;
 mod library;
 mod mods_view;
 mod reshade_panel;
+mod upscalers_panel;
+mod upscalers_view;
 #[allow(
     clippy::undocumented_unsafe_blocks,
     clippy::multiple_unsafe_ops_per_block,
@@ -39,6 +42,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
+use upscalers_view::{UpscalerMessage, UpscalerState};
 use windows::Win32::{MB_ICONERROR, MB_OK, MessageBoxW, STATEREPOSITORY_E_DEPENDENCY_NOT_RESOLVED};
 use windows::core::{HSTRING, w};
 use windows_pickers::OpenFilePicker;
@@ -233,6 +237,8 @@ enum Message {
     UseSharedChoice,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(ContentDialogResult),
+    /// The Upscalers expander and panel (`upscalers_view.rs`).
+    Upscalers(UpscalerMessage),
 }
 
 /// A game's right-click menu: which game, and where the pointer was (window DIPs).
@@ -290,6 +296,8 @@ struct GameManager {
     reshade_pending: HashSet<String>,
     /// ReShade ▸ Shaders, while open.
     reshade_panel: Option<ReshadePanel>,
+    /// The upscaler DLLs found in games, their versions and cache, and the Upscalers panel.
+    upscalers: UpscalerState,
     /// What the panels read: read again each time one opens.
     shader_library: Option<Result<ShaderLibrary, String>>,
     addon_library: Option<Result<AddonLibrary, String>>,
@@ -458,6 +466,7 @@ impl GameManager {
                     .opacity(0.7)
                     .vertical_alignment(VerticalAlignment::Center),
                 self.reshade_button(context),
+                self.upscalers_button(context),
                 Button::new()
                     .is_enabled(self.can_add_game())
                     .on_click(context.message(Message::AddGame))
@@ -891,6 +900,7 @@ impl GameManager {
                         self.game_settings(game, context),
                         self.enhancements_expander(game, context),
                         self.mods_expander(game, context),
+                        self.upscalers_expander(game, context),
                     )),
             )
             .content_dialog(self.mod_dialog_view(context))
@@ -1186,6 +1196,7 @@ impl Component for GameManager {
             reshade: HashMap::new(),
             reshade_pending: HashSet::new(),
             reshade_panel: None,
+            upscalers: UpscalerState::default(),
             shader_library: None,
             addon_library: None,
             packs_downloading: HashSet::new(),
@@ -1216,6 +1227,8 @@ impl Component for GameManager {
         self.request_laa(context);
         // What the ReShade row needs from the disk, whenever it is unknown.
         self.request_reshade(context);
+        // The Upscalers expander's DLLs, while it is open.
+        self.request_upscalers(context);
     }
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
@@ -1237,6 +1250,7 @@ impl GameManager {
                 // A program may have changed (an update, or another one chosen).
                 self.laa.clear();
                 self.reshade.clear();
+                self.upscalers.found.clear();
                 let errors: Vec<String> =
                     self.compact_error.iter().cloned().chain(errors).collect();
                 self.error = (!errors.is_empty()).then(|| errors.join("\n"));
@@ -1315,9 +1329,10 @@ impl GameManager {
             Message::ModsLoaded(Ok(mods)) => {
                 self.mods = mods;
                 // The LAA status depends on what mods.json says was patched, ReShade's on
-                // whether it lists DXVK.
+                // whether it lists DXVK, the upscalers' on what was swapped.
                 self.laa.clear();
                 self.reshade.clear();
+                self.upscalers.found.clear();
             }
             Message::ModsLoaded(Err(e)) => self.error = Some(e),
             Message::ModsExpanded(open) => self.mods_open = open,
@@ -1347,6 +1362,7 @@ impl GameManager {
                 self.mod_job = None;
                 self.laa.clear();
                 self.reshade.clear();
+                self.upscaler_job_done(context);
                 match done {
                     Ok(mods) => self.mods = mods,
                     Err(e) => {
@@ -1458,6 +1474,7 @@ impl GameManager {
                 self.handle_target(message, context);
             }
             Message::EnhancementsExpanded(open) => self.enhancements_open = open,
+            Message::Upscalers(message) => self.handle_upscalers(message, context),
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);
                 self.reshade.insert(id, status);
@@ -1793,6 +1810,7 @@ impl GameManager {
         ];
         layers.extend(self.row_menu_view(context));
         layers.extend(self.reshade_panel_view(context));
+        layers.extend(self.upscalers_panel_view(context));
         let window = Grid::new()
             .rows([GridLength::Auto, GridLength::Auto, GridLength::Star(1.0)])
             .children(layers);
@@ -1817,6 +1835,8 @@ impl GameManager {
             Some(Message::CloseRowMenu)
         } else if self.reshade_panel.is_some() {
             Some(Message::CloseReshadePanel)
+        } else if self.upscalers.panel {
+            Some(Message::Upscalers(UpscalerMessage::ClosePanel))
         } else {
             None
         };
