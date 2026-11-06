@@ -510,6 +510,8 @@ impl GameManager {
                 .selected_index(Some(chosen))
                 .is_enabled(has_versions && !busy && found.x64)
                 .horizontal_alignment(HorizontalAlignment::Stretch)
+                // A ComboBox sits at the top of a taller row, unlike Swap and ✕.
+                .vertical_alignment(VerticalAlignment::Center)
                 .automation_name(format!("Version of {name}"))
                 .on_selection_changed(context.callback(move |index: Option<usize>| {
                     UpscalerMessage::VersionChosen(key.clone(), index).into()
