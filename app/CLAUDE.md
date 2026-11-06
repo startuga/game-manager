@@ -122,6 +122,8 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
   - Disabled controls show no tooltip, so reasons go in a hint line.
   - `.tooltip()` returns a `View`.
   - Use `GridLength::Auto.min(px)` for a column that must grow.
+  - A `ComboBox` aligns to the top of its cell by default, while a `Button` is centered. In a
+    row with a two-line label, give the ComboBox `VerticalAlignment::Center`.
 - `windows_pickers::OpenFilePicker::request` shows the Open dialog for the app's window, which is
   disabled while it is open.
 

@@ -489,6 +489,8 @@ impl GameManager {
                     .selected_index(Some(selected))
                     .is_enabled(state.is_some())
                     .horizontal_alignment(HorizontalAlignment::Stretch)
+                    // Beside a name that wraps to two lines.
+                    .vertical_alignment(VerticalAlignment::Center)
                     .automation_name(setting.name.as_str())
                     .on_selection_changed(context.callback(move |index: Option<usize>| {
                         UpscalerMessage::OverrideChosen(id, index).into()
