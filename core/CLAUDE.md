@@ -37,11 +37,18 @@ holds the rules and facts that span them.
     `config/upscalers.json`, the vendors' versions, the cache, `scan`, `swap`, `restore`; swaps
     are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`).
   - `seven_zip.rs` (the shipped 7-Zip).
-  - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops`).
+  - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops` /
+    `--gpu-scheduling`).
   - `nvidia.rs` (the game's NVIDIA driver profile through NVAPI: any DWORD settings read,
     planned and saved, with DXVK's Present Method and its flags; the driver's version and its NGX
     DLLs) and `mods/dlss_override.rs` (the DLSS overrides: `config/nvidia-overrides.json`,
     recorded in `mods.json` under `dlssOverride`).
+- **My PC** (`pc/`, registry and Win32, no WMI):
+  - `pc/mod.rs` (`Snapshot`, each part read on its own).
+  - `pc/hardware.rs` (processor, graphics cards, memory, Windows, board, drives).
+  - `pc/smbios.rs` (memory modules from the SMBIOS table).
+  - `pc/displays.rs` (displays, modes, HDR, colour profiles, DDC/CI brightness, and changing them).
+  - `pc/switches.rs` (GPU scheduling, Game Mode, windowed optimizations, Auto HDR).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
   - `json_file.rs` (where files live, load/save).
@@ -50,7 +57,7 @@ holds the rules and facts that span them.
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
   - `text.rs`.
   - `com.rs` (`ComGuard`).
-- `examples/scan.rs` – headless check: `-v`, `--graphics`, `--icons <dir>`.
+- `examples/scan.rs` – headless check: `-v`, `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`.
 
 ## Scanning
 - `scan_all` runs these steps in order:
@@ -98,6 +105,10 @@ holds the rules and facts that span them.
 - **windows-rs bindings**: Win32 features are named after C headers (`core/Cargo.toml`). The
   bindings come from windows-rs master and change shape between commits (constants' integer
   types, `Option` vs raw pointers): fix call sites to the new signatures.
+  - A function the crate has no binding for (dxva2's monitor API) is declared in its module with
+    `#[link(name = "…")] unsafe extern "system"`, not through another windows-rs crate.
+  - A function newer than Windows 10 1703 (mscms's per-display colour profiles) is loaded with
+    `GetProcAddress`: an import would stop `app.exe` from starting on older Windows.
 
 ## Facts learned the hard way
 - **Graphics APIs**: PCGamingWiki first, because files alone mislead. On 37 games:
@@ -108,6 +119,17 @@ holds the rules and facts that span them.
 
   The answer is a suggestion; the user picks one API in Game settings, so detection keeps no
   cross-checks.
+- **My PC** (each fact is in its module's `//!` doc too):
+  - `ProductName` still says "Windows 10" on Windows 11: build 22000 and later are named 11.
+  - NVIDIA's driver number is the last five digits of Windows' driver version (32.0.16.2112 is
+    621.12).
+  - The display class key keeps drivers of cards no longer plugged in, and virtual adapters
+    (Parsec) have no PCI `VEN_`: a card counts when `EnumDisplayDevicesW` lists it.
+  - SMBIOS memory sizes with bit 15 set are in KB; 32 GB and larger modules use the extended size.
+  - `HwSchMode` is 2 for GPU scheduling on, 1 off; with no value it isn't offered.
+  - `DirectXUserGlobalSettings` flags can hold more bits (2097): only the lowest is on or off.
+  - `scan --pc` read everything here in about 50 ms; DDC/CI brightness is slower, and a TV
+    over HDMI has none.
 - **Stores**:
   - The EA app's data is encrypted: there is no EA-app launch link.
   - Xbox packaged games start only through `shell:AppsFolder\<family>!<app>`.

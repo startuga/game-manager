@@ -16,6 +16,7 @@ mod json_file;
 mod launcher;
 pub mod mods;
 pub mod nvidia;
+pub mod pc;
 pub mod pcgamingwiki;
 pub mod pe;
 mod security;

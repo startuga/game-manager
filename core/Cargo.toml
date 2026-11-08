@@ -18,7 +18,9 @@ thiserror = { workspace = true }
 # coml2api), web requests (winhttp), Xbox packages and their architecture (WinRT
 # Management_Deployment, ApplicationModel, System), mod files as administrator and 7-Zip (synchapi,
 # processthreadsapi, handleapi, winbase, winerror), who runs it and file permissions (winnt,
-# securitybaseapi, sddl, aclapi, accctrl), and the signatures of upscaler DLLs (wintrust).
+# securitybaseapi, sddl, aclapi, accctrl), the signatures of upscaler DLLs (wintrust), and My PC:
+# hardware, memory modules and drives (sysinfoapi, fileapi), displays (wingdi) and their colour
+# profiles (icm).
 windows = { workspace = true, features = [
     "shellapi", "winuser",
     "wincodec", "shlobj_core", "shlwapi", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
@@ -30,5 +32,6 @@ windows = { workspace = true, features = [
     "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror",
     "winnt", "securitybaseapi", "sddl", "aclapi", "accctrl",
     "wintrust",
+    "sysinfoapi", "fileapi", "wingdi", "icm",
 ] }
 windows-registry = { workspace = true }

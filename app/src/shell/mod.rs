@@ -40,12 +40,12 @@ use windows::Win32::{
     HTMINBUTTON, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED, SW_SHOWNORMAL,
     SetCapture, SetCursor, SetFocus, SetProcessDpiAwarenessContext, SetTimer, ShowWindow,
     TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_DOWN, VK_END, VK_ESCAPE,
-    VK_HOME, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_COMMAND,
-    WM_CTLCOLOREDIT, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW,
+    VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    WM_ACTIVATEAPP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER,
+    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -522,7 +522,7 @@ impl<A: App> Shell<A> {
             WM_GETOBJECT => self.uia.get_object(self.hwnd, wparam, lparam),
             WM_UIA_ACTION => {
                 if let Some(action) = Action::from_wparam(wparam) {
-                    self.uia_action(action, lparam as u64);
+                    self.uia_action(action, lparam as u64, (wparam >> 8) as u32);
                 }
                 Some(0)
             }
@@ -656,7 +656,8 @@ impl<A: App> Shell<A> {
         }
     }
 
-    fn uia_action(&mut self, action: Action, id: u64) {
+    /// What UI Automation asked of an element; `value` is the one RangeValue's SetValue gave.
+    fn uia_action(&mut self, action: Action, id: u64, value: u32) {
         let Some(frame) = &self.frame else {
             return;
         };
@@ -668,8 +669,10 @@ impl<A: App> Shell<A> {
                 let message = hit.el.enabled.then(|| hit.el.on_click.clone()).flatten();
                 self.dispatch_some(message);
             }
+            // Like the keyboard, these scroll the element into view first.
             Action::Focus => {
                 self.ui.focus = Some(id);
+                self.ui.scroll_into_view(frame, id);
                 if !self.edits.focus(id) {
                     self.stale = true;
                 }
@@ -677,6 +680,7 @@ impl<A: App> Shell<A> {
             Action::Expand => {
                 if let Kind::DropDown { selected, .. } = &hit.el.kind {
                     let selected = *selected;
+                    self.ui.scroll_into_view(frame, id);
                     self.ui.open_dropdown = Some(id);
                     self.ui.dropdown_hover = selected;
                     self.stale = true;
@@ -685,6 +689,18 @@ impl<A: App> Shell<A> {
             Action::Collapse => {
                 self.ui.open_dropdown = None;
                 self.stale = true;
+            }
+            Action::SetValue => {
+                let message = match &hit.el.kind {
+                    Kind::Slider {
+                        min,
+                        max,
+                        on_change,
+                        ..
+                    } if hit.el.enabled => Some(on_change(value.clamp(*min, *max))),
+                    _ => None,
+                };
+                self.dispatch_some(message);
             }
         }
     }
@@ -734,6 +750,10 @@ fn key_of(key: i32, shift: bool) -> Option<Key> {
         VK_ESCAPE => Key::Escape,
         VK_UP => Key::Up,
         VK_DOWN => Key::Down,
+        VK_LEFT => Key::Left,
+        VK_RIGHT => Key::Right,
+        VK_PRIOR => Key::PageUp,
+        VK_NEXT => Key::PageDown,
         VK_HOME => Key::Home,
         VK_END => Key::End,
         _ => return None,

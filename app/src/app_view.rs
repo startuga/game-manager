@@ -6,6 +6,7 @@
 //! Layouts over maximize. Dialogs are a dimmed, modal layer with a card centred on it: nothing
 //! under a dialog reacts, and Escape is its Cancel.
 
+use crate::my_pc::MyPcMessage;
 use crate::shell::ctx::WindowCommand;
 use crate::shell::{CAPTION_CLOSE, CAPTION_DRAG, CAPTION_MAX, CAPTION_MIN, WindowInfo};
 use crate::ui::el::{Align, El, Font, TextAlign, col, glyph, layers, row, scroll, spacer, text};
@@ -36,7 +37,7 @@ impl GameManager {
         }
         let grip = resize_grip("Resize the library", Message::SidebarWidth);
         page.push(
-            row([self.sidebar(), grip, self.page_view()])
+            row([self.sidebar(), grip, self.page_view(window)])
                 .grow()
                 .valign(Align::Stretch),
         );
@@ -168,8 +169,26 @@ impl GameManager {
         Some(layers([backdrop, placed]).grow())
     }
 
-    /// The open dialog: adding a game, removing one, or a mod's Info or settings.
+    /// The open dialog: a new display mode to keep, adding a game, removing one, or a mod's Info
+    /// or settings.
     fn dialog_layer(&self, window: &WindowInfo) -> Option<El<Message>> {
+        if let Some(trial) = &self.my_pc.trial {
+            let mode = trial.after;
+            return Some(dialog_with(
+                window,
+                "Keep these display settings?",
+                vec![
+                    text(format!(
+                        "{} now runs at {} × {}, {} Hz. Keep it? The previous mode comes back \
+                         in {} s.",
+                        trial.display.name, mode.width, mode.height, mode.hz, trial.seconds
+                    ))
+                    .wrap(),
+                ],
+                Some(("Keep", !self.my_pc.busy, MyPcMessage::KeepMode.into())),
+                ("Go back", MyPcMessage::RevertMode.into()),
+            ));
+        }
         if let Some(draft) = &self.draft {
             let has_name = !draft.name.trim().is_empty();
             let body = vec![
@@ -239,8 +258,19 @@ pub(crate) fn dialog(
     primary: Option<(&str, bool, Message)>,
     cancel: Message,
 ) -> El<Message> {
+    let label = if primary.is_some() { "Cancel" } else { "Close" };
+    dialog_with(window, title, body, primary, (label, cancel))
+}
+
+/// A modal dialog whose closing button has its own label ("Go back").
+pub(crate) fn dialog_with(
+    window: &WindowInfo,
+    title: &str,
+    body: Vec<El<Message>>,
+    primary: Option<(&str, bool, Message)>,
+    (cancel_label, cancel): (&str, Message),
+) -> El<Message> {
     let mut buttons = vec![spacer()];
-    let has_primary = primary.is_some();
     if let Some((label, enabled, message)) = primary {
         buttons.push(
             accent_button(label)
@@ -249,11 +279,7 @@ pub(crate) fn dialog(
                 .min_width(96.0),
         );
     }
-    buttons.push(
-        button(if has_primary { "Cancel" } else { "Close" })
-            .on_click(cancel)
-            .min_width(96.0),
-    );
+    buttons.push(button(cancel_label).on_click(cancel).min_width(96.0));
     // The title, the buttons and the padding take about 170 DIPs.
     let body_height = (window.size.1 - 200.0).max(160.0);
     let body = scroll(

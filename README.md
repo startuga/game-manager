@@ -13,10 +13,10 @@ on the window (a shortcut brings its name, arguments and icon); those are saved 
 ## The window
 
 - **The sidebar**: search, a filter (all games, one store, or Favorites), the pages **Library**,
-  **Shaders**, **Add-ons** and **Upscalers**, then the games by store (click a store to fold it)
-  and **Add a game** at the bottom. Drag its edge to make it wider or narrower. Right-click a game
-  for **Play** and **Add to Favorites** (or Remove from Favorites); favorites are saved in
-  `game-settings.json`.
+  **Shaders**, **Add-ons**, **Upscalers** and **My PC**, then the games by store (click a store
+  to fold it) and **Add a game** at the bottom. Drag its edge to make it wider or narrower.
+  Right-click a game for **Play** and **Add to Favorites** (or Remove from Favorites); favorites
+  are saved in `game-settings.json`.
 - **The title bar** has **Rescan** (⟳), which looks for games again.
 - **A game's page**: its icon, name and install folder, with chips for its store, bitness and
   graphics APIs; **Play** (and the store's other launches), **Folder**, **PCGamingWiki**, and
@@ -124,6 +124,30 @@ Each drop-down starts with what the profile held, and **Reset to original** puts
 Game Manager created is deleted). Settings the driver is too old for are not shown. The settings
 come from `config/nvidia-overrides.json`. The NVIDIA app writes the same settings: when it (or
 another tool) has changed them since, the dialog says which, and Save sets them again.
+
+## My PC
+
+The sidebar's **My PC** page shows what the computer is, read from the registry and Windows' own
+functions (no WMI), each time it opens and on **Refresh**:
+
+- **Hardware**: each graphics card (video memory, driver version as its vendor numbers it, driver
+  date), the processor (cores, threads, base clock), memory (in use, and the modules: size, type,
+  speed, maker and part number), Windows (edition, version, build), the motherboard and BIOS, and
+  each fixed drive's free space.
+- **Displays**: each display's name, resolution, refresh rate and HDR state, with:
+  - **Resolution** and **Refresh rate**: the new mode applies at once and a dialog asks to keep it;
+    without an answer within 15 seconds (or with **Go back** or Escape) the previous mode comes back.
+  - **HDR**: Windows' own switch (Settings ▸ Display ▸ HDR).
+  - **Brightness**: set over DDC/CI, like the monitor's own buttons, for monitors that have DDC/CI
+    on in their own menu. A laptop's screen keeps Windows' brightness control.
+  - **Colour profile**: picks among the profiles linked to the display for its mode (SDR or HDR).
+- **Graphics settings for games**, Windows' own switches:
+  - **Hardware-accelerated GPU scheduling**: Windows asks for administrator rights, and it applies
+    after a restart.
+  - **Game Mode**, **Optimizations for windowed games** and **Auto HDR** (with an HDR display):
+    games pick them up when they start.
+
+Links open the matching pages of Windows' Settings.
 
 ## Files
 

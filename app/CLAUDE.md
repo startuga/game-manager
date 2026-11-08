@@ -10,7 +10,7 @@ in `crates/samples/`) instead of guessing.
 ## Structure
 - `main.rs` – `Message`, the `GameManager` state, `update` (`handle`, then the `request_*`
   lookups), `go_to` (the pages), the elevated modes (`--file-ops`, `--reshade-ops`,
-  `--nvidia-ops`).
+  `--nvidia-ops`, `--gpu-scheduling`).
 - **Views**:
   - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
     dialogs).
@@ -18,9 +18,10 @@ in `crates/samples/`) instead of guessing.
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
     Shaders and Add-ons pages), `upscalers_view.rs` (the Upscalers tab and its state),
-    `upscalers_page.rs` (the Upscalers page), `dlss_override_view.rs` (NVIDIA's overrides).
-- **Pages and tabs**: `Page` (Game, Shaders, Add-ons, Upscalers) is the sidebar's choice, `GameTab`
-  the game page's. Change pages only through `go_to`: leaving Add-ons saves and deploys its choice
+    `upscalers_page.rs` (the Upscalers page), `dlss_override_view.rs` (NVIDIA's overrides),
+    `my_pc.rs` and `my_pc_page.rs` (My PC: its state and messages, and its view).
+- **Pages and tabs**: `Page` (Game, Shaders, Add-ons, Upscalers, My PC) is the sidebar's choice,
+  `GameTab` the game page's. Change pages only through `go_to`: leaving Add-ons saves and deploys its choice
   (as its Close did), leaving Shaders drops its draft. Escape closes the menu, then a dialog, then
   a page.
 - **UI-free logic**, unit-tested: `edit.rs` (the Game settings draft), `library.rs` (search,
@@ -52,6 +53,11 @@ in `crates/samples/`) instead of guessing.
   the window.
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).
+- **Sliders** (`el::slider`): a press or drag moves the thumb in `UiState::sliding` (drawn only);
+  the app gets the value on release, or at once from the arrows, Page Up/Down, Home and End, and
+  from UI Automation's RangeValue.
+- **Rows measure filling children at their share**: wrapped text beside a fixed label is as tall
+  as the lines it needs in the width left to it (`layout::row_sizes`).
 - **Motion**: hover fills fade over `input::HOVER_FADE`; spinners turn. A frame that moves reports
   `Drawn::animating` and the loop draws again; otherwise nothing draws at idle.
 - **Background work** goes through `Ctx::spawn_background` (the thread pool; the message comes
@@ -69,7 +75,13 @@ in `crates/samples/`) instead of guessing.
 
 ## Checking it from an agent session
 - **UI Automation** sees every control by name (buttons, rows, tabs, drop-downs, text boxes with
-  their Value). Invoke, SelectionItem, Toggle, ExpandCollapse and Value act like clicks and typing.
+  their Value, sliders). Invoke, SelectionItem, Toggle, ExpandCollapse, Value and RangeValue act
+  like clicks, typing and dragging; Focus and Expand scroll the element into view first.
+- **My PC**: the switches write the user's real registry (`HKCU\Software\Microsoft\GameBar`,
+  `HKCU\Software\Microsoft\DirectX\UserGpuPreferences`). Note their values first and put them back
+  exactly (a missing `AutoGameModeEnabled` is deleted again). Resolution, refresh rate, HDR,
+  colour profile, brightness and GPU scheduling (UAC) change the user's screen or need a restart:
+  ask the user to try them.
 - **The window draws itself to a PNG**: start the app with `GAME_MANAGER_CAPTURE=<path>` in its
   environment, then post `WM_APP + 9` to its window; the Read tool shows the PNG. Text boxes are
   separate windows, so their text isn't in the capture (read it through UI Automation).

@@ -127,7 +127,11 @@ impl<'a, T: Measure> Layout<'a, T> {
                 (widest + 40.0, theme::CONTROL_HEIGHT)
             }
             Kind::Box | Kind::Scroll => self.measure_children(el, inner),
-            Kind::Image { .. } | Kind::Spinner | Kind::Edit { .. } | Kind::Paint(_) => (0.0, 0.0),
+            Kind::Image { .. }
+            | Kind::Spinner
+            | Kind::Edit { .. }
+            | Kind::Paint(_)
+            | Kind::Slider { .. } => (0.0, 0.0),
         };
         let width = match el.width {
             Size::Px(width) => width,
@@ -144,18 +148,57 @@ impl<'a, T: Measure> Layout<'a, T> {
 
     fn measure_children<M>(&self, el: &El<M>, inner: f32) -> (f32, f32) {
         let gaps = el.gap * el.children.len().saturating_sub(1) as f32;
-        let sizes = el.children.iter().map(|child| self.measure(child, inner));
         match el.axis {
             Axis::Column => {
-                let (w, h) = sizes.fold((0.0f32, 0.0f32), |(w, h), (cw, ch)| (w.max(cw), h + ch));
+                let (w, h) = el
+                    .children
+                    .iter()
+                    .map(|child| self.measure(child, inner))
+                    .fold((0.0f32, 0.0f32), |(w, h), (cw, ch)| (w.max(cw), h + ch));
                 (w, h + gaps)
             }
             Axis::Row => {
-                let (w, h) = sizes.fold((0.0f32, 0.0f32), |(w, h), (cw, ch)| (w + cw, h.max(ch)));
+                let (w, h) = self
+                    .row_sizes(el, inner)
+                    .into_iter()
+                    .fold((0.0f32, 0.0f32), |(w, h), (cw, ch)| (w + cw, h.max(ch)));
                 (w + gaps, h)
             }
-            Axis::Layers => sizes.fold((0.0f32, 0.0f32), |(w, h), (cw, ch)| (w.max(cw), h.max(ch))),
+            Axis::Layers => el
+                .children
+                .iter()
+                .map(|child| self.measure(child, inner))
+                .fold((0.0f32, 0.0f32), |(w, h), (cw, ch)| (w.max(cw), h.max(ch))),
         }
+    }
+
+    /// A row's children measured as `distribute` places them: the others first, then each
+    /// filling child in its share of what they leave, so wrapped text is measured at the width it
+    /// gets.
+    fn row_sizes<M>(&self, el: &El<M>, inner: f32) -> Vec<(f32, f32)> {
+        let gaps = el.gap * el.children.len().saturating_sub(1) as f32;
+        let mut sizes = vec![(0.0f32, 0.0f32); el.children.len()];
+        let mut used = gaps;
+        let mut weights = 0.0;
+        for (i, child) in el.children.iter().enumerate() {
+            match child.width {
+                Size::Fill(weight) => weights += weight,
+                _ => {
+                    sizes[i] = self.measure(child, inner);
+                    used += sizes[i].0;
+                }
+            }
+        }
+        let free = (inner - used).max(0.0);
+        for (i, child) in el.children.iter().enumerate() {
+            if let Size::Fill(weight) = child.width {
+                let share = (free * weight / weights)
+                    .max(child.min_width)
+                    .min(child.max_width.max(child.min_width));
+                sizes[i] = self.measure(child, share);
+            }
+        }
+        sizes
     }
 
     fn arrange<M>(&self, el: &El<M>, rect: Rect, id: u64, clip: Rect) -> Placed {
@@ -474,6 +517,24 @@ mod tests {
         let placed = place(&root, 400.0, 400.0);
         // 210 DIPs of text in 100: three lines.
         assert_eq!(placed.children[0].children[0].rect.h, 48.0);
+    }
+
+    #[test]
+    fn a_row_is_as_tall_as_its_wrapped_text_at_the_width_left_to_it() {
+        // A fixed label beside wrapping text, in a column: the row's height counts the lines the
+        // text needs in the 90 DIPs it is left (200 less 100 and the gap), not in all 200.
+        let root: El<()> = col([
+            row([
+                text("label").width(100.0),
+                text("a".repeat(20)).wrap().fill_width(),
+            ])
+            .gap(10.0),
+            text("next"),
+        ]);
+        let placed = place(&root, 200.0, 400.0);
+        // 140 DIPs of text in 90: two lines.
+        assert_eq!(placed.children[0].rect.h, 32.0);
+        assert_eq!(placed.children[1].rect.y, 32.0);
     }
 
     #[test]

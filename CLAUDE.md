@@ -40,8 +40,8 @@ DLSS overrides in their driver profiles.
   - Tests may unwrap (`clippy.toml`); `build.rs` and `examples/scan.rs` allow `expect` with a
     reason.
 - **Release profile**, tuned for speed: `opt-level = 3`, `lto`, `codegen-units = 1`,
-  `panic = "abort"` (nothing catches an unwinding panic), `strip`. `app.exe` was 2.28 MB on
-  2026-11-08, with every tab and page ported (1.68 MB with `opt-level = "s"`; the WinUI one
+  `panic = "abort"` (nothing catches an unwinding panic), `strip`. `app.exe` was 2.41 MB on
+  2026-11-08 with My PC (2.28 MB before it; 1.68 MB with `opt-level = "s"`; the WinUI one
   5.93 MB). It links the C runtime dynamically (`VCRUNTIME140.dll`).
 
 ## Commands
@@ -52,6 +52,8 @@ DLSS overrides in their driver profiles.
   - `-- --icons <dir>` saves every icon as a PNG.
   - `-- --nvidia` prints the driver's version and DLLs, then each game's NVIDIA driver profile
     with its Present Method, flags and DLSS overrides (read only).
+  - `-- --pc` prints My PC instead of the games: hardware, displays with their modes, colour
+    profiles and brightness, and Windows' game switches (read only).
   - To verify bitness, compare a `program` with `GetBinaryTypeW` and `dumpbin /headers`. Parse
     scan lines from the right, as names can be wider than their column.
 - **Before finishing a change**: `cargo fmt`, `cargo clippy --all-targets` (no warnings),
@@ -76,6 +78,9 @@ DLSS overrides in their driver profiles.
   variant and the default effects; `live_upscalers` one version of each upscaler DLL.
 - **The user's files**: back up `%APPDATA%\Game Manager\*.json` before a check and restore them
   after, comparing first that only the test changed them.
+- **My PC changes the user's own PC**: its switches write their registry (note the values and put
+  them back exactly), and display modes, HDR, colour profiles, brightness and GPU scheduling are
+  for the user to try (`app/CLAUDE.md`).
 - **The user's window**: never close or kill it. If `target\debug\app.exe` is locked, build into
   `CARGO_TARGET_DIR=target\agent`.
 - **Mods**: never install into the user's real games, whose folders may hold their own DXVK or

@@ -158,4 +158,10 @@ pub mod glyph {
     pub const SAVE: &str = "\u{E74E}";
     pub const EXPORT: &str = "\u{EDE1}";
     pub const IMPORT: &str = "\u{E8B5}";
+    /// My PC: the computer, its displays, memory, Windows and drives.
+    pub const PC: &str = "\u{E977}";
+    pub const MONITOR: &str = "\u{E7F4}";
+    pub const MEMORY: &str = "\u{EEA0}";
+    pub const SYSTEM: &str = "\u{E770}";
+    pub const STORAGE: &str = "\u{EDA2}";
 }

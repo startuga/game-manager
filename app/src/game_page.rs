@@ -8,7 +8,7 @@
 //! Overview holds Game settings (the draft in `edit.rs`) beside the game's details. The other tabs
 //! come from `mods_view.rs` (ReShade, DXVK & LAA) and `upscalers_view.rs` (Upscalers, with
 //! NVIDIA's overrides from `dlss_override_view.rs`); the Shaders and Add-ons pages from
-//! `reshade_panel.rs`, the Upscalers page from `upscalers_page.rs`.
+//! `reshade_panel.rs`, the Upscalers page from `upscalers_page.rs`, My PC from `my_pc_page.rs`.
 
 use gm_core::graphics::GraphicsSource;
 use gm_core::mods::dxvk;
@@ -17,6 +17,7 @@ use windows_canvas::ColorF;
 
 use crate::app_view::field_label;
 use crate::edit::{EditChoice, EditDraft, EditField};
+use crate::shell::WindowInfo;
 use crate::ui::el::{Align, El, col, dropdown, row, scroll, spacer, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
@@ -26,10 +27,10 @@ use crate::ui::widgets::{
 use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list};
 
 /// The widest the page's content grows.
-const PAGE_MAX_WIDTH: f32 = 1180.0;
+pub(crate) const PAGE_MAX_WIDTH: f32 = 1180.0;
 
 impl GameManager {
-    pub(crate) fn page_view(&self) -> El<Message> {
+    pub(crate) fn page_view(&self, window: &WindowInfo) -> El<Message> {
         let content = match self.page {
             Page::Game => return self.game_page(),
             // The panel opens with the page; `update` leaves the page once it closes.
@@ -37,6 +38,7 @@ impl GameManager {
                 self.reshade_page().unwrap_or_else(|| working("Opening…"))
             }
             Page::Upscalers => self.upscalers_page(),
+            Page::MyPc => self.my_pc_page(window),
         };
         page(content)
     }

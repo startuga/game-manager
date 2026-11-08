@@ -214,6 +214,16 @@ pub enum Kind<M> {
     },
     /// Drawn by a painter of its own.
     Paint(Painter),
+    /// A slider from `min` to `max`, showing its value with `unit` ("60%"). Dragging moves it
+    /// (`input::UiState::sliding`) and `on_change` gets the value on release; the arrows,
+    /// Page Up/Down, Home and End send it at once.
+    Slider {
+        value: u32,
+        min: u32,
+        max: u32,
+        unit: &'static str,
+        on_change: OnValue<M, u32>,
+    },
 }
 
 /// What assistive technology and the UI Automation tree call an element.
@@ -230,6 +240,7 @@ pub enum Role {
     Text,
     Edit,
     Group,
+    Slider,
 }
 
 pub struct El<M> {
@@ -501,7 +512,10 @@ impl<M> El<M> {
         self.on_click.is_some()
             || self.on_context.is_some()
             || self.on_drag.is_some()
-            || matches!(self.kind, Kind::DropDown { .. } | Kind::Edit { .. })
+            || matches!(
+                self.kind,
+                Kind::DropDown { .. } | Kind::Edit { .. } | Kind::Slider { .. }
+            )
     }
 
     /// Its name for UI Automation: the explicit one, else the text of its first text descendant.
@@ -621,4 +635,33 @@ pub fn paint<M>(
     painter: impl Fn(&mut super::render::Painter<'_>, Rect, Interaction) + 'static,
 ) -> El<M> {
     El::new(Kind::Paint(Rc::new(painter)))
+}
+
+/// A slider from `min` to `max` with its value written after it in `unit`. `key` keeps a drag
+/// going across frames; `on_change` gets the value picked.
+pub fn slider<M>(
+    key: impl Into<String>,
+    value: u32,
+    (min, max): (u32, u32),
+    unit: &'static str,
+    on_change: impl Fn(u32) -> M + 'static,
+) -> El<M> {
+    El::new(Kind::Slider {
+        value: value.clamp(min, max.max(min)),
+        min,
+        max: max.max(min),
+        unit,
+        on_change: Rc::new(on_change),
+    })
+    .key(key)
+    .height(theme::CONTROL_HEIGHT)
+    .role(Role::Slider)
+}
+
+impl<M> El<M> {
+    /// Takes a share of the space left in a row: `weight` against the others' (1 each).
+    pub fn fill_width_by(mut self, weight: f32) -> Self {
+        self.width = Size::Fill(weight);
+        self
+    }
 }

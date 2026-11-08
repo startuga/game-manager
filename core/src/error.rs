@@ -54,12 +54,27 @@ pub enum Error {
     #[error("7-Zip could not unpack {} (exit code {code})", .archive.display())]
     Extract { archive: PathBuf, code: i32 },
     /// The user said No when Windows asked for administrator rights.
-    #[error("Administrator rights were refused, so the game's folder was not changed.")]
+    #[error("Administrator rights were refused, so nothing was changed.")]
     ElevationRefused,
     /// The copy of Game Manager running as administrator failed; `code` is its exit code, the
     /// HRESULT of what failed.
-    #[error("Changing the game's folder as administrator failed: {}", hresult_message(.code))]
+    #[error("The change made as administrator failed: {}", hresult_message(.code))]
     Elevated { code: u32 },
+    /// Windows refused a display mode; `code` is what `ChangeDisplaySettingsExW` answered.
+    #[error("Windows refused {width} × {height} at {hz} Hz on {display} (code {code}).")]
+    DisplayModeRefused {
+        display: String,
+        width: u32,
+        height: u32,
+        hz: u32,
+        code: i32,
+    },
+    /// A display mode was saved, but Windows needs a restart to use it.
+    #[error("Windows needs a restart to use the new mode on {0}.")]
+    DisplayModeNeedsRestart(String),
+    /// A display did not take a change; `what` names it ("brightness").
+    #[error("{display} did not take the new {what}.")]
+    DisplayRefused { display: String, what: &'static str },
     /// A release list or build list answered with nothing to download.
     #[error("{url} lists no build to download")]
     NoRelease { url: String },

@@ -2,14 +2,14 @@
 //! `Message`s go through `update`, `view` builds the element tree from the state.
 //!
 //! - **Layout**: the title bar, the library sidebar (`sidebar.rs`) and the page (`game_page.rs`):
-//!   the selected game's header, Play and tabs, or the Shaders, Add-ons and Upscalers pages; the
-//!   game menu and dialogs as layers over them (`app_view.rs`).
+//!   the selected game's header, Play and tabs, or the Shaders, Add-ons, Upscalers and My PC
+//!   pages; the game menu and dialogs as layers over them (`app_view.rs`).
 //! - **Logic**: `mods_view.rs` (ReShade, DXVK, LAA), `reshade_panel.rs` (shaders and add-ons),
-//!   `upscalers_view.rs` and `dlss_override_view.rs` (upscaler DLLs, NVIDIA overrides), `edit.rs`
-//!   and `library.rs` (UI-free, tested).
-//! - **Elevated copy**: started with `--file-ops`, `--reshade-ops` or `--nvidia-ops`, it is the
-//!   copy that changes a protected game folder, ReShade's Vulkan layer or NVIDIA driver settings
-//!   as administrator, and shows no window.
+//!   `upscalers_view.rs` and `dlss_override_view.rs` (upscaler DLLs, NVIDIA overrides), `my_pc.rs`
+//!   (hardware, displays, Windows' game switches), `edit.rs` and `library.rs` (UI-free, tested).
+//! - **Elevated copy**: started with `--file-ops`, `--reshade-ops`, `--nvidia-ops` or
+//!   `--gpu-scheduling`, it is the copy that changes a protected game folder, ReShade's Vulkan
+//!   layer, NVIDIA driver settings or GPU scheduling as administrator, and shows no window.
 
 #![windows_subsystem = "windows"]
 
@@ -19,6 +19,8 @@ mod edit;
 mod game_page;
 mod library;
 mod mods_view;
+mod my_pc;
+mod my_pc_page;
 mod reshade_panel;
 mod shell;
 mod sidebar;
@@ -36,6 +38,7 @@ use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
 use library::LibraryFilter;
 use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
+use my_pc::{MyPcMessage, MyPcState};
 use reshade_panel::{AddonLibrary, ReshadePanel, ShaderLibrary};
 use shell::ctx::{Ctx, FilePicker, WindowCommand};
 use shell::{App, WindowInfo};
@@ -71,6 +74,8 @@ pub(crate) enum Page {
     Addons,
     /// The upscaler versions downloaded and available.
     Upscalers,
+    /// The PC's hardware, displays and Windows' game switches.
+    MyPc,
 }
 
 /// The game page's tabs.
@@ -257,6 +262,8 @@ enum Message {
     ModDialogClosed(DialogResult),
     /// The Upscalers tab and page (`upscalers_view.rs`).
     Upscalers(UpscalerMessage),
+    /// The My PC page (`my_pc.rs`).
+    MyPc(MyPcMessage),
 }
 
 /// A game's right-click menu: which game, and where the pointer was (window DIPs).
@@ -325,6 +332,8 @@ struct GameManager {
     hdr_mod_configs_pending: bool,
     /// The selected game's NVIDIA driver profile, read when DXVK settings open.
     nvidia_profile: Option<Result<Option<ProfileState>, String>>,
+    /// The My PC page: the last snapshot and the changes running.
+    my_pc: MyPcState,
 }
 
 fn main() -> ExitCode {
@@ -336,6 +345,7 @@ fn main() -> ExitCode {
         Some(gm_core::mods::FILE_OPS_ARG) => Some(gm_core::mods::run_encoded),
         Some(gm_core::mods::reshade::RESHADE_OPS_ARG) => Some(gm_core::mods::reshade::run_encoded),
         Some(gm_core::nvidia::NVIDIA_OPS_ARG) => Some(gm_core::nvidia::run_encoded),
+        Some(gm_core::pc::GPU_SCHEDULING_ARG) => Some(gm_core::pc::run_encoded),
         _ => None,
     };
     if let Some(run) = elevated {
@@ -381,10 +391,12 @@ impl App for GameManager {
         self.root_view(window)
     }
 
-    /// Escape closes the topmost of the game menu, a dialog, or a ReShade page.
+    /// Escape closes the topmost of the game menu, a dialog, or a page.
     fn escape(&self) -> Option<Message> {
         if self.row_menu.is_some() {
             Some(Message::CloseRowMenu)
+        } else if self.my_pc.trial.is_some() {
+            Some(MyPcMessage::RevertMode.into())
         } else if self.mod_dialog.is_some() {
             Some(Message::ModDialogClosed(DialogResult::Cancel))
         } else if self.removing.is_some() {
@@ -395,7 +407,7 @@ impl App for GameManager {
             match self.page {
                 Page::Shaders => Some(Message::CloseReshadePanel),
                 Page::Addons => Some(Message::CloseAddons),
-                Page::Upscalers => Some(Message::Page(Page::Game)),
+                Page::Upscalers | Page::MyPc => Some(Message::Page(Page::Game)),
                 Page::Game => None,
             }
         }
@@ -446,6 +458,7 @@ impl GameManager {
             hdr_mod_configs: None,
             hdr_mod_configs_pending: false,
             nvidia_profile: None,
+            my_pc: MyPcState::default(),
         };
         // The last scan's games show at once while the fresh scan runs.
         ctx.spawn_background(|_cancel| {
@@ -550,13 +563,15 @@ impl GameManager {
             }
             Page::Shaders => self.reshade_panel = None,
             Page::Upscalers => self.upscalers.panel = false,
-            Page::Addons | Page::Game => {}
+            Page::Addons | Page::Game | Page::MyPc => {}
         }
         self.page = page;
         match page {
             Page::Shaders => self.open_reshade_panel("shaders", context),
             Page::Addons => self.open_reshade_panel("addons", context),
             Page::Upscalers => self.handle_upscalers(UpscalerMessage::OpenPanel, context),
+            // Read afresh at each visit, as Settings or a driver may have changed things.
+            Page::MyPc => self.handle_my_pc(MyPcMessage::Refresh, context),
             Page::Game => {}
         }
     }
@@ -851,6 +866,7 @@ impl GameManager {
                 self.handle_target(message, context);
             }
             Message::Upscalers(message) => self.handle_upscalers(message, context),
+            Message::MyPc(message) => self.handle_my_pc(message, context),
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);
                 self.reshade.insert(id, status);

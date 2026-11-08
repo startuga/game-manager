@@ -8,8 +8,9 @@
 //! so they never hold a stale element.
 //!
 //! Patterns: Invoke (buttons), SelectionItem (rows, nav items, tabs), Toggle (check boxes,
-//! switches), ExpandCollapse and Value (drop-downs), Value (text boxes). Acting on one posts
-//! `WM_UIA_ACTION` to the window, which handles it on the UI thread as a click would be. A text
+//! switches), ExpandCollapse and Value (drop-downs), Value (text boxes), RangeValue (sliders).
+//! Acting on one posts `WM_UIA_ACTION` to the window, which handles it on the UI thread as a click
+//! would be (a slider's new value rides in `wparam` above the action). A text
 //! box's Value reads and writes its EDIT control: setting it is like typing, since the EDIT's
 //! `EN_CHANGE` reaches the app. (Hosting the EDIT's own provider under a node doesn't merge: hosts
 //! apply only to fragment roots.)
@@ -25,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use windows::Win32::{
     ExpandCollapseState, ExpandCollapseState_Collapsed, ExpandCollapseState_Expanded,
     ExpandCollapseState_LeafNode, HWND, IExpandCollapseProvider, IExpandCollapseProvider_Impl,
-    IInvokeProvider, IInvokeProvider_Impl, IRawElementProviderFragment,
-    IRawElementProviderFragment_Impl, IRawElementProviderFragmentRoot,
+    IInvokeProvider, IInvokeProvider_Impl, IRangeValueProvider, IRangeValueProvider_Impl,
+    IRawElementProviderFragment, IRawElementProviderFragment_Impl, IRawElementProviderFragmentRoot,
     IRawElementProviderFragmentRoot_Impl, IRawElementProviderSimple,
     IRawElementProviderSimple_Impl, ISelectionItemProvider, ISelectionItemProvider_Impl,
     IToggleProvider, IToggleProvider_Impl, IValueProvider, IValueProvider_Impl, NavigateDirection,
@@ -41,10 +42,11 @@ use windows::Win32::{
     UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_IsContentElementPropertyId,
     UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
     UIA_IsOffscreenPropertyId, UIA_ListItemControlTypeId, UIA_NamePropertyId,
-    UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
-    UIA_TogglePatternId, UIA_ValuePatternId, UiaAppendRuntimeId, UiaHostProviderFromHwnd,
-    UiaRaiseAutomationEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId, VARENUM,
-    VARIANT, VT_BOOL, VT_BSTR, VT_I4, WM_APP, tagVARIANT_0, tagVARIANT_0_0, tagVARIANT_0_0_0,
+    UIA_RangeValuePatternId, UIA_SelectionItemPatternId, UIA_SliderControlTypeId,
+    UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TogglePatternId, UIA_ValuePatternId,
+    UiaAppendRuntimeId, UiaHostProviderFromHwnd, UiaRaiseAutomationEvent, UiaRect,
+    UiaReturnRawElementProvider, UiaRootObjectId, VARENUM, VARIANT, VT_BOOL, VT_BSTR, VT_I4,
+    WM_APP, tagVARIANT_0, tagVARIANT_0_0, tagVARIANT_0_0_0,
 };
 use windows::core::{
     BOOL, BSTR, ComObjectInterface, Error, HRESULT, IUnknown, Interface, PCWSTR, Result, implement,
@@ -104,13 +106,22 @@ pub enum Action {
     Focus = 1,
     Expand = 2,
     Collapse = 3,
+    /// A slider's new value, in `wparam` above the action's byte.
+    SetValue = 4,
 }
 
 impl Action {
+    /// The action in `wparam`'s low byte.
     pub fn from_wparam(value: usize) -> Option<Self> {
-        [Self::Invoke, Self::Focus, Self::Expand, Self::Collapse]
-            .into_iter()
-            .find(|action| *action as usize == value)
+        [
+            Self::Invoke,
+            Self::Focus,
+            Self::Expand,
+            Self::Collapse,
+            Self::SetValue,
+        ]
+        .into_iter()
+        .find(|action| *action as usize == value & 0xFF)
     }
 }
 
@@ -134,6 +145,8 @@ pub struct AccessNode {
     /// A drop-down's picked item.
     pub value: Option<String>,
     pub expanded: bool,
+    /// A slider's value, minimum and maximum.
+    pub range: Option<(u32, u32, u32)>,
 }
 
 /// The accessible elements of the last frame. Node 0 is the window itself.
@@ -213,6 +226,13 @@ fn walk<M>(
             Kind::DropDown {
                 items, selected, ..
             } => selected.and_then(|i| items.get(i)).cloned(),
+            Kind::Slider { value, unit, .. } => Some(format!("{value}{unit}")),
+            _ => None,
+        };
+        let range = match &el.kind {
+            Kind::Slider {
+                value, min, max, ..
+            } => Some((*value, *min, *max)),
             _ => None,
         };
         tree.nodes.push(AccessNode {
@@ -235,6 +255,7 @@ fn walk<M>(
             selected: el.selected,
             value,
             expanded: open == Some(placed.id),
+            range,
         });
         here = tree.nodes.len() - 1;
         tree.nodes[parent].children.push(here);
@@ -265,13 +286,18 @@ impl Shared {
     }
 
     fn post(&self, action: Action, id: u64) {
+        self.post_value(action, id, 0);
+    }
+
+    /// Posts an action with a value above its byte (a slider's new value).
+    fn post_value(&self, action: Action, id: u64, value: u32) {
         // SAFETY: posting to the window this provider belongs to; a window that is gone makes
         // the call fail, which is ignored.
         let _ = unsafe {
             PostMessageW(
                 Some(self.hwnd as HWND),
                 WM_UIA_ACTION as u32,
-                action as usize,
+                action as usize | (value as usize) << 8,
                 id as isize,
             )
         };
@@ -447,7 +473,8 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
     ISelectionItemProvider,
     IToggleProvider,
     IExpandCollapseProvider,
-    IValueProvider
+    IValueProvider,
+    IRangeValueProvider
 )]
 struct Node {
     shared: Arc<Shared>,
@@ -484,6 +511,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_ExpandCollapsePatternId || pattern == UIA_ValuePatternId
             }
             Role::Edit => pattern == UIA_ValuePatternId,
+            Role::Slider => pattern == UIA_RangeValuePatternId || pattern == UIA_ValuePatternId,
             _ => false,
         };
         if !supported {
@@ -502,6 +530,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             UIA_ExpandCollapsePatternId => {
                 ComObjectInterface::<IExpandCollapseProvider>::as_interface_ref(self).cast()?
             }
+            UIA_RangeValuePatternId => {
+                ComObjectInterface::<IRangeValueProvider>::as_interface_ref(self).cast()?
+            }
             _ => ComObjectInterface::<IValueProvider>::as_interface_ref(self).cast()?,
         };
         Ok(unknown)
@@ -519,6 +550,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 Role::ComboBox => UIA_ComboBoxControlTypeId,
                 Role::Edit => UIA_EditControlTypeId,
                 Role::Group => UIA_GroupControlTypeId,
+                Role::Slider => UIA_SliderControlTypeId,
                 Role::Text | Role::None => UIA_TextControlTypeId,
             }),
             UIA_NamePropertyId => variant_str(&node.name),
@@ -708,5 +740,53 @@ impl IValueProvider_Impl for Node_Impl {
     fn IsReadOnly(&self) -> Result<BOOL> {
         let node = self.node()?;
         Ok((node.role != Role::Edit || !node.enabled).into())
+    }
+}
+
+impl Node_Impl {
+    /// A slider's value, minimum and maximum.
+    fn range(&self) -> Result<(u32, u32, u32)> {
+        self.node()?
+            .range
+            .ok_or_else(|| Error::from_hresult(INVALID_OPERATION))
+    }
+}
+
+impl IRangeValueProvider_Impl for Node_Impl {
+    /// Like dragging the slider there and letting go.
+    fn SetValue(&self, value: f64) -> HRESULT {
+        match self.node() {
+            Ok(node) if node.enabled => match node.range {
+                Some((_, min, max)) if value >= f64::from(min) && value <= f64::from(max) => {
+                    self.shared
+                        .post_value(Action::SetValue, self.id, value.round() as u32);
+                    HRESULT(0)
+                }
+                // E_INVALIDARG: outside the range.
+                Some(_) => HRESULT(0x8007_0057_u32 as i32),
+                None => INVALID_OPERATION,
+            },
+            Ok(_) => HRESULT(0x8004_0200_u32 as i32),
+            Err(error) => error.code(),
+        }
+    }
+    fn Value(&self) -> Result<f64> {
+        Ok(f64::from(self.range()?.0))
+    }
+    fn IsReadOnly(&self) -> Result<BOOL> {
+        Ok((!self.node()?.enabled).into())
+    }
+    fn Maximum(&self) -> Result<f64> {
+        Ok(f64::from(self.range()?.2))
+    }
+    fn Minimum(&self) -> Result<f64> {
+        Ok(f64::from(self.range()?.1))
+    }
+    fn LargeChange(&self) -> Result<f64> {
+        let (_, min, max) = self.range()?;
+        Ok(f64::from((max.saturating_sub(min) / 10).max(1)))
+    }
+    fn SmallChange(&self) -> Result<f64> {
+        Ok(1.0)
     }
 }

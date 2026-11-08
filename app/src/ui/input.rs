@@ -44,6 +44,10 @@ pub enum Key {
     Escape,
     Up,
     Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
     Home,
     End,
 }
@@ -98,6 +102,8 @@ pub struct UiState {
     pub window: Rect,
     /// The element being dragged (a resize grip) while its button is down.
     held: Option<u64>,
+    /// The slider being dragged and the value it shows; the app gets it on release.
+    pub sliding: Option<(u64, u32)>,
     /// When the pointer came onto `hover`, and the element it last left with when: hover fills
     /// fade in and out over `HOVER_FADE`.
     hover_since: Option<Instant>,
@@ -162,7 +168,10 @@ impl<M: Clone> Frame<M> {
                 return;
             }
             if (el.on_click.is_some() && !el.modal)
-                || matches!(el.kind, Kind::DropDown { .. } | Kind::Edit { .. })
+                || matches!(
+                    el.kind,
+                    Kind::DropDown { .. } | Kind::Edit { .. } | Kind::Slider { .. }
+                )
             {
                 out.push(placed.id);
             }
@@ -362,6 +371,17 @@ impl UiState {
                 .and_then(|hit| hit.el.on_drag.as_ref().map(|drag| drag((x, y))));
             return (true, message);
         }
+        if let Some((id, shown)) = self.sliding {
+            let value = frame.find(id).and_then(|hit| match hit.el.kind {
+                Kind::Slider { min, max, .. } => {
+                    Some(slider_value_at(hit.placed.rect, x, min, max))
+                }
+                _ => None,
+            });
+            let value = value.unwrap_or(shown);
+            self.sliding = Some((id, value));
+            return (value != shown, None);
+        }
         if let Some(drag) = self.drag {
             let offset = drag.start_offset + (y - drag.start_pointer) * drag.ratio;
             self.scroll.insert(drag.scroll, offset.max(0.0));
@@ -498,6 +518,13 @@ impl UiState {
         {
             self.held = target;
         }
+        // A press on a slider moves it there, and dragging moves it on.
+        if button == Button::Left
+            && let Some(hit) = &hit
+            && let Kind::Slider { min, max, .. } = hit.el.kind
+        {
+            self.sliding = Some((hit.placed.id, slider_value_at(hit.placed.rect, x, min, max)));
+        }
         let changed = self.pressed != target || had_tooltip;
         self.pressed = target;
         if button == Button::Left && target.is_some() {
@@ -520,6 +547,14 @@ impl UiState {
         if self.held.take().is_some() {
             self.pressed = None;
             return (true, None);
+        }
+        if let Some((id, value)) = self.sliding.take() {
+            self.pressed = None;
+            let message = frame.find(id).and_then(|hit| match &hit.el.kind {
+                Kind::Slider { on_change, .. } => Some(on_change(value)),
+                _ => None,
+            });
+            return (true, message);
         }
         if let Some((rect, items, _, id)) = frame.dropdown_popup(self) {
             if rect.contains(x, y) && button == Button::Left {
@@ -614,6 +649,24 @@ impl UiState {
                 _ => return KeyResult::Unhandled,
             }
         }
+        // A focused slider takes the arrows, Page Up/Down, Home and End.
+        if let Some(hit) = self.focus.and_then(|id| frame.find(id))
+            && hit.el.enabled
+            && let Kind::Slider {
+                value,
+                min,
+                max,
+                on_change,
+                ..
+            } = &hit.el.kind
+            && let Some(next) = slider_step(*value, *min, *max, key)
+        {
+            return if next == *value {
+                KeyResult::Changed
+            } else {
+                KeyResult::Message(on_change(next))
+            };
+        }
         match key {
             Key::Tab { shift } => {
                 let order = frame.focusables();
@@ -649,7 +702,9 @@ impl UiState {
             }
             // In a list, the arrows pick the next or previous row.
             Key::Up | Key::Down | Key::Home | Key::End => self.step_list(frame, key),
-            Key::Escape => KeyResult::Unhandled,
+            Key::Left | Key::Right | Key::PageUp | Key::PageDown | Key::Escape => {
+                KeyResult::Unhandled
+            }
         }
     }
 
@@ -742,6 +797,39 @@ pub fn tooltip_rect(at: (f32, f32), size: (f32, f32), window: Rect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// The room a slider keeps on its right for its value ("100%"), and its thumb's size.
+pub const SLIDER_VALUE_WIDTH: f32 = 48.0;
+pub const SLIDER_THUMB: f32 = 18.0;
+
+/// Where a slider's thumb centre travels within its element: left of the value, keeping half the
+/// thumb in at each end.
+pub fn slider_track(rect: Rect) -> Rect {
+    let width = (rect.w - SLIDER_VALUE_WIDTH - SLIDER_THUMB).max(1.0);
+    Rect::new(rect.x + SLIDER_THUMB / 2.0, rect.y, width, rect.h)
+}
+
+/// The value of a slider (element `rect`) under the pointer's `x`.
+pub fn slider_value_at(rect: Rect, x: f32, min: u32, max: u32) -> u32 {
+    let track = slider_track(rect);
+    let ratio = ((x - track.x) / track.w).clamp(0.0, 1.0);
+    min + (ratio * max.saturating_sub(min) as f32).round() as u32
+}
+
+/// The value a key gives a slider: the arrows step by one (Left and Down lower it), Page Up and
+/// Page Down by a tenth, Home and End go to the ends; `None` for other keys.
+pub fn slider_step(value: u32, min: u32, max: u32, key: Key) -> Option<u32> {
+    let page = (max.saturating_sub(min) / 10).max(1);
+    Some(match key {
+        Key::Left | Key::Down => value.saturating_sub(1).max(min),
+        Key::Right | Key::Up => value.saturating_add(1).min(max),
+        Key::PageDown => value.saturating_sub(page).max(min),
+        Key::PageUp => value.saturating_add(page).min(max),
+        Key::Home => min,
+        Key::End => max,
+        _ => return None,
+    })
+}
+
 /// The colour of a box in its current state.
 pub fn fill_for<M>(el: &El<M>, hover: bool, pressed: bool) -> Option<windows_canvas::ColorF> {
     if el.selected
@@ -793,6 +881,45 @@ mod tests {
     ) -> Option<&'static str> {
         ui.pointer_down(frame, x, y, Button::Left);
         ui.pointer_up(frame, x, y, Button::Left).1
+    }
+
+    #[test]
+    fn a_slider_follows_the_pointer_and_sends_on_release() {
+        use crate::ui::el::slider;
+        // 166 wide: the track starts at 9 and is 100 long.
+        let root = col([slider("s", 50, (0, 100), "%", |value| {
+            &*Box::leak(value.to_string().into_boxed_str())
+        })
+        .width(166.0)]);
+        let mut ui = ui();
+        let f = frame(root, &ui);
+        ui.pointer_down(&f, 34.0, 15.0, Button::Left);
+        assert_eq!(ui.sliding.map(|(_, value)| value), Some(25));
+        let (changed, message) = ui.pointer_move(&f, 89.0, 15.0);
+        assert!(changed);
+        assert_eq!(message, None);
+        assert_eq!(ui.sliding.map(|(_, value)| value), Some(80));
+        // Past the end: the end.
+        ui.pointer_move(&f, 500.0, 15.0);
+        assert_eq!(ui.pointer_up(&f, 500.0, 15.0, Button::Left).1, Some("100"));
+        assert_eq!(ui.sliding, None);
+    }
+
+    #[test]
+    fn a_focused_slider_steps_with_keys() {
+        use crate::ui::el::slider;
+        let root = col([slider("s", 50, (0, 100), "%", |value| {
+            &*Box::leak(value.to_string().into_boxed_str())
+        })]);
+        let mut ui = ui();
+        let f = frame(root, &ui);
+        assert_eq!(ui.key(&f, Key::Tab { shift: false }), KeyResult::Changed);
+        assert_eq!(ui.key(&f, Key::Right), KeyResult::Message("51"));
+        assert_eq!(ui.key(&f, Key::PageDown), KeyResult::Message("40"));
+        assert_eq!(ui.key(&f, Key::End), KeyResult::Message("100"));
+        assert_eq!(slider_step(0, 0, 100, Key::Left), Some(0));
+        assert_eq!(slider_step(100, 0, 100, Key::PageUp), Some(100));
+        assert_eq!(slider_step(5, 0, 100, Key::Enter), None);
     }
 
     #[test]

@@ -537,6 +537,20 @@ impl Painter<'_> {
                 };
                 painter(self, rect, interaction);
             }
+            Kind::Slider {
+                value,
+                min,
+                max,
+                unit,
+                ..
+            } => {
+                // While dragged, the value under the pointer.
+                let value = match ui.sliding {
+                    Some((id, dragged)) if id == placed.id => dragged,
+                    _ => *value,
+                };
+                self.slider(rect, (value, *min, *max), unit, hover || pressed);
+            }
         }
         if let Some(info) = placed.scroll {
             self.push_clip(info.viewport.intersect(&placed.clip));
@@ -562,6 +576,56 @@ impl Painter<'_> {
             self.stroke_rounded(ring, el.radius + 2.0, theme::TEXT, 2.0);
         }
         self.alpha = saved;
+    }
+
+    /// A slider: the track, its filled part, the thumb (a ring with an accent dot that grows
+    /// under the pointer, as WinUI's does) and the value.
+    fn slider(&self, rect: Rect, (value, min, max): (u32, u32, u32), unit: &str, hot: bool) {
+        let track = input::slider_track(rect);
+        let ratio = if max > min {
+            (value - min) as f32 / (max - min) as f32
+        } else {
+            0.0
+        };
+        let middle = rect.y + rect.h / 2.0;
+        let bar = Rect::new(track.x, middle - 2.0, track.w, 4.0);
+        self.fill_rounded(bar, 2.0, theme::with_alpha(theme::TEXT, 0x5C));
+        self.fill_rounded(
+            Rect::new(bar.x, bar.y, bar.w * ratio, bar.h),
+            2.0,
+            theme::ACCENT,
+        );
+        let center = Vector2::new(track.x + track.w * ratio, middle);
+        let thumb = input::SLIDER_THUMB / 2.0;
+        self.session
+            .fill_ellipse(&Ellipse::circle(center, thumb), self.paint(theme::FLYOUT));
+        self.session.draw_ellipse(
+            &Ellipse::circle(center, thumb - 0.5),
+            self.paint(theme::FLYOUT_STROKE),
+            1.0,
+        );
+        self.session.fill_ellipse(
+            &Ellipse::circle(center, if hot { 6.0 } else { 5.0 }),
+            self.paint(theme::ACCENT),
+        );
+        let label = TextSpec {
+            text: format!("{value}{unit}"),
+            size: theme::TEXT_SIZE,
+            weight: 600,
+            font: Font::Text,
+            color: theme::TEXT,
+            wrap: false,
+            align: TextAlign::Start,
+        };
+        self.text(
+            &label,
+            Rect::new(
+                rect.right() - input::SLIDER_VALUE_WIDTH + 8.0,
+                rect.y,
+                input::SLIDER_VALUE_WIDTH - 8.0,
+                rect.h,
+            ),
+        );
     }
 
     fn dropdown_face(

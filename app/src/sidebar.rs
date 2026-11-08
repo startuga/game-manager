@@ -1,5 +1,5 @@
-//! The library sidebar: search and the filter, the pages (Library, Shaders, Add-ons, Upscalers),
-//! the games grouped by store, and Add a game.
+//! The library sidebar: search and the filter, the pages (Library, Shaders, Add-ons, Upscalers,
+//! My PC), the games grouped by store, and Add a game.
 //!
 //! Store groups fold with a click on their header. Each row is
 //! keyed by its game's id, so hover, focus and the scroll position stay with the game when the
@@ -54,6 +54,12 @@ impl GameManager {
                 "Upscalers",
                 self.page == Page::Upscalers,
                 Message::Page(Page::Upscalers),
+            ),
+            nav_item(
+                g::PC,
+                "My PC",
+                self.page == Page::MyPc,
+                Message::Page(Page::MyPc),
             ),
         ])
         .gap(2.0);

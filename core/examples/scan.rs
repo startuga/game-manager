@@ -8,6 +8,8 @@
 //! `--nvidia` prints the driver's version and its own DLSS DLLs, then each game's NVIDIA driver
 //! profile with its Vulkan/OpenGL Present Method and flags and the DLSS override settings it
 //! holds (read only).
+//! `--pc` prints My PC instead of the games: hardware, displays with their modes and colour
+//! profiles, DDC/CI brightness and the Windows switches (read only).
 
 #![allow(
     clippy::expect_used,
@@ -28,6 +30,10 @@ fn main() {
         .position(|arg| arg == "--icons")
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from);
+    if args.iter().any(|arg| arg == "--pc") {
+        print_pc();
+        return;
+    }
 
     let report = gm_core::scan_all();
     let mods = gm_core::mods::load().unwrap_or_default();
@@ -170,4 +176,116 @@ fn main() {
             }
         }
     }
+}
+
+/// My PC, as the page reads it.
+fn print_pc() {
+    use gm_core::pc::{self, format_bytes};
+    let started = std::time::Instant::now();
+    let pc = pc::read();
+    println!("machine: {} (read in {:?})", pc.machine, started.elapsed());
+    match &pc.cpu {
+        Ok(cpu) => println!(
+            "cpu: {}, {} cores, {} threads, base {} MHz",
+            cpu.name, cpu.cores, cpu.threads, cpu.base_mhz
+        ),
+        Err(error) => println!("cpu: {error}"),
+    }
+    match &pc.gpus {
+        Ok(gpus) => {
+            for gpu in gpus {
+                println!(
+                    "gpu: {} ({}), {} VRAM, driver {} of {}",
+                    gpu.name,
+                    gpu.vendor.name(),
+                    format_bytes(gpu.vram),
+                    gpu.driver,
+                    gpu.driver_date
+                );
+            }
+        }
+        Err(error) => println!("gpus: {error}"),
+    }
+    match &pc.memory {
+        Ok(memory) => {
+            println!(
+                "memory: {}, {} available",
+                format_bytes(memory.total),
+                format_bytes(memory.available)
+            );
+            for module in &memory.modules {
+                println!(
+                    "    {} {} {} MT/s {} {}",
+                    format_bytes(module.size),
+                    module.kind,
+                    module.speed,
+                    module.manufacturer,
+                    module.part_number
+                );
+            }
+        }
+        Err(error) => println!("memory: {error}"),
+    }
+    match &pc.system {
+        Ok(system) => println!(
+            "windows: {} (build {})\nboard: {}\nbios: {}",
+            system.windows, system.build, system.board, system.bios
+        ),
+        Err(error) => println!("system: {error}"),
+    }
+    match &pc.drives {
+        Ok(drives) => {
+            for drive in drives {
+                println!(
+                    "drive: {} {} {}: {} free of {}",
+                    drive.root,
+                    drive.label,
+                    drive.file_system,
+                    format_bytes(drive.free),
+                    format_bytes(drive.total)
+                );
+            }
+        }
+        Err(error) => println!("drives: {error}"),
+    }
+    match &pc.displays {
+        Ok(displays) => {
+            for display in displays {
+                println!(
+                    "display: {} ({}) {} × {} at {} Hz, at {:?}{}{}, HDR {}",
+                    display.name,
+                    display.gdi_name,
+                    display.width,
+                    display.height,
+                    display.refresh_hz,
+                    display.position,
+                    if display.primary { ", main" } else { "" },
+                    if display.built_in { ", built in" } else { "" },
+                    match (display.hdr_supported, display.hdr_on) {
+                        (_, true) => "on",
+                        (true, false) => "off",
+                        (false, false) => "not supported",
+                    }
+                );
+                println!(
+                    "    {} modes, current {:?}, first {:?}",
+                    display.modes.len(),
+                    display.current,
+                    display.modes.first()
+                );
+                println!(
+                    "    colour profiles {:?}, default {:?}",
+                    display.color_profiles, display.color_profile
+                );
+                let started = std::time::Instant::now();
+                println!(
+                    "    brightness {:?} (read in {:?})",
+                    pc::brightness(display),
+                    started.elapsed()
+                );
+            }
+        }
+        Err(error) => println!("displays: {error}"),
+    }
+    println!("switches: {:?}", pc.switches);
 }

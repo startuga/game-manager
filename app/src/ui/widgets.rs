@@ -433,6 +433,24 @@ pub fn resize_grip<M>(name: &str, on_drag: impl Fn(f32) -> M + 'static) -> El<M>
     .on_drag(move |(x, _)| on_drag(x))
 }
 
+/// A usage bar, `ratio` (0–1) of it filled: the accent, or red from 90% (a drive nearly full).
+pub fn meter<M>(ratio: f32) -> El<M> {
+    let ratio = ratio.clamp(0.0, 1.0);
+    paint(
+        move |painter: &mut Painter<'_>, rect: Rect, _: Interaction| {
+            let bar = Rect::new(rect.x, rect.y + (rect.h - 4.0) / 2.0, rect.w, 4.0);
+            painter.fill_rounded(bar, 2.0, theme::CONTROL_HOVER);
+            let color = if ratio >= 0.9 {
+                theme::CRITICAL
+            } else {
+                theme::ACCENT
+            };
+            painter.fill_rounded(Rect::new(bar.x, bar.y, bar.w * ratio, bar.h), 2.0, color);
+        },
+    )
+    .height(8.0)
+}
+
 /// A label with a busy spinner.
 pub fn working<M>(label: impl Into<String>) -> El<M> {
     row([spinner(16.0), text(label).color(theme::TEXT_SECONDARY)]).gap(8.0)
