@@ -1,7 +1,8 @@
 //! Prints every detected game: `cargo run -p gm-core --example scan [-- -v] [-- --icons <dir>]`
 //! Each line shows the game's bitness ("?" when unknown). `-v` also prints how each game is
 //! launched, where its icon comes from, which program the bitness was read from, the address of
-//! its PCGamingWiki page and, for 32-bit games, their Large Address Aware status.
+//! its PCGamingWiki page, how Uninstall… would hand it over (read only) and, for 32-bit games,
+//! their Large Address Aware status.
 //! `--icons <dir>` saves each game's icon there as `<id>.png`.
 //! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
 //! side (no cache; the wiki is asked about once a second), and the API chosen in its settings.
@@ -54,6 +55,10 @@ fn main() {
             println!("           icon: {:?}", game.icon);
             println!("           program: {:?}", game.program);
             println!("           wiki: {}", gm_core::pcgamingwiki::page_url(game));
+            match gm_core::uninstall::route(game) {
+                Some(route) => println!("           uninstall: {route:?}"),
+                None => println!("           uninstall: none (added by hand)"),
+            }
             if game.arch == Some(gm_core::Arch::X86) {
                 match gm_core::mods::laa::status(game, &mods) {
                     Ok(laa) => println!(

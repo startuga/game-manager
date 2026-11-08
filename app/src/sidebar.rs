@@ -3,9 +3,12 @@
 //! versions are in the game page's tabs. The selected game's row is highlighted while its page
 //! shows.
 //!
-//! Store groups fold with a click on their header. Each row is
+//! Pinned games (the game menu's Pin to quick access) come first under a PINNED header, in the
+//! order they were pinned, and leave their store's group. Store
+//! groups fold with a click on their header. Each row is
 //! keyed by its game's id, so hover, focus and the scroll position stay with the game when the
-//! list changes; a right-click opens the game's menu (`app_view.rs`).
+//! list changes; a right-click, or the Menu key on a focused row, opens the game's menu
+//! (`game_menu.rs`) without leaving the page.
 //!
 //! **Search** (`widgets::search_box`; matching in `library.rs`): Ctrl+F goes to it, Escape
 //! empties it, Enter opens the first game shown, ✕ clears it. While it has text, a line under it
@@ -14,8 +17,9 @@
 
 use gm_core::{Game, Store};
 
+use crate::game_menu::MenuMessage;
 use crate::library::{self, LibraryFilter};
-use crate::ui::el::{El, TextAlign, col, dropdown, glyph, image, row, scroll, text};
+use crate::ui::el::{El, Role, TextAlign, col, dropdown, glyph, image, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{divider, hint, nav_item, search_box, subtle_button, working};
 use crate::{GameManager, Message, Page};
@@ -65,11 +69,11 @@ impl GameManager {
         if searching {
             // How many the search and the filter leave, while searching.
             let shown = library::filter(&self.games, &self.query, self.filter).len();
+            let total = library::total(&self.games, self.filter);
             items.push(
                 text(match shown {
                     0 => "No game matches".to_owned(),
-                    1 => format!("1 of {} games", self.games.len()),
-                    n => format!("{n} of {} games", self.games.len()),
+                    n => format!("{n} of {}", library::games_label(total)),
                 })
                 .text_size(theme::TEXT_SMALL)
                 .color(theme::TEXT_TERTIARY)
@@ -103,18 +107,18 @@ impl GameManager {
         }
         let visible = library::filter(&self.games, &self.query, self.filter);
         if visible.is_empty() {
-            let message = if self.filter == LibraryFilter::Favorites && self.query.trim().is_empty()
-            {
-                "No favorite games yet. Right-click a game and choose Add to Favorites."
-            } else {
-                "No games match the search."
-            };
-            return col([hint(message)]).pad(8.0);
+            return col([hint(self.filter.empty_hint(&self.query))]).pad(8.0);
         }
         let mut rows = Vec::new();
         let searching = !self.query.trim().is_empty();
+        // Quick access: the pinned games first, in the order they were pinned.
+        let (pinned, rest) = library::split_pinned(&self.games, &visible);
+        if !pinned.is_empty() {
+            rows.push(pinned_header("pinned", pinned.len()));
+            rows.extend(pinned.iter().map(|&i| self.game_row(&self.games[i])));
+        }
         for store in Store::ALL {
-            let games: Vec<&Game> = visible
+            let games: Vec<&Game> = rest
                 .iter()
                 .map(|&i| &self.games[i])
                 .filter(|game| game.store == store)
@@ -142,11 +146,7 @@ impl GameManager {
         let selected =
             self.page == Page::Game && self.selected.as_deref() == Some(game.id.as_str());
         let id = game.id.clone();
-        let mut parts = vec![self.icon(game, 24.0), text(game.name.clone()).fill_width()];
-        if game.favorite {
-            parts.push(glyph(g::STAR_FILLED, 11.0).color(theme::GOLD));
-        }
-        row(parts)
+        row([self.icon(game, 24.0), text(game.name.clone()).fill_width()])
             .gap(10.0)
             .pad_xy(8.0, 0.0)
             .height(36.0)
@@ -158,7 +158,7 @@ impl GameManager {
             .key(format!("game:{}", game.id))
             .name(game.name.clone())
             .on_click(Message::Select(Some(game.id.clone())))
-            .on_context(move |at| Message::RowContext(id.clone(), at))
+            .on_context(move |at| MenuMessage::Open(id.clone(), at).into())
     }
 
     /// A game's icon, or the game glyph while it loads or when it has none.
@@ -188,11 +188,38 @@ pub(crate) fn store_header(
     } else {
         g::CHEVRON_DOWN
     };
-    let header = row([
-        glyph(if foldable { chevron } else { "" }, 9.0)
-            .color(theme::TEXT_TERTIARY)
-            .width(12.0),
-        text(store.name().to_uppercase())
+    let lead = glyph(if foldable { chevron } else { "" }, 9.0).color(theme::TEXT_TERTIARY);
+    let header = group_header(lead, store.name(), count).key(format!("{key}:{}", store.name()));
+    if !foldable {
+        return header
+            .role(Role::Group)
+            .name(format!("{} games", store.name()));
+    }
+    header
+        .hover_bg(theme::SUBTLE_HOVER)
+        .name(format!(
+            "{} games, {}",
+            store.name(),
+            if folded { "folded" } else { "unfolded" }
+        ))
+        .on_click(Message::ToggleStore(store))
+}
+
+/// The pinned games' header (quick access): a pin, PINNED and how many. It doesn't fold.
+pub(crate) fn pinned_header(key: &str, count: usize) -> El<Message> {
+    let pin = glyph(g::PIN, 11.0).color(theme::ACCENT);
+    group_header(pin, "Pinned", count)
+        .key(format!("{key}:pinned"))
+        .role(Role::Group)
+        .name("Pinned games")
+}
+
+/// A group's header: a glyph in a narrow slot (a chevron, a pin), its label in capitals and a
+/// count badge.
+fn group_header(lead: El<Message>, label: &str, count: usize) -> El<Message> {
+    row([
+        lead.width(12.0),
+        text(label.to_uppercase())
             .text_size(theme::TEXT_CAPTION)
             .weight(700)
             .color(theme::TEXT_SECONDARY),
@@ -207,16 +234,4 @@ pub(crate) fn store_header(
     .pad_xy(6.0, 0.0)
     .height(30.0)
     .radius(theme::RADIUS_CONTROL)
-    .key(format!("{key}:{}", store.name()));
-    if !foldable {
-        return header.name(format!("{} games", store.name()));
-    }
-    header
-        .hover_bg(theme::SUBTLE_HOVER)
-        .name(format!(
-            "{} games, {}",
-            store.name(),
-            if folded { "folded" } else { "unfolded" }
-        ))
-        .on_click(Message::ToggleStore(store))
 }

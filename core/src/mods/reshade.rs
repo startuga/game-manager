@@ -1246,7 +1246,8 @@ mod tests {
             program: Some(PathBuf::from(program)),
             arch,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 

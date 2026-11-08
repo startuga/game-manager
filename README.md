@@ -12,12 +12,28 @@ on the window (a shortcut brings its name, arguments and icon); those are saved 
 
 ## The window
 
-- **The sidebar**: search, a filter (all games, one store, or Favorites), **My PC** and
-  **Library**, then the games by store (click a store to fold it) and **Add a game** at the
-  bottom. Drag its edge to make it wider or narrower. Right-click a game for **Play** and **Add to
-  Favorites** (or Remove from Favorites); favorites are saved in `game-settings.json`.
-- **Library**, where the window opens: every game as a tile with its icon and name, by store,
-  following the search and filter. Click a tile for the game's page, right-click it for its menu.
+- **The sidebar**: search, a filter (all games, one store, or Hidden while some games are
+  hidden), **My PC** and **Library**, then the pinned games under **Pinned**, then the others by
+  store (click a store to fold it), and **Add a game** at the bottom. Drag its edge to make it
+  wider or narrower.
+- **Library**, where the window opens: every game as a tile with its icon and name, the pinned
+  ones first, then by store, following the search and filter. Click a tile for the game's page.
+- **A game's menu**: right-click a game in the sidebar or on Library, or press the **Menu** key or
+  **Shift+F10** on it. The page you are on stays put. **↑↓** move, **Enter** picks, **Escape**
+  closes.
+  - **Pin to quick access** (or **Unpin**): pinned games sit on top of the sidebar and of
+    Library, in the order you pinned them. Favorites from earlier versions became pins.
+  - **Play**, and the store's other ways to start it ("Skip launcher").
+  - **Open folder**, **PCGamingWiki**.
+  - **Rename…** (leave it empty for the store's name), **Hide from the list** (the Hidden filter
+    shows it again, with **Show in the list**). These and the pins are saved in
+    `game-settings.json`.
+  - **Uninstall…** hands the game to Steam, to its own uninstaller (GOG, the EA app, others with
+    a Windows Uninstall entry), or to the Epic Games Launcher, GOG Galaxy or Windows' Installed
+    apps to uninstall it there. They ask before anything is removed. Game Manager deletes
+    nothing itself. Mods it set up outside the game's folder (ReShade's Vulkan layer entry,
+    NVIDIA profile settings) stay. **Rescan** afterwards takes the game off the list.
+  - **Remove from Game Manager**, for games added by hand (their files stay).
 - **Search** (**Ctrl+F** from anywhere): case, accents, ™ and ® and punctuation don't matter, and
   the words can come in any order ("cry far 3"). It also finds a name typed without spaces
   ("halflife"), by its initials ("gta", "tw3"), and by its program's file name ("ffxv").

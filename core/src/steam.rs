@@ -230,7 +230,8 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
         program: None,
         arch: None,
         edits: None,
-        favorite: false,
+        pinned: None,
+        hidden: false,
     })
 }
 

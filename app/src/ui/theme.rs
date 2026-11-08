@@ -61,7 +61,6 @@ pub const CRITICAL: ColorF = argb(0xFFFF_6B6B);
 pub const ERROR_FILL: ColorF = argb(0x33C4_2B1C);
 
 /// The tint palette; each has a 15% wash for chip and icon-square backgrounds (`wash`).
-pub const GOLD: ColorF = argb(0xFFF2_B82E);
 pub const AMBER: ColorF = argb(0xFFFF_C857);
 pub const ORANGE: ColorF = argb(0xFFF0_7F2A);
 pub const VIOLET: ColorF = argb(0xFFB9_A3FF);
@@ -150,8 +149,6 @@ pub mod glyph {
     pub const CHIP: &str = "\u{E950}";
     pub const DOWNLOAD: &str = "\u{E896}";
     pub const DELETE: &str = "\u{E74D}";
-    pub const STAR: &str = "\u{E734}";
-    pub const STAR_FILLED: &str = "\u{E735}";
     pub const OVERVIEW: &str = "\u{E80F}";
     pub const NVIDIA: &str = "\u{E7F4}";
     pub const WRENCH: &str = "\u{E90F}";
@@ -165,4 +162,11 @@ pub mod glyph {
     pub const MEMORY: &str = "\u{EEA0}";
     pub const SYSTEM: &str = "\u{E770}";
     pub const STORAGE: &str = "\u{EDA2}";
+    /// The game menu's Pin / Unpin, Rename…, Hide from / Show in the list, and Remove.
+    pub const PIN: &str = "\u{E718}";
+    pub const UNPIN: &str = "\u{E77A}";
+    pub const RENAME: &str = "\u{E8AC}";
+    pub const HIDE: &str = "\u{ED1A}";
+    pub const VIEW: &str = "\u{E890}";
+    pub const REMOVE: &str = "\u{E738}";
 }

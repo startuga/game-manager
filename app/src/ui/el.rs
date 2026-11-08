@@ -244,6 +244,8 @@ pub enum Role {
     Edit,
     Group,
     Slider,
+    /// An item of a menu: ↑↓ move among a layer's menu items, Enter picks one.
+    MenuItem,
 }
 
 pub struct El<M> {
@@ -286,7 +288,12 @@ pub struct El<M> {
     /// A selected row, tab or nav item; a checked check box.
     pub selected: bool,
     /// Takes every click within it, even where nothing below is clickable (a dialog's backdrop).
+    /// A modal element with an `on_click` is a light-dismiss backdrop (a menu's): a left-click
+    /// sends it, and a right-click reaches what is under it (`input::UiState::pointer_up`).
     pub modal: bool,
+    /// Takes the clicks within it that nothing inside takes, without being a modal layer (a
+    /// menu's panel: its header and lines don't close it).
+    pub opaque: bool,
 }
 
 impl<M> El<M> {
@@ -322,6 +329,7 @@ impl<M> El<M> {
             name: None,
             selected: false,
             modal: false,
+            opaque: false,
         }
     }
 
@@ -458,6 +466,10 @@ impl<M> El<M> {
     }
     pub fn modal(mut self) -> Self {
         self.modal = true;
+        self
+    }
+    pub fn opaque(mut self) -> Self {
+        self.opaque = true;
         self
     }
     pub fn child(mut self, child: El<M>) -> Self {

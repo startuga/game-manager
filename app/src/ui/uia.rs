@@ -41,12 +41,12 @@ use windows::Win32::{
     UIA_ExpandCollapsePatternId, UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId,
     UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_IsContentElementPropertyId,
     UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
-    UIA_IsOffscreenPropertyId, UIA_ListItemControlTypeId, UIA_NamePropertyId,
-    UIA_RangeValuePatternId, UIA_SelectionItemPatternId, UIA_SliderControlTypeId,
-    UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TogglePatternId, UIA_ValuePatternId,
-    UiaAppendRuntimeId, UiaHostProviderFromHwnd, UiaRaiseAutomationEvent, UiaRect,
-    UiaReturnRawElementProvider, UiaRootObjectId, VARENUM, VARIANT, VT_BOOL, VT_BSTR, VT_I4,
-    WM_APP, tagVARIANT_0, tagVARIANT_0_0, tagVARIANT_0_0_0,
+    UIA_IsOffscreenPropertyId, UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId,
+    UIA_NamePropertyId, UIA_RangeValuePatternId, UIA_SelectionItemPatternId,
+    UIA_SliderControlTypeId, UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TogglePatternId,
+    UIA_ValuePatternId, UiaAppendRuntimeId, UiaHostProviderFromHwnd, UiaRaiseAutomationEvent,
+    UiaRect, UiaReturnRawElementProvider, UiaRootObjectId, VARENUM, VARIANT, VT_BOOL, VT_BSTR,
+    VT_I4, WM_APP, tagVARIANT_0, tagVARIANT_0_0, tagVARIANT_0_0_0,
 };
 use windows::core::{
     BOOL, BSTR, ComObjectInterface, Error, HRESULT, IUnknown, Interface, PCWSTR, Result, implement,
@@ -504,7 +504,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
     fn GetPatternProvider(&self, pattern: PATTERNID) -> Result<IUnknown> {
         let node = self.node()?;
         let supported = match node.role {
-            Role::Button => pattern == UIA_InvokePatternId,
+            Role::Button | Role::MenuItem => pattern == UIA_InvokePatternId,
             Role::ListItem | Role::Tab => pattern == UIA_SelectionItemPatternId,
             Role::CheckBox => pattern == UIA_TogglePatternId,
             Role::ComboBox => {
@@ -551,6 +551,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 Role::Edit => UIA_EditControlTypeId,
                 Role::Group => UIA_GroupControlTypeId,
                 Role::Slider => UIA_SliderControlTypeId,
+                Role::MenuItem => UIA_MenuItemControlTypeId,
                 Role::Text | Role::None => UIA_TextControlTypeId,
             }),
             UIA_NamePropertyId => variant_str(&node.name),

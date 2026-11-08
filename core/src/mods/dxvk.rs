@@ -779,7 +779,8 @@ mod tests {
             program: Some(PathBuf::from(r"C:\Games\TRL\trl.exe")),
             arch,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 

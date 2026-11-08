@@ -92,7 +92,8 @@ mod tests {
                 args: Some("-skip".into()),
                 ..Default::default()
             }),
-            favorite: true,
+            pinned: Some(0),
+            hidden: false,
         }]
     }
 

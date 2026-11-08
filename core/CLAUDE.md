@@ -10,12 +10,15 @@ holds the rules and facts that span them.
   `shortcut.rs` (`.lnk` via `ShellLink`).
 - **Game data**:
   - `lib.rs` (`Game`, `Launch`, `Arch`, `scan_all`, `complete_game`).
-  - `config.rs` (shipped `games.json`, the user's `game-settings.json`, `apply`).
+  - `config.rs` (shipped `games.json`, the user's `game-settings.json`: edits, hidden games, and
+    the `pinned` list in pin order, into which older favorites are moved; `apply`).
   - `snapshot.rs` (last scan, for a fast start).
   - `pe.rs` (architecture and imports from PE headers).
 - **Around games**:
   - `launcher.rs` (`launch`, `open_folder`; both on the UI thread, whose COM apartment the Shell
     needs).
+  - `uninstall.rs` (how a game is uninstalled: `route` reads the registry, `run` hands over
+    through `launch`; nothing is deleted here).
   - `icon.rs` (icons as PNG via the Shell + WIC, cached).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
   - `http.rs` (WinHTTP `get`/`download`).
@@ -57,7 +60,8 @@ holds the rules and facts that span them.
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
   - `text.rs`.
   - `com.rs` (`ComGuard`).
-- `examples/scan.rs` – headless check: `-v`, `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`.
+- `examples/scan.rs` – headless check: `-v` (with each game's uninstall route), `--graphics`,
+  `--icons <dir>`, `--nvidia`, `--pc`.
 
 ## Scanning
 - `scan_all` runs these steps in order:
@@ -134,6 +138,15 @@ holds the rules and facts that span them.
   - The EA app's data is encrypted: there is no EA-app launch link.
   - Xbox packaged games start only through `shell:AppsFolder\<family>!<app>`.
   - A GOG primary task can be a launcher (Witcher 3's `REDprelauncher.exe`).
+- **Uninstalling** (`uninstall.rs`):
+  - Steam: `steam://uninstall/<appid>` shows Steam's own confirmation.
+  - GOG and the EA app write a Windows Uninstall entry whose `InstallLocation` is the game's
+    folder. GOG's is the game's `unins000.exe`; the EA app's is
+    `Common Files\EAInstaller\<game>\Cleanup.exe uninstall_game -autologging`, unquoted, so the
+    command is split after `.exe`.
+  - Epic keeps no Uninstall entry: the app opens the launcher's library
+    (`com.epicgames.launcher://library`). Xbox games go to `ms-settings:appsfeatures`.
+  - On 37 games, `scan -v` found every Steam, GOG and EA route.
 - **Protected folders**: Epic/EA under `C:\Program Files` need administrator rights; Steam's and
   some Epic folders grant Users full control. Mod file changes there run in
   `app.exe --file-ops <ops>`, started with `runas`. The ops go on the command line, so the

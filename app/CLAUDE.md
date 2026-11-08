@@ -14,6 +14,9 @@ in `crates/samples/`) instead of guessing.
 - **Views**:
   - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
     dialogs).
+  - `game_menu.rs` (a game's menu from a right-click or the Menu key, which leaves the page as
+    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, and the Rename and Uninstall
+    dialogs).
   - `sidebar.rs` (search, filter, the pages, store groups, game rows, Add a game).
   - `library_page.rs` (the Library grid: a tile per game, by store; the window opens on it).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
@@ -32,7 +35,7 @@ in `crates/samples/`) instead of guessing.
     Deploy has finished; a list that fails to load sends the view back to ReShade.
   - Escape closes the menu, then a dialog, then leaves My PC, or Shaders and Add-ons for ReShade.
 - **UI-free logic**, unit-tested: `edit.rs` (the Game settings draft), `library.rs` (search,
-  filter, selection). Put logic there, not in views.
+  filter, pinned games first, selection). Put logic there, not in views.
 - `ui/` – the toolkit:
   - `el.rs` (the element tree views return; builders), `layout.rs` (a small flexbox, tested),
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
@@ -64,9 +67,18 @@ in `crates/samples/`) instead of guessing.
     so its text follows the app again (the search's ✕).
 - **Search** (`widgets::search_box`, `library::matches`, tested): the matching rules are in
   `library.rs`'s `//!` doc.
-- **Layers** (menus, dialogs): a `modal` element stops hit-testing and scopes Tab to its layer.
-  Escape goes to `App::escape`. A dialog's body scrolls (`app_view::dialog`), so a tall one fits
-  the window.
+- **Layers** (menus, dialogs): a `modal` element stops hit-testing and scopes Tab to its layer;
+  Enter, Space and the Menu key don't reach a focused element under it. Escape goes to
+  `App::escape`. A dialog's body scrolls (`app_view::dialog`), so a tall one fits the window. A
+  dialog whose first control is a text box gives it the keyboard as it opens (Rename, Add a
+  game).
+- **Menus**: a `modal` backdrop with an `on_click` is light-dismiss: a left-click closes the
+  menu, and a right-click sends the `on_context` of what is under it (a new menu replaces the
+  open one, as Windows' menus do), else closes it. The panel is `opaque`, so clicks on its header
+  and lines leave it open. Items are `Role::MenuItem` (UI Automation MenuItems with Invoke); ↑↓
+  go round the top layer's items. `Key::Menu` (the Menu key and Shift+F10, a keyboard `WM_CONTEXTMENU`) sends
+  the focused element's `on_context` at its lower-left; the menu's first item then takes focus,
+  and focus goes back once it closes (`UiState::follow_menu`).
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).
 - **Sliders** (`el::slider`): a press or drag moves the thumb in `UiState::sliding` (drawn only);
@@ -102,7 +114,11 @@ in `crates/samples/`) instead of guessing.
   environment, then post `WM_APP + 9` to its window; the Read tool shows the PNG. Text boxes are
   separate windows, so their text isn't in the capture (read it through UI Automation).
 - **Right-clicks** can be posted (`WM_RBUTTONDOWN`/`WM_RBUTTONUP` at client coordinates), and
-  so can a drag (`WM_LBUTTONDOWN`, `WM_MOUSEMOVE` with `MK_LBUTTON`, `WM_LBUTTONUP`).
+  so can a drag (`WM_LBUTTONDOWN`, `WM_MOUSEMOVE` with `MK_LBUTTON`, `WM_LBUTTONUP`). The Menu
+  key is a posted `WM_CONTEXTMENU` with `lparam` −1; Shift+F10 reads the real keyboard, so the
+  user tries it.
+- **The game menu's Uninstall…** hands the game to its store for real: in a check, open its
+  dialog and Cancel. `scan -v` prints each game's route without running it.
 - **Names repeat**: "ReShade" is a tab, a view pill (both TabItems, the tab first) and a card.
   Pick elements by control type, and the nth match where names repeat.
 - **DXVK in an agent session**: when the user's DXVK cache holds a build of an older layout,

@@ -378,7 +378,8 @@ mod tests {
             program: Some(dir.join(program)),
             arch: None,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 

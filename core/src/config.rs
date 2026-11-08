@@ -6,7 +6,9 @@
 //!   binaries in its install folder, not by a store id, so one entry works for every store and
 //!   computer.
 //! - `%APPDATA%\Game Manager\game-settings.json`: the user's own settings per game, such as the
-//!   program chosen with "Choose game .exe".
+//!   program chosen with "Choose game .exe" or being hidden from the list, and the games pinned
+//!   to quick access in the order they were pinned. Favorites of older versions are read as pins
+//!   (`GameSettings::migrate`) and saved as pins by the next write.
 //!
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
@@ -60,12 +62,16 @@ impl GameDefaults {
     }
 }
 
-/// `game-settings.json`: the user's own settings, by game id. Fields this version does not know
-/// are kept when the file is saved.
+/// `game-settings.json`: the user's own settings, by game id, and the games pinned to quick
+/// access. Fields this version does not know are kept when the file is saved.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct GameSettings {
     #[serde(default)]
     games: BTreeMap<String, GameSetting>,
+    /// Game ids pinned to quick access, in the order they were pinned (kept apart from the
+    /// edits: Reset to detected does not unpin a game).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pinned: Vec<String>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -85,9 +91,13 @@ struct GameSetting {
     arch: Option<Arch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     graphics_api: Option<GraphicsApi>,
-    /// Kept apart from the edits: Reset to detected does not unfavorite a game.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// A favorite of an older version: read, moved into `GameSettings::pinned` (`migrate`), and
+    /// never written again.
+    #[serde(default, skip_serializing)]
     favorite: bool,
+    /// Hidden from the library's lists; kept apart from the edits, like the pins.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -172,7 +182,7 @@ impl GameSetting {
 
     /// Nothing left to save for the game.
     fn is_empty(&self) -> bool {
-        self.edits().is_empty() && !self.favorite && self.other.is_empty()
+        self.edits().is_empty() && !self.favorite && !self.hidden && self.other.is_empty()
     }
 }
 
@@ -182,8 +192,24 @@ impl GameSettings {
         Some(self.games.get(id)?.edits()).filter(|edits| !edits.is_empty())
     }
 
-    fn is_favorite(&self, id: &str) -> bool {
-        self.games.get(id).is_some_and(|setting| setting.favorite)
+    /// The game's place among the pinned games.
+    fn pin_of(&self, id: &str) -> Option<usize> {
+        self.pinned.iter().position(|pinned| pinned == id)
+    }
+
+    /// Favorites (before pins replaced them) become pinned games, after those already pinned, by
+    /// id; entries left with nothing else go. Done on every read, and saved by the next write.
+    fn migrate(&mut self) {
+        for (id, setting) in &mut self.games {
+            if std::mem::take(&mut setting.favorite) && !self.pinned.contains(id) {
+                self.pinned.push(id.clone());
+            }
+        }
+        self.games.retain(|_, setting| !setting.is_empty());
+    }
+
+    fn is_hidden(&self, id: &str) -> bool {
+        self.games.get(id).is_some_and(|setting| setting.hidden)
     }
 }
 
@@ -210,7 +236,13 @@ pub(crate) fn shipped_file(name: &Path) -> Option<PathBuf> {
 
 /// The user's settings; empty when there are none yet.
 pub fn load_settings() -> Result<GameSettings> {
-    json_file::load(&json_file::user_file(SETTINGS_FILE)?)
+    load_settings_from(&json_file::user_file(SETTINGS_FILE)?)
+}
+
+fn load_settings_from(file: &Path) -> Result<GameSettings> {
+    let mut settings: GameSettings = json_file::load(file)?;
+    settings.migrate();
+    Ok(settings)
 }
 
 /// Saves the user's edits for a game, replacing its previous ones. Empty edits remove them.
@@ -223,28 +255,49 @@ pub fn clear_edits(id: &str) -> Result<()> {
     save_edits(id, &GameEdits::default())
 }
 
-/// Adds a game to the user's favorites, or removes it.
-pub fn set_favorite(id: &str, favorite: bool) -> Result<()> {
-    set_favorite_in(&json_file::user_file(SETTINGS_FILE)?, id, favorite)
+/// Pins a game to quick access, after those already pinned, or unpins it.
+pub fn set_pinned(id: &str, pinned: bool) -> Result<()> {
+    set_pinned_in(&json_file::user_file(SETTINGS_FILE)?, id, pinned)
+}
+
+/// Hides a game from the library's lists, or shows it again.
+pub fn set_hidden(id: &str, hidden: bool) -> Result<()> {
+    set_hidden_in(&json_file::user_file(SETTINGS_FILE)?, id, hidden)
+}
+
+fn set_hidden_in(file: &Path, id: &str, hidden: bool) -> Result<()> {
+    update_setting(file, id, |setting| setting.hidden = hidden)
 }
 
 fn save_edits_in(file: &Path, id: &str, edits: &GameEdits) -> Result<()> {
     update_setting(file, id, |setting| setting.set_edits(edits.normalized()))
 }
 
-fn set_favorite_in(file: &Path, id: &str, favorite: bool) -> Result<()> {
-    update_setting(file, id, |setting| setting.favorite = favorite)
+fn set_pinned_in(file: &Path, id: &str, pinned: bool) -> Result<()> {
+    update_settings(file, |settings| {
+        settings.pinned.retain(|other| other != id);
+        if pinned {
+            settings.pinned.push(id.to_owned());
+        }
+    })
 }
 
 /// Changes one game's entry in the settings file, dropping the entry once nothing is left in it.
 fn update_setting(file: &Path, id: &str, change: impl FnOnce(&mut GameSetting)) -> Result<()> {
-    // Loading first also means a file that cannot be read is never overwritten.
-    let mut settings: GameSettings = json_file::load(file)?;
-    let entry = settings.games.entry(id.to_owned()).or_default();
-    change(entry);
-    if entry.is_empty() {
-        settings.games.remove(id);
-    }
+    update_settings(file, |settings| {
+        let entry = settings.games.entry(id.to_owned()).or_default();
+        change(entry);
+        if entry.is_empty() {
+            settings.games.remove(id);
+        }
+    })
+}
+
+/// Changes the settings file. Loading first also means a file that cannot be read is never
+/// overwritten.
+fn update_settings(file: &Path, change: impl FnOnce(&mut GameSettings)) -> Result<()> {
+    let mut settings = load_settings_from(file)?;
+    change(&mut settings);
     json_file::save(file, &settings)
 }
 
@@ -273,7 +326,8 @@ pub fn apply(games: &mut Vec<Game>, defaults: &GameDefaults, settings: &GameSett
             game.arch = Some(arch);
         }
         game.edits = edits;
-        game.favorite = settings.is_favorite(&game.id);
+        game.pinned = settings.pin_of(&game.id);
+        game.hidden = settings.is_hidden(&game.id);
     }
 }
 
@@ -318,7 +372,8 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 
@@ -522,26 +577,31 @@ mod tests {
             ..GameEdits::default()
         };
         assert!(save_edits_in(&file, "epic:Ginger", &edits).is_err());
-        assert!(set_favorite_in(&file, "epic:Ginger", true).is_err());
+        assert!(set_pinned_in(&file, "epic:Ginger", true).is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "{ broken");
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn favorites_are_saved_apart_from_the_edits() {
-        let dir = temp_dir("favorites");
+    fn pins_keep_their_order_apart_from_the_edits() {
+        let dir = temp_dir("pins");
         let file = dir.join(SETTINGS_FILE);
         fs::write(&file, r#"{ "games": { "gog:1": { "later": 1 } } }"#).unwrap();
         let saved = || -> serde_json::Value {
             serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
         };
+        let pinned = || saved()["pinned"].clone();
 
-        set_favorite_in(&file, "epic:Ginger", true).unwrap();
-        set_favorite_in(&file, "gog:1", true).unwrap();
-        assert_eq!(saved()["games"]["epic:Ginger"]["favorite"], true);
+        set_pinned_in(&file, "epic:Ginger", true).unwrap();
+        set_pinned_in(&file, "gog:1", true).unwrap();
+        set_pinned_in(&file, "steam:1", true).unwrap();
+        assert_eq!(
+            pinned(),
+            serde_json::json!(["epic:Ginger", "gog:1", "steam:1"])
+        );
         assert_eq!(saved()["games"]["gog:1"]["later"], 1);
 
-        // Reset to detected (clearing the edits, choices included) keeps the game a favorite.
+        // Reset to detected (clearing the edits, choices included) keeps the game pinned.
         let renamed = GameEdits {
             name: Some("Cyberpunk".into()),
             graphics_api: Some(GraphicsApi::DirectX12),
@@ -549,27 +609,108 @@ mod tests {
         };
         save_edits_in(&file, "epic:Ginger", &renamed).unwrap();
         save_edits_in(&file, "epic:Ginger", &GameEdits::default()).unwrap();
-        assert_eq!(saved()["games"]["epic:Ginger"]["favorite"], true);
-        assert!(saved()["games"]["epic:Ginger"].get("name").is_none());
-        assert!(saved()["games"]["epic:Ginger"].get("graphicsApi").is_none());
-
-        // Unfavoriting drops an entry with nothing else in it, not one with other settings.
-        set_favorite_in(&file, "epic:Ginger", false).unwrap();
-        set_favorite_in(&file, "gog:1", false).unwrap();
         assert!(saved()["games"].get("epic:Ginger").is_none());
-        assert!(saved()["games"]["gog:1"].get("favorite").is_none());
-        assert_eq!(saved()["games"]["gog:1"]["later"], 1);
+        assert_eq!(pinned()[0], "epic:Ginger");
 
-        // `apply` marks the scanned games.
-        set_favorite_in(&file, "epic:Ginger", true).unwrap();
-        let settings: GameSettings = json_file::load(&file).unwrap();
+        // Unpinning closes the gap; pinning again goes last. Twice changes nothing.
+        set_pinned_in(&file, "epic:Ginger", false).unwrap();
+        set_pinned_in(&file, "epic:Ginger", true).unwrap();
+        set_pinned_in(&file, "epic:Ginger", true).unwrap();
+        assert_eq!(
+            pinned(),
+            serde_json::json!(["gog:1", "steam:1", "epic:Ginger"])
+        );
+
+        // `apply` gives the scanned games their place.
+        let settings = load_settings_from(&file).unwrap();
         let mut games = vec![
             game("epic:Ginger", "Cyberpunk 2077", None),
             game("gog:1", "The Witcher 3", None),
+            game("gog:2", "Unpinned", None),
         ];
         apply(&mut games, &GameDefaults::default(), &settings);
-        assert!(games[0].favorite);
-        assert!(!games[1].favorite);
+        let places: Vec<Option<usize>> = games.iter().map(|game| game.pinned).collect();
+        assert_eq!(places, [Some(2), Some(0), None]);
+
+        // Nothing pinned: no list in the file.
+        for id in ["gog:1", "steam:1", "epic:Ginger"] {
+            set_pinned_in(&file, id, false).unwrap();
+        }
+        assert!(saved().get("pinned").is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn favorites_become_pins() {
+        let dir = temp_dir("favorites");
+        let file = dir.join(SETTINGS_FILE);
+        fs::write(
+            &file,
+            r#"{ "games": {
+                "steam:1": { "favorite": true },
+                "gog:1": { "favorite": true, "name": "Witcher" },
+                "epic:Ginger": { "favorite": false, "hidden": true }
+            }, "pinned": ["steam:2"] }"#,
+        )
+        .unwrap();
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        // Read: pinned after those already pinned, by id.
+        let settings = load_settings_from(&file).unwrap();
+        assert_eq!(settings.pinned, ["steam:2", "gog:1", "steam:1"]);
+        let mut games = vec![game("steam:1", "Half-Life", None)];
+        apply(&mut games, &GameDefaults::default(), &settings);
+        assert_eq!(games[0].pinned, Some(2));
+
+        // The next write saves it: no favorites left, an entry that held only one is gone.
+        set_hidden_in(&file, "epic:Ginger", false).unwrap();
+        let file_now = saved();
+        assert_eq!(
+            file_now["pinned"],
+            serde_json::json!(["steam:2", "gog:1", "steam:1"])
+        );
+        assert!(file_now["games"].get("steam:1").is_none());
+        assert!(file_now["games"].get("epic:Ginger").is_none());
+        assert_eq!(file_now["games"]["gog:1"]["name"], "Witcher");
+        assert!(file_now["games"]["gog:1"].get("favorite").is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hidden_games_are_saved_apart_like_pins() {
+        let dir = temp_dir("hidden");
+        let file = dir.join(SETTINGS_FILE);
+        fs::write(
+            &file,
+            r#"{ "games": { "gog:1": { "later": 1 } }, "pinned": ["gog:1"] }"#,
+        )
+        .unwrap();
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        set_hidden_in(&file, "epic:Ginger", true).unwrap();
+        set_hidden_in(&file, "gog:1", true).unwrap();
+        assert_eq!(saved()["games"]["epic:Ginger"]["hidden"], true);
+        assert_eq!(saved()["pinned"][0], "gog:1");
+
+        // `apply` marks the scanned games; a hidden game stays pinned.
+        let settings = load_settings_from(&file).unwrap();
+        let mut games = vec![
+            game("epic:Ginger", "Cyberpunk 2077", None),
+            game("gog:1", "The Witcher 3", None),
+            game("steam:1", "Half-Life", None),
+        ];
+        apply(&mut games, &GameDefaults::default(), &settings);
+        assert!(games[0].hidden && games[1].hidden && !games[2].hidden);
+        assert_eq!(games[1].pinned, Some(0));
+
+        // Showing it again drops an entry with nothing else in it, not one with other settings.
+        set_hidden_in(&file, "epic:Ginger", false).unwrap();
+        set_hidden_in(&file, "gog:1", false).unwrap();
+        assert!(saved()["games"].get("epic:Ginger").is_none());
+        assert!(saved()["games"]["gog:1"].get("hidden").is_none());
+        assert_eq!(saved()["games"]["gog:1"]["later"], 1);
         fs::remove_dir_all(&dir).unwrap();
     }
 

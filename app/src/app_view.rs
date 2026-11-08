@@ -1,5 +1,5 @@
 //! The window's view: the title bar, the sidebar beside the page, the error bar, and the layers
-//! over them: the game's right-click menu and the dialogs.
+//! over them: the game's menu (`game_menu.rs`) and the dialogs.
 //!
 //! The title bar is drawn by the app. Its keys (`shell::CAPTION_*`) tell the window where it can
 //! be dragged and where its minimize, maximize and close buttons are, so Windows 11 offers Snap
@@ -16,9 +16,6 @@ use crate::ui::widgets::{
 };
 use crate::{DialogResult, GameManager, Message};
 
-/// The game menu's width and its height (two items).
-const MENU_WIDTH: f32 = 240.0;
-const MENU_HEIGHT: f32 = 78.0;
 /// The close button's hover colour, as Windows draws it.
 const CLOSE_HOVER: windows_canvas::ColorF = theme::argb(0xFFC4_2B1C);
 
@@ -42,7 +39,7 @@ impl GameManager {
                 .valign(Align::Stretch),
         );
         let mut stack = vec![col(page).grow()];
-        stack.extend(self.row_menu_layer(window));
+        stack.extend(self.game_menu_layer(window));
         stack.extend(self.dialog_layer(window));
         layers(stack).grow()
     }
@@ -105,72 +102,8 @@ impl GameManager {
         .key(CAPTION_DRAG)
     }
 
-    /// The game's menu at the pointer, kept inside the window, over a backdrop that closes it.
-    fn row_menu_layer(&self, window: &WindowInfo) -> Option<El<Message>> {
-        let menu = self.row_menu.as_ref()?;
-        let game = self.games.iter().find(|game| game.id == menu.id)?;
-        let (width, height) = window.size;
-        let x = if menu.x + MENU_WIDTH > width {
-            (menu.x - MENU_WIDTH).max(0.0)
-        } else {
-            menu.x
-        };
-        let y = if menu.y + MENU_HEIGHT > height {
-            (menu.y - MENU_HEIGHT).max(0.0)
-        } else {
-            menu.y
-        };
-        let item = |icon: &str, label: &str, name: String, message: Message| {
-            row([glyph(icon, theme::ICON_SIZE), text(label)])
-                .gap(10.0)
-                .pad_xy(10.0, 0.0)
-                .height(32.0)
-                .hover_bg(theme::SUBTLE_HOVER)
-                .pressed_bg(theme::SUBTLE_PRESSED)
-                .radius(theme::RADIUS_CONTROL)
-                .name(name)
-                .on_click(message)
-        };
-        let favorite = if game.favorite {
-            item(
-                g::STAR_FILLED,
-                "Remove from Favorites",
-                format!("Remove {} from Favorites", game.name),
-                Message::RowMenuFavorite,
-            )
-        } else {
-            item(
-                g::STAR,
-                "Add to Favorites",
-                format!("Add {} to Favorites", game.name),
-                Message::RowMenuFavorite,
-            )
-        };
-        let panel = col([
-            item(
-                g::PLAY,
-                "Play",
-                format!("Play {}", game.name),
-                Message::RowMenuPlay,
-            ),
-            favorite,
-        ])
-        .gap(2.0)
-        .pad(4.0)
-        .width(MENU_WIDTH)
-        .bg(theme::FLYOUT)
-        .stroke(theme::FLYOUT_STROKE, 1.0)
-        .radius(theme::RADIUS_FLYOUT);
-        let backdrop = col([]).grow().modal().on_click(Message::CloseRowMenu);
-        let placed = col([panel])
-            .padding(crate::ui::el::Edges::new(x, y, 0.0, 0.0))
-            .halign(Align::Start)
-            .valign(Align::Start);
-        Some(layers([backdrop, placed]).grow())
-    }
-
-    /// The open dialog: a new display mode to keep, adding a game, removing one, or a mod's Info
-    /// or settings.
+    /// The open dialog: a new display mode to keep, renaming or uninstalling a game (its menu's),
+    /// adding a game, removing one, or a mod's Info or settings.
     fn dialog_layer(&self, window: &WindowInfo) -> Option<El<Message>> {
         if let Some(trial) = &self.my_pc.trial {
             let mode = trial.after;
@@ -188,6 +121,9 @@ impl GameManager {
                 Some(("Keep", !self.my_pc.busy, MyPcMessage::KeepMode.into())),
                 ("Go back", MyPcMessage::RevertMode.into()),
             ));
+        }
+        if let Some(dialog) = self.game_menu_dialog(window) {
+            return Some(dialog);
         }
         if let Some(draft) = &self.draft {
             let has_name = !draft.name.trim().is_empty();

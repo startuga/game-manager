@@ -26,6 +26,7 @@ mod signature;
 pub mod snapshot;
 pub mod steam;
 mod text;
+pub mod uninstall;
 pub mod vdf;
 mod version_info;
 pub mod xbox;
@@ -150,9 +151,14 @@ pub struct Game {
     /// app can show and reset it. `None` when the game is as detected.
     #[serde(default)]
     pub edits: Option<config::GameEdits>,
-    /// One of the user's favorites (`game-settings.json`).
+    /// Its place among the games pinned to quick access (`game-settings.json`), in the order they
+    /// were pinned; `None` when it isn't pinned.
     #[serde(default)]
-    pub favorite: bool,
+    pub pinned: Option<usize>,
+    /// Hidden from the library's lists by the user (`game-settings.json`); the Hidden filter
+    /// shows it.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// `launch` with these command-line arguments, when it can take them: a program gets them as its
@@ -387,7 +393,8 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 

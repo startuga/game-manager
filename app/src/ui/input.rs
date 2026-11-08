@@ -6,11 +6,23 @@
 //!
 //! A `Frame` is the last element tree with its layout. Events are hit-tested against it, topmost
 //! first: an open drop-down's list, then the tree from its last layer down. A `modal` element (a
-//! dialog's backdrop) stops the search, so nothing under a dialog reacts. Disabled elements and
-//! everything inside them don't react either.
+//! dialog's backdrop) stops the search, so nothing under a dialog reacts; an `opaque` one (a
+//! menu's panel) stops it too, without being a layer of its own. Disabled elements and everything
+//! inside them don't react either.
+//!
+//! A modal element with an `on_click` is a light-dismiss backdrop (a menu's): a left-click sends
+//! it, and a right-click sends the `on_context` of what is under it instead (a new menu, which
+//! replaces the open one, as Windows' menus do), or the backdrop's `on_click` when nothing there
+//! has one.
 //!
 //! Events return the `Message` the app should get, if any; the caller redraws when they report a
 //! change.
+//!
+//! Keys: Tab cycles focus within the top modal layer; Enter and Space activate the focused element
+//! unless a dialog or menu covers it; the arrows step a list's rows (`Role::ListItem`) or, while a
+//! menu is open, its items (`Role::MenuItem`, going round). `Key::Menu` sends the focused
+//! element's `on_context` at its lower-left corner; after the next layout, `follow_menu` gives the
+//! menu's first item focus, and gives it back to that element once the menu has closed.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -38,7 +50,9 @@ pub enum Button {
 /// A key the kit handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
-    Tab { shift: bool },
+    Tab {
+        shift: bool,
+    },
     Enter,
     Space,
     Escape,
@@ -50,6 +64,9 @@ pub enum Key {
     PageDown,
     Home,
     End,
+    /// The Menu key or Shift+F10 (`WM_CONTEXTMENU` from the keyboard): the focused element's
+    /// right-click menu.
+    Menu,
 }
 
 /// What a key did.
@@ -108,6 +125,10 @@ pub struct UiState {
     /// fade in and out over `HOVER_FADE`.
     hover_since: Option<Instant>,
     unhover: Option<(u64, Instant)>,
+    /// The element whose menu the keyboard opened: the menu's first item takes focus once it
+    /// shows, and focus comes back here when it closes.
+    menu_owner: Option<u64>,
+    menu_shown: bool,
 }
 
 /// How long a hover fill takes to fade in or out, in seconds.
@@ -134,7 +155,16 @@ pub struct Frame<M> {
 impl<M: Clone> Frame<M> {
     /// The interactive element under a point, unless a modal layer is in the way.
     pub fn hit(&self, x: f32, y: f32) -> Option<Hit<'_, M>> {
-        match hit(&self.root, &self.placed, x, y) {
+        match hit(&self.root, &self.placed, x, y, None) {
+            Found::Hit(hit) => Some(hit),
+            Found::Blocked | Found::Miss => None,
+        }
+    }
+
+    /// The interactive element under a point once the element `skip` (a menu's backdrop) is
+    /// taken away: what a right-click outside a menu reaches.
+    fn hit_beneath(&self, skip: u64, x: f32, y: f32) -> Option<Hit<'_, M>> {
+        match hit(&self.root, &self.placed, x, y, Some(skip)) {
             Found::Hit(hit) => Some(hit),
             Found::Blocked | Found::Miss => None,
         }
@@ -190,6 +220,17 @@ impl<M: Clone> Frame<M> {
     pub fn modal_layer(&self) -> Option<(&El<M>, &Placed)> {
         let (el, placed) = self.top_modal();
         (!std::ptr::eq(el, &self.root)).then_some((el, placed))
+    }
+
+    /// The menu items of the top modal layer (an open menu), in order.
+    pub fn menu_items(&self) -> Vec<u64> {
+        self.focusables()
+            .into_iter()
+            .filter(|id| {
+                self.find(*id)
+                    .is_some_and(|hit| hit.el.role == Role::MenuItem)
+            })
+            .collect()
     }
 
     /// The layer holding the topmost modal element (a dialog's backdrop and its card), else the
@@ -275,13 +316,21 @@ fn bar_strip(info: &ScrollInfo) -> Rect {
     )
 }
 
-fn hit<'a, M>(el: &'a El<M>, placed: &'a Placed, x: f32, y: f32) -> Found<'a, M> {
-    if !placed.clip.contains(x, y) {
+/// The innermost interactive element under a point, topmost first; `skip` (a menu's backdrop) is
+/// passed over as if it weren't there.
+fn hit<'a, M>(
+    el: &'a El<M>,
+    placed: &'a Placed,
+    x: f32,
+    y: f32,
+    skip: Option<u64>,
+) -> Found<'a, M> {
+    if !placed.clip.contains(x, y) || skip == Some(placed.id) {
         return Found::Miss;
     }
     if el.enabled {
         for (child, child_placed) in el.children.iter().zip(&placed.children).rev() {
-            match hit(child, child_placed, x, y) {
+            match hit(child, child_placed, x, y, skip) {
                 Found::Miss => {}
                 found => return found,
             }
@@ -290,7 +339,7 @@ fn hit<'a, M>(el: &'a El<M>, placed: &'a Placed, x: f32, y: f32) -> Found<'a, M>
             return Found::Hit(Hit { el, placed });
         }
     }
-    if el.modal {
+    if el.modal || el.opaque {
         Found::Blocked
     } else {
         Found::Miss
@@ -578,6 +627,14 @@ impl UiState {
             return (pressed.is_some(), None);
         }
         match button {
+            // On a menu's light-dismiss backdrop, as with Windows' menus: the menu of what is
+            // under it, which replaces this one; with none there, the menu closes.
+            Button::Right if hit.el.modal && hit.el.on_click.is_some() => {
+                let beneath = frame
+                    .hit_beneath(hit.placed.id, x, y)
+                    .and_then(|under| under.el.on_context.as_ref().map(|handler| handler((x, y))));
+                (true, beneath.or_else(|| hit.el.on_click.clone()))
+            }
             Button::Right => (
                 true,
                 hit.el.on_context.as_ref().map(|handler| handler((x, y))),
@@ -688,24 +745,94 @@ impl UiState {
                 KeyResult::Changed
             }
             Key::Enter | Key::Space => {
-                let Some(hit) = self.focus.and_then(|id| frame.find(id)) else {
+                // What a dialog or a menu covers doesn't react, even with focus.
+                let Some(hit) = self.reachable_focus(frame) else {
                     return KeyResult::Unhandled;
                 };
-                if !hit.el.enabled {
-                    return KeyResult::Unhandled;
-                }
                 match self.activate(hit.el, hit.placed.id) {
                     Some(message) => KeyResult::Message(message),
                     None if self.open_dropdown.is_some() => KeyResult::Changed,
                     None => KeyResult::Unhandled,
                 }
             }
-            // In a list, the arrows pick the next or previous row.
-            Key::Up | Key::Down | Key::Home | Key::End => self.step_list(frame, key),
+            Key::Menu => {
+                let Some(hit) = self.reachable_focus(frame) else {
+                    return KeyResult::Unhandled;
+                };
+                let Some(handler) = &hit.el.on_context else {
+                    return KeyResult::Unhandled;
+                };
+                // The menu opens at the element's lower-left corner.
+                let rect = hit.placed.rect;
+                self.menu_owner = Some(hit.placed.id);
+                self.menu_shown = false;
+                KeyResult::Message(handler((rect.x, rect.bottom())))
+            }
+            // In an open menu, the arrows move among its items; in a list, they pick the next or
+            // previous row.
+            Key::Up | Key::Down | Key::Home | Key::End => match self.step_menu(frame, key) {
+                Some(result) => result,
+                None => self.step_list(frame, key),
+            },
             Key::Left | Key::Right | Key::PageUp | Key::PageDown | Key::Escape => {
                 KeyResult::Unhandled
             }
         }
+    }
+
+    /// The focused element, when it is enabled and not under a dialog or a menu.
+    fn reachable_focus<'a, M: Clone>(&self, frame: &'a Frame<M>) -> Option<Hit<'a, M>> {
+        let id = self.focus?;
+        if !frame.focusables().contains(&id) {
+            return None;
+        }
+        frame.find(id).filter(|hit| hit.el.enabled)
+    }
+
+    /// Moves focus among an open menu's items, round from the last to the first; from outside
+    /// them, ↓ goes to the first and ↑ to the last. `None` when no menu is open.
+    fn step_menu<M: Clone>(&mut self, frame: &Frame<M>, key: Key) -> Option<KeyResult<M>> {
+        let items = frame.menu_items();
+        let count = items.len();
+        if count == 0 {
+            return None;
+        }
+        let at = self
+            .focus
+            .and_then(|id| items.iter().position(|item| *item == id));
+        let next = match (key, at) {
+            (Key::Down, Some(i)) => (i + 1) % count,
+            (Key::Up, Some(i)) => (i + count - 1) % count,
+            (Key::Up | Key::End, _) => count - 1,
+            _ => 0,
+        };
+        self.focus = Some(items[next]);
+        self.focus_visible = true;
+        self.scroll_into_view(frame, items[next]);
+        Some(KeyResult::Changed)
+    }
+
+    /// After a layout: a menu the keyboard opened gives its first item focus, and once it has
+    /// closed, focus goes back to the element that opened it.
+    pub fn follow_menu<M: Clone>(&mut self, frame: &Frame<M>) {
+        let Some(owner) = self.menu_owner else {
+            return;
+        };
+        let items = frame.menu_items();
+        if let Some(first) = items.first() {
+            if !self.menu_shown {
+                self.menu_shown = true;
+                self.focus = Some(*first);
+                self.focus_visible = true;
+            }
+            return;
+        }
+        if self.menu_shown && frame.focusables().contains(&owner) {
+            self.focus = Some(owner);
+            self.focus_visible = true;
+        }
+        self.menu_owner = None;
+        self.menu_shown = false;
     }
 
     /// Moves the selection in the list holding the focused row.
@@ -1052,6 +1179,130 @@ mod tests {
         f = frame(f.root, &ui);
         assert_eq!(f.placed.children[0].scroll.unwrap().offset, 40.0);
         assert_eq!(ui.key(&f, Key::Home), KeyResult::Message("0"));
+    }
+
+    /// A row with a menu, and the same row under its open menu (two items over a backdrop).
+    fn menu_frames(ui: &UiState) -> (Frame<&'static str>, Frame<&'static str>) {
+        let owner = || {
+            text("game")
+                .height(20.0)
+                .key("row")
+                .on_click("select")
+                .on_context(|_| "open menu")
+        };
+        let item = |label: &'static str| {
+            text(label)
+                .height(20.0)
+                .on_click(label)
+                .role(Role::MenuItem)
+        };
+        let closed = frame(col([owner()]), ui);
+        let open = frame(
+            layers([
+                col([owner()]),
+                layers([
+                    col([]).grow().modal().on_click("close"),
+                    col([item("play"), text("—").height(4.0), item("hide")]),
+                ]),
+            ]),
+            ui,
+        );
+        (closed, open)
+    }
+
+    #[test]
+    fn the_arrows_go_round_a_menu_and_what_it_covers_takes_no_key() {
+        let mut ui = ui();
+        let (closed, open) = menu_frames(&ui);
+        // The row under the menu keeps focus, but Enter doesn't reach it.
+        ui.key(&closed, Key::Tab { shift: false });
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Unhandled);
+        assert_eq!(ui.key(&open, Key::Menu), KeyResult::Unhandled);
+        // From outside the items, ↓ goes to the first and ↑ to the last; they go round.
+        assert_eq!(ui.key(&open, Key::Down), KeyResult::Changed);
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("play"));
+        ui.key(&open, Key::Down);
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("hide"));
+        ui.key(&open, Key::Down);
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("play"));
+        ui.key(&open, Key::Up);
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("hide"));
+        ui.focus = None;
+        ui.key(&open, Key::Up);
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("hide"));
+        // With no menu, the arrows are a list's (none here).
+        assert_eq!(ui.key(&closed, Key::Down), KeyResult::Unhandled);
+    }
+
+    #[test]
+    fn the_menu_key_opens_the_focused_elements_menu_and_focus_comes_back() {
+        let mut ui = ui();
+        let (closed, open) = menu_frames(&ui);
+        // Nothing focused: no menu.
+        assert_eq!(ui.key(&closed, Key::Menu), KeyResult::Unhandled);
+        ui.key(&closed, Key::Tab { shift: false });
+        let row = ui.focus;
+        assert_eq!(ui.key(&closed, Key::Menu), KeyResult::Message("open menu"));
+        // The menu shows: its first item takes focus.
+        ui.forget_missing(&open);
+        ui.follow_menu(&open);
+        assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("play"));
+        // It closed: back on the row.
+        ui.forget_missing(&closed);
+        ui.follow_menu(&closed);
+        assert_eq!(ui.focus, row);
+        assert!(ui.focus_visible);
+        assert_eq!(ui.key(&closed, Key::Enter), KeyResult::Message("select"));
+    }
+
+    #[test]
+    fn a_right_click_outside_a_menu_opens_what_is_under_it_or_closes_it() {
+        use crate::ui::el::Align;
+        let right_click = |ui: &mut UiState, frame: &Frame<&'static str>, x: f32, y: f32| {
+            ui.pointer_down(frame, x, y, Button::Right);
+            ui.pointer_up(frame, x, y, Button::Right).1
+        };
+        let rows = || {
+            col([
+                text("a")
+                    .height(20.0)
+                    .on_click("a")
+                    .on_context(|_| "menu a"),
+                text("b")
+                    .height(20.0)
+                    .on_click("b")
+                    .on_context(|_| "menu b"),
+                text("plain").height(20.0).on_click("plain"),
+            ])
+        };
+        // A 60 × 40 menu in the lower-right corner: one item, then its panel's own space.
+        let panel = col([text("play").height(20.0).on_click("play")])
+            .size(60.0, 40.0)
+            .halign(Align::End)
+            .valign(Align::End)
+            .opaque();
+        let mut ui = ui();
+        let f = frame(
+            layers([
+                rows(),
+                layers([col([]).grow().modal().on_click("close"), panel]),
+            ]),
+            &ui,
+        );
+        // Outside the menu: the menu of what is under the pointer, else it closes.
+        assert_eq!(right_click(&mut ui, &f, 5.0, 25.0), Some("menu b"));
+        assert_eq!(right_click(&mut ui, &f, 5.0, 5.0), Some("menu a"));
+        assert_eq!(right_click(&mut ui, &f, 5.0, 45.0), Some("close"));
+        assert_eq!(right_click(&mut ui, &f, 5.0, 100.0), Some("close"));
+        // A left-click outside only closes it.
+        assert_eq!(click(&mut ui, &f, 5.0, 25.0), Some("close"));
+        // Its item works; the rest of its panel takes clicks without closing it.
+        assert_eq!(click(&mut ui, &f, 150.0, 165.0), Some("play"));
+        assert_eq!(click(&mut ui, &f, 150.0, 190.0), None);
+        assert_eq!(right_click(&mut ui, &f, 150.0, 190.0), None);
+        // A dialog's backdrop has no click: nothing under it reacts, right-click or not.
+        let dialog = frame(layers([rows(), layers([col([]).grow().modal()])]), &ui);
+        assert_eq!(right_click(&mut ui, &dialog, 5.0, 5.0), None);
     }
 
     #[test]

@@ -103,7 +103,8 @@ pub fn scan() -> Result<Vec<Game>> {
             program: None,
             arch: None,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         });
     }
     Ok(games)

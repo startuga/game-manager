@@ -16,6 +16,8 @@
 //!   `CAPTION_MAX` and `CAPTION_CLOSE` tell `WM_NCHITTEST` where the draggable bar and the caption
 //!   buttons are (`window.rs`). Over the buttons the pointer arrives as non-client messages, which
 //!   are fed to the toolkit like client ones.
+//! - **Keys**: `WM_KEYDOWN` and the text boxes' `WM_EDIT_KEY` become toolkit keys; the Menu key
+//!   and Shift+F10 arrive as a keyboard `WM_CONTEXTMENU` (`Key::Menu`).
 //! - **Files dropped** on the window (`WM_DROPFILES`) go to `App::drop_files`.
 //! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`).
 //! - **UI Automation**: `WM_GETOBJECT` and the actions it posts (`ui::uia`).
@@ -41,11 +43,11 @@ use windows::Win32::{
     SetCapture, SetCursor, SetFocus, SetProcessDpiAwarenessContext, SetTimer, ShowWindow,
     TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END,
     VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
-    VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_DROPFILES,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN,
-    WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_SIZE, WM_TIMER, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_COMMAND, WM_CONTEXTMENU, WM_CTLCOLOREDIT, WM_DPICHANGED,
+    WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -224,6 +226,8 @@ struct Shell<A: App> {
     redraw: bool,
     minimized: bool,
     tracking: bool,
+    /// The text box a dialog opened with (its first control), given the keyboard once.
+    dialog_edit: Option<u64>,
 }
 
 fn low(value: isize) -> i32 {
@@ -258,6 +262,7 @@ impl<A: App> Shell<A> {
             redraw: true,
             minimized: false,
             tracking: false,
+            dialog_edit: None,
         }
     }
 
@@ -302,18 +307,36 @@ impl<A: App> Shell<A> {
         let placed = Layout::new(&self.text, &self.ui.scroll).place(&root, rect);
         let frame = Frame { root, placed };
         self.ui.forget_missing(&frame);
+        self.ui.follow_menu(&frame);
         let mut specs = Vec::new();
         edit_box::collect(&frame.root, &frame.placed, &mut specs);
         // Text boxes are child windows, drawn over everything: under a dialog or a menu, only
         // its own show.
+        let mut dialog_edit = None;
         if let Some((layer, placed)) = frame.modal_layer() {
             let mut inside = Vec::new();
             edit_box::collect(layer, placed, &mut inside);
             for spec in &mut specs {
                 spec.visible &= inside.iter().any(|kept| kept.id == spec.id);
             }
+            dialog_edit = frame
+                .focusables()
+                .first()
+                .copied()
+                .filter(|id| inside.iter().any(|spec| spec.id == *id && spec.visible));
         }
         self.edits.sync(&specs, self.dpi);
+        // A dialog whose first control is a text box (Rename, Add a game) gives it the keyboard
+        // as it opens, its text selected.
+        if dialog_edit != self.dialog_edit {
+            self.dialog_edit = dialog_edit;
+            if let Some(id) = dialog_edit
+                && self.edits.focus_select_all(id)
+            {
+                self.ui.focus = Some(id);
+                self.ui.focus_visible = false;
+            }
+        }
         self.frame = Some(frame);
         self.stale = false;
         self.redraw = true;
@@ -453,6 +476,12 @@ impl<A: App> Shell<A> {
             WM_KEYDOWN => {
                 let key = key_of(wparam as i32, self.shift())?;
                 self.key(key);
+                Some(0)
+            }
+            // The Menu key and Shift+F10 reach us from Windows' default handling as a
+            // `WM_CONTEXTMENU` at (-1, -1); a right-click is handled at `WM_RBUTTONUP`.
+            WM_CONTEXTMENU if lparam as i32 == -1 => {
+                self.key(Key::Menu);
                 Some(0)
             }
             // The subclass sends Ctrl+F only with Control down.

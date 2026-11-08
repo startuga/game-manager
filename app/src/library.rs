@@ -6,6 +6,13 @@
 //! every word of the query is in its name (in any order), when the query is in its name with the
 //! spaces taken out ("halflife"), when a one-word query starts its name's initials ("gta",
 //! "tw3"; a word of digits counts whole), or when a word is in its program's file name ("ffxv").
+//!
+//! **Hidden games** (the game menu's Hide from the list) show only under the Hidden filter, which
+//! is offered while there are some; every other filter, the search and the counts leave them out.
+//!
+//! **Pinned games** (the game menu's Pin to quick access) come first,
+//! in a section of their own, in the order they were pinned (`split_pinned`); their store's group
+//! no longer lists them.
 
 use gm_core::{Game, Store};
 
@@ -14,17 +21,66 @@ use gm_core::{Game, Store};
 pub enum LibraryFilter {
     #[default]
     All,
-    Favorites,
     Store(Store),
+    /// Only the games hidden from the list (the game menu's Hide from the list); every other
+    /// filter, and so the search, leaves them out.
+    Hidden,
 }
 
 impl LibraryFilter {
     pub fn matches(self, game: &Game) -> bool {
         match self {
+            LibraryFilter::Hidden => game.hidden,
+            _ if game.hidden => false,
             LibraryFilter::All => true,
-            LibraryFilter::Favorites => game.favorite,
             LibraryFilter::Store(store) => game.store == store,
         }
+    }
+
+    /// The hint where no game shows.
+    pub fn empty_hint(self, query: &str) -> &'static str {
+        match self {
+            _ if !query.trim().is_empty() => "No games match the search.",
+            LibraryFilter::Hidden => "No hidden games.",
+            _ => "No games to show.",
+        }
+    }
+}
+
+/// Shown games (indices into `games`) as the pinned ones, in the order they were pinned, and the
+/// others in their order.
+pub fn split_pinned(games: &[Game], shown: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    let (mut pinned, rest): (Vec<usize>, Vec<usize>) = shown
+        .iter()
+        .partition(|&&index| games[index].pinned.is_some());
+    pinned.sort_by_key(|&index| games[index].pinned);
+    (pinned, rest)
+}
+
+/// Pins a game after the others, or unpins it and closes the gap, as `config::set_pinned` does
+/// in the file. Pinning a pinned game, or unpinning one that isn't, changes nothing.
+pub fn set_pin(games: &mut [Game], id: &str, pin: bool) {
+    let next = games
+        .iter()
+        .filter_map(|game| game.pinned)
+        .max()
+        .map_or(0, |last| last + 1);
+    let Some(game) = games.iter_mut().find(|game| game.id == id) else {
+        return;
+    };
+    match (pin, game.pinned) {
+        (true, None) => game.pinned = Some(next),
+        (false, Some(place)) => {
+            game.pinned = None;
+            for game in games.iter_mut() {
+                if let Some(later) = &mut game.pinned
+                    && *later > place
+                {
+                    *later -= 1;
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -40,17 +96,18 @@ pub fn filter(games: &[Game], query: &str, filter: LibraryFilter) -> Vec<usize> 
         .collect()
 }
 
-/// The first game shown for the search and filter, in the sidebar's order: by store
-/// (`Store::ALL`), then the list's order.
+/// The first game shown for the search and filter, in the sidebar's order: the pinned games in
+/// pin order, then by store (`Store::ALL`), then the list's order.
 pub fn first_shown(games: &[Game], query: &str, filter: LibraryFilter) -> Option<usize> {
     self::filter(games, query, filter)
         .into_iter()
         .min_by_key(|&index| {
+            let game = &games[index];
             let store = Store::ALL
                 .iter()
-                .position(|store| *store == games[index].store)
+                .position(|store| *store == game.store)
                 .unwrap_or(usize::MAX);
-            (store, index)
+            (game.pinned.unwrap_or(usize::MAX), store, index)
         })
 }
 
@@ -142,17 +199,14 @@ pub fn matches(game: &Game, query: &str) -> bool {
     words.len() == 1 && query.chars().count() >= 2 && initials(&name).starts_with(query)
 }
 
-/// Filter entries with game counts: all games, the favorites (listed even when there are none,
-/// so the filter can be found), then each store that has games.
+/// Filter entries with game counts: all games, each store that has games, then the hidden games
+/// while there are some. Hidden games count only there.
 pub fn filter_options(games: &[Game]) -> Vec<(LibraryFilter, String)> {
     let count = |filter: LibraryFilter| games.iter().filter(|game| filter.matches(game)).count();
-    let mut options = vec![
-        (LibraryFilter::All, format!("All games ({})", games.len())),
-        (
-            LibraryFilter::Favorites,
-            format!("Favorites ({})", count(LibraryFilter::Favorites)),
-        ),
-    ];
+    let mut options = vec![(
+        LibraryFilter::All,
+        format!("All games ({})", count(LibraryFilter::All)),
+    )];
     for store in Store::ALL {
         let filter = LibraryFilter::Store(store);
         let count = count(filter);
@@ -160,7 +214,44 @@ pub fn filter_options(games: &[Game]) -> Vec<(LibraryFilter, String)> {
             options.push((filter, format!("{} ({count})", store.name())));
         }
     }
+    let hidden = count(LibraryFilter::Hidden);
+    if hidden > 0 {
+        options.push((LibraryFilter::Hidden, format!("Hidden ({hidden})")));
+    }
     options
+}
+
+/// "1 game", "35 games".
+pub fn games_label(count: usize) -> String {
+    if count == 1 {
+        "1 game".to_owned()
+    } else {
+        format!("{count} games")
+    }
+}
+
+/// How many games the filter's list counts against ("3 of 35 games"): the hidden ones under
+/// Hidden, else all the others.
+pub fn total(games: &[Game], filter: LibraryFilter) -> usize {
+    let hidden = games.iter().filter(|game| game.hidden).count();
+    if filter == LibraryFilter::Hidden {
+        hidden
+    } else {
+        games.len() - hidden
+    }
+}
+
+/// The filter to keep when games are gone or hidden: a store or Hidden filter with no games left
+/// goes back to all games.
+pub fn keep_filter(games: &[Game], filter: LibraryFilter) -> LibraryFilter {
+    match filter {
+        LibraryFilter::Store(_) | LibraryFilter::Hidden
+            if !games.iter().any(|game| filter.matches(game)) =>
+        {
+            LibraryFilter::All
+        }
+        _ => filter,
+    }
 }
 
 /// How many tiles `tile` wide, `gap` apart, fit in `width`: at least one.
@@ -193,7 +284,8 @@ mod tests {
             program: None,
             arch: None,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 
@@ -219,24 +311,41 @@ mod tests {
     }
 
     #[test]
-    fn filters_favorites() {
+    fn pinned_games_come_first_in_pin_order() {
         let mut games = library();
-        assert!(filter(&games, "", LibraryFilter::Favorites).is_empty());
-        games[1].favorite = true;
-        games[3].favorite = true;
-        assert_eq!(filter(&games, "", LibraryFilter::Favorites), [1, 3]);
-        assert_eq!(filter(&games, "tomb", LibraryFilter::Favorites), [3]);
+        set_pin(&mut games, "steam:8000", true);
+        set_pin(&mut games, "ea:1025169", true);
+        set_pin(&mut games, "steam:8000", true);
+        let places: Vec<Option<usize>> = games.iter().map(|game| game.pinned).collect();
+        assert_eq!(places, [None, Some(1), None, Some(0)]);
+        let all = filter(&games, "", LibraryFilter::All);
+        assert_eq!(split_pinned(&games, &all), (vec![3, 1], vec![0, 2]));
+        // The search and filters still apply; a pinned game's store filter shows it pinned.
+        let tomb = filter(&games, "tomb", LibraryFilter::All);
+        assert_eq!(split_pinned(&games, &tomb), (vec![3], vec![2]));
+        assert_eq!(first_shown(&games, "tomb", LibraryFilter::All), Some(3));
+        let steam = filter(&games, "", LibraryFilter::Store(Store::Steam));
+        assert_eq!(split_pinned(&games, &steam), (vec![3], vec![0]));
+        // Unpinning closes the gap; pinning again goes last.
+        set_pin(&mut games, "steam:8000", false);
+        set_pin(&mut games, "steam:8000", false);
+        assert_eq!(games[1].pinned, Some(0));
+        set_pin(&mut games, "steam:244210", true);
+        set_pin(&mut games, "steam:8000", true);
+        let places: Vec<Option<usize>> = games.iter().map(|game| game.pinned).collect();
+        assert_eq!(places, [Some(1), Some(0), None, Some(2)]);
+        // An id no game has changes nothing.
+        set_pin(&mut games, "steam:1", true);
+        assert_eq!(games.iter().filter(|game| game.pinned.is_some()).count(), 3);
     }
 
     #[test]
-    fn filter_options_list_favorites_and_only_stores_with_games() {
-        let mut games = library();
-        games[0].favorite = true;
+    fn filter_options_list_only_stores_with_games() {
+        let games = library();
         assert_eq!(
             filter_options(&games),
             [
                 (LibraryFilter::All, "All games (4)".to_owned()),
-                (LibraryFilter::Favorites, "Favorites (1)".to_owned()),
                 (LibraryFilter::Store(Store::Steam), "Steam (2)".to_owned()),
                 (LibraryFilter::Store(Store::Gog), "GOG (1)".to_owned()),
                 (LibraryFilter::Store(Store::Ea), "EA (1)".to_owned()),
@@ -244,11 +353,57 @@ mod tests {
         );
         assert_eq!(
             filter_options(&[]),
+            [(LibraryFilter::All, "All games (0)".to_owned())]
+        );
+    }
+
+    #[test]
+    fn hidden_games_show_only_under_their_own_filter() {
+        let mut games = library();
+        games[0].hidden = true;
+        games[3].hidden = true;
+        games[3].pinned = Some(0);
+        let steam = LibraryFilter::Store(Store::Steam);
+        assert_eq!(filter(&games, "", LibraryFilter::All), [1, 2]);
+        assert!(filter(&games, "", steam).is_empty());
+        // The search leaves them out too, unless it searches the hidden ones.
+        assert_eq!(filter(&games, "tomb", LibraryFilter::All), [2]);
+        assert_eq!(filter(&games, "", LibraryFilter::Hidden), [0, 3]);
+        assert_eq!(filter(&games, "tomb", LibraryFilter::Hidden), [3]);
+        assert_eq!(first_shown(&games, "tomb", LibraryFilter::All), Some(2));
+        assert_eq!(total(&games, steam), 2);
+        assert_eq!(total(&games, LibraryFilter::Hidden), 2);
+        assert_eq!(games_label(1), "1 game");
+        assert_eq!(games_label(2), "2 games");
+        // Hidden games count only under Hidden; a store with only hidden games isn't offered.
+        assert_eq!(
+            filter_options(&games),
             [
-                (LibraryFilter::All, "All games (0)".to_owned()),
-                (LibraryFilter::Favorites, "Favorites (0)".to_owned()),
+                (LibraryFilter::All, "All games (2)".to_owned()),
+                (LibraryFilter::Store(Store::Gog), "GOG (1)".to_owned()),
+                (LibraryFilter::Store(Store::Ea), "EA (1)".to_owned()),
+                (LibraryFilter::Hidden, "Hidden (2)".to_owned()),
             ]
         );
+        // With none hidden, there is no Hidden filter, and it goes back to all games.
+        assert_eq!(keep_filter(&games, steam), LibraryFilter::All);
+        assert_eq!(
+            keep_filter(&games, LibraryFilter::Hidden),
+            LibraryFilter::Hidden
+        );
+        for game in &mut games {
+            game.hidden = false;
+        }
+        assert!(
+            !filter_options(&games)
+                .iter()
+                .any(|(filter, _)| *filter == LibraryFilter::Hidden)
+        );
+        assert_eq!(
+            keep_filter(&games, LibraryFilter::Hidden),
+            LibraryFilter::All
+        );
+        assert_eq!(keep_filter(&games, steam), steam);
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //!
 //! - **Layout**: the title bar, the library sidebar (`sidebar.rs`) and the page (`game_page.rs`):
 //!   the Library grid (`library_page.rs`, where the window opens), the selected game's header,
-//!   Play and tabs, or My PC; the game menu and dialogs as layers over them (`app_view.rs`).
+//!   Play and tabs, or My PC; the game menu (`game_menu.rs`) and dialogs as layers over them
+//!   (`app_view.rs`).
 //! - **Pages, tabs and views**: `Page` (Library, Game, My PC), `GameTab` and the ReShade tab's
 //!   `ReshadeView`. Leaving the game page, the ReShade tab, its view or the game leaves Shaders or
 //!   Add-ons (`leave_reshade_view`: Add-ons applies a change, Shaders drops its draft);
@@ -20,6 +21,7 @@
 mod app_view;
 mod dlss_override_view;
 mod edit;
+mod game_menu;
 mod game_page;
 mod library;
 mod library_page;
@@ -34,6 +36,7 @@ mod upscaler_versions;
 mod upscalers_view;
 
 use edit::{EditChoice, EditDraft, EditField};
+use game_menu::{MenuMessage, MenuState};
 use gm_core::custom::NewGame;
 use gm_core::graphics::{GraphicsApi, GraphicsInfo};
 use gm_core::mods::laa::{self, Laa};
@@ -123,16 +126,8 @@ enum Message {
     Filter(Option<LibraryFilter>),
     /// A store's group in the sidebar was folded or unfolded.
     ToggleStore(Store),
-    /// A right-click on a game's row, at this point of the window (DIPs): opens its menu.
-    RowContext(String, (f32, f32)),
-    /// The game menu's Play.
-    RowMenuPlay,
-    /// The game menu's Add to / Remove from Favorites.
-    RowMenuFavorite,
-    /// A click outside the game menu, or Escape.
-    CloseRowMenu,
-    /// The favorite flag of the game was saved (or not; then it is set back).
-    FavoriteSaved(String, bool, Result<(), String>),
+    /// The game menu and its Rename and Uninstall dialogs (`game_menu.rs`).
+    Menu(MenuMessage),
     /// The title bar's minimize, maximize and close.
     Window(WindowCommand),
     /// A sidebar page.
@@ -286,13 +281,6 @@ enum Message {
     MyPc(MyPcMessage),
 }
 
-/// A game's right-click menu: which game, and where the pointer was (window DIPs).
-struct RowMenu {
-    id: String,
-    x: f32,
-    y: f32,
-}
-
 struct GameManager {
     games: Vec<Game>,
     icons: HashMap<String, Arc<Picture>>,
@@ -309,8 +297,8 @@ struct GameManager {
     sidebar_width: f32,
     /// The game just launched: its Play button shows "Starting…" for a few seconds.
     launching: Option<String>,
-    /// The right-click menu of a game in the list, while it is open.
-    row_menu: Option<RowMenu>,
+    /// A game's menu while it is open, and its Rename and Uninstall dialogs.
+    menu: MenuState,
     /// Graphics APIs by game id, once looked up (`None`: none found).
     graphics: HashMap<String, Option<GraphicsInfo>>,
     /// Games whose graphics APIs are being looked up.
@@ -416,8 +404,8 @@ impl App for GameManager {
     /// Escape closes the topmost of the game menu, a dialog, then leaves My PC, or Shaders and
     /// Add-ons for the ReShade view.
     fn escape(&self) -> Option<Message> {
-        if self.row_menu.is_some() {
-            Some(Message::CloseRowMenu)
+        if let Some(message) = self.menu.escape() {
+            Some(message)
         } else if self.my_pc.trial.is_some() {
             Some(MyPcMessage::RevertMode.into())
         } else if self.mod_dialog.is_some() {
@@ -466,7 +454,7 @@ impl GameManager {
             reshade_view: ReshadeView::Install,
             sidebar_width: ui::theme::SIDEBAR_WIDTH,
             launching: None,
-            row_menu: None,
+            menu: MenuState::default(),
             graphics: HashMap::new(),
             graphics_pending: HashSet::new(),
             scanning: false,
@@ -573,20 +561,6 @@ impl GameManager {
         }
     }
 
-    /// Adds the game to the favorites, or removes it. Shown at once; the settings file is written
-    /// in the background, and a failure sets the flag back.
-    fn toggle_favorite(&mut self, id: String, context: &Ctx<Message>) {
-        let Some(game) = self.games.iter_mut().find(|game| game.id == id) else {
-            return;
-        };
-        game.favorite = !game.favorite;
-        let favorite = game.favorite;
-        context.spawn_background(move |_cancel| {
-            let saved = gm_core::config::set_favorite(&id, favorite).map_err(|e| e.to_string());
-            Message::FavoriteSaved(id, favorite, saved)
-        });
-    }
-
     /// Shows another page. Leaving the game page leaves its Shaders or Add-ons view
     /// (`leave_reshade_view`).
     fn go_to(&mut self, page: Page, context: &Ctx<Message>) {
@@ -639,14 +613,10 @@ impl GameManager {
         }
     }
 
-    /// After games are removed: a store filter with no games left goes back to all games. The
-    /// Favorites filter stays, even when empty.
+    /// After games are removed: a store or Hidden filter with no games left goes back to all
+    /// games (`library::keep_filter`).
     fn drop_empty_store_filter(&mut self) {
-        if let LibraryFilter::Store(store) = self.filter
-            && !self.games.iter().any(|game| game.store == store)
-        {
-            self.filter = LibraryFilter::All;
-        }
+        self.filter = library::keep_filter(&self.games, self.filter);
     }
 
     /// Looks up the selected game's graphics APIs in the background, once per game.
@@ -718,28 +688,7 @@ impl GameManager {
                     self.folded.insert(store);
                 }
             }
-            Message::RowContext(id, (x, y)) => {
-                self.select(id.clone(), context);
-                self.row_menu = Some(RowMenu { id, x, y });
-            }
-            Message::RowMenuPlay => {
-                if let Some(menu) = self.row_menu.take() {
-                    self.launch(&menu.id, None);
-                }
-            }
-            Message::RowMenuFavorite => {
-                if let Some(menu) = self.row_menu.take() {
-                    self.toggle_favorite(menu.id, context);
-                }
-            }
-            Message::CloseRowMenu => self.row_menu = None,
-            Message::FavoriteSaved(_, _, Ok(())) => {}
-            Message::FavoriteSaved(id, favorite, Err(e)) => {
-                if let Some(game) = self.games.iter_mut().find(|game| game.id == id) {
-                    game.favorite = !favorite;
-                }
-                self.error = Some(e);
-            }
+            Message::Menu(message) => self.handle_menu(message, context),
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),
             Message::Tab(tab) => {
@@ -1201,12 +1150,20 @@ impl GameManager {
                 if let Some(id) = self.removing.take()
                     && result == DialogResult::Primary
                 {
+                    // A pinned one leaves quick access too.
+                    let pinned = self
+                        .games
+                        .iter()
+                        .any(|game| game.id == id && game.pinned.is_some());
                     context.spawn_background(move |_cancel| {
-                        Message::CustomGameRemoved(
-                            gm_core::custom::remove(&id)
-                                .map(|()| id)
-                                .map_err(|e| e.to_string()),
-                        )
+                        let removed = gm_core::custom::remove(&id).and_then(|()| {
+                            if pinned {
+                                gm_core::config::set_pinned(&id, false)
+                            } else {
+                                Ok(())
+                            }
+                        });
+                        Message::CustomGameRemoved(removed.map(|()| id).map_err(|e| e.to_string()))
                     });
                 }
             }

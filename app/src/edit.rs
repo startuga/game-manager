@@ -213,7 +213,8 @@ mod tests {
             program: Some(PathBuf::from(r"C:\GOG\W3\bin\x64_dx12\witcher3.exe")),
             arch: None,
             edits: None,
-            favorite: false,
+            pinned: None,
+            hidden: false,
         }
     }
 
