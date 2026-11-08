@@ -1,19 +1,23 @@
-//! The Shaders and Add-ons pages of the sidebar (ReShade's shader packs and add-ons).
+//! The ReShade tab's Shaders and Add-ons views (ReShade's shader packs and add-ons).
 //!
 //! - **Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single effects
 //!   of a pack (▶ lists them, downloading the pack first). Every pack can be left out, Lilium's
-//!   too. Cancel (or leaving the page) drops the draft; Deploy saves the selection and brings it
-//!   to the games (`reshade::deploy`). Profiles, Export, Import and the custom folder are in the
-//!   column beside the list.
-//! - **Add-ons** lists every add-on with an On/Off switch. A switch takes effect when the page is
-//!   left (Close, or another page): the choice is saved and deployed like the shaders.
+//!   too. Discard changes (or leaving the view) drops the draft; Deploy saves the selection and
+//!   brings it to the games (`reshade::deploy`). Profiles, Export, Import and the custom folder
+//!   are in the column beside the list.
+//! - **Add-ons** lists every add-on with an On/Off switch. A switch takes effect with Apply, or
+//!   when the view is left (another view, tab or game, or My PC): the choice is saved and
+//!   deployed like the shaders.
+//! - **The panel** (`ReshadePanel`) holds a view's game and draft. `main.rs` opens it when the
+//!   view shows and leaves it (`leave_reshade_view`) when anything else does. Deploy, Discard
+//!   changes and Apply close it; the view then opens it again, once a Deploy has finished, so it
+//!   shows what was saved. A list that fails to load sends the tab back to its ReShade view.
 //!
-//! **Apply to**: each page shows and applies either the own choice of the game selected in the
-//! library when it opened ("Only <game>", the first item and the default;
-//! `ReshadeSettings::games`), or the shared choice ("All games with ReShade", leaving out the games
-//! with their own; the only item when no game is selected). A game without its own choice shows
-//! the shared one. "Use all games' selection" drops the game's own choice and deploys the shared
-//! one to it.
+//! **Apply to**: each view shows and applies either the own choice of the selected game ("Only
+//! <game>", the first item and the default; `ReshadeSettings::games`), or the shared choice ("All
+//! games with ReShade", leaving out the games with their own). A game without its own choice
+//! shows the shared one. "Use all games' selection" drops the game's own choice and deploys the
+//! shared one to it.
 
 use crate::mods_view::ModKind;
 use crate::shell::ctx::Ctx;
@@ -21,10 +25,10 @@ use crate::shell::ctx::FilePicker;
 use crate::ui::el::{Align, El, col, dropdown, glyph, row, spinner, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, card, divider, heading, hint, icon_button, link, remove_button,
-    subtle_button, text_box, toggle, working,
+    accent_button, button, card, divider, hint, icon_button, link, remove_button, subtle_button,
+    text_box, toggle, working,
 };
-use crate::{GameManager, Message};
+use crate::{GameManager, Message, ReshadeView};
 use gm_core::mods::reshade::{self, DeployTo};
 use gm_core::mods::reshade_addons::{self, Addon};
 use gm_core::mods::reshade_settings::{self, Part, ReshadeSettings};
@@ -100,8 +104,8 @@ pub(crate) fn load_addons() -> Result<AddonLibrary, String> {
 
 /// The open panel.
 pub(crate) struct ReshadePanel {
-    /// The game selected in the library when the panel opened (id, name), for "Only <game>". The
-    /// panel's backdrop keeps the selection from changing while it is open.
+    /// The game selected when the panel opened (id, name), for "Only <game>". Another game
+    /// selected leaves the panel (`leave_reshade_view`), and the view opens one for it.
     pub game: Option<(String, String)>,
     /// The panel shows and applies the game's own choice, not the shared one.
     pub only_game: bool,
@@ -274,8 +278,22 @@ fn effect_name(file: &str) -> &str {
 }
 
 impl GameManager {
-    /// Opens the Shaders (`shaders`) or Addons (`addons`) page for the game selected in the
-    /// library, and reads what it lists.
+    /// Leaves the Shaders or Add-ons view: a changed add-on choice is saved and deployed, as
+    /// Apply does; a shader draft is dropped, as Discard changes does.
+    pub(crate) fn leave_reshade_view(&mut self, context: &Ctx<Message>) {
+        let addons = match &self.reshade_panel {
+            Some(panel) => matches!(panel.kind, PanelKind::Addons(_)),
+            None => return,
+        };
+        if addons {
+            self.apply_addons(context);
+        } else {
+            self.reshade_panel = None;
+        }
+    }
+
+    /// Opens the Shaders (`shaders`) or Addons (`addons`) view's panel for the selected game, and
+    /// reads what it lists.
     pub(crate) fn open_reshade_panel(&mut self, key: &str, context: &Ctx<Message>) {
         let game = self
             .selected_game()
@@ -384,6 +402,8 @@ impl GameManager {
                     (Err(error), _) => {
                         self.error = Some(format!("ReShade add-ons: {error}"));
                         self.reshade_panel = None;
+                        // Not opened again until asked.
+                        self.reshade_view = ReshadeView::Install;
                     }
                     _ => {}
                 }
@@ -464,6 +484,8 @@ impl GameManager {
                 if let Err(error) = &loaded {
                     self.error = Some(format!("ReShade shaders: {error}"));
                     self.reshade_panel = None;
+                    // Not opened again until asked.
+                    self.reshade_view = ReshadeView::Install;
                 }
                 self.shader_library = Some(loaded);
             }
@@ -760,7 +782,7 @@ impl GameManager {
 }
 
 impl GameManager {
-    /// The Shaders or Add-ons page, while its panel is open.
+    /// The Shaders or Add-ons view, while its panel is open.
     pub(crate) fn reshade_page(&self) -> Option<El<Message>> {
         let panel = self.reshade_panel.as_ref()?;
         Some(match &panel.kind {
@@ -769,15 +791,10 @@ impl GameManager {
         })
     }
 
-    /// A page's title with "Apply to" beside it, and under them what applying does: for every
-    /// game with ReShade (but those with their own choice), or for the selected game alone (with
-    /// "Use all games' …" when it has its own).
-    fn page_header(
-        &self,
-        panel: &ReshadePanel,
-        title: &str,
-        settings: Option<&ReshadeSettings>,
-    ) -> El<Message> {
+    /// "Apply to", and under it what applying does: for every game with ReShade (but those with
+    /// their own choice), or for the selected game alone (with "Use all games' …" when it has its
+    /// own). The view's name is the pill above it.
+    fn page_header(&self, panel: &ReshadePanel, settings: Option<&ReshadeSettings>) -> El<Message> {
         // "Only <game>" first, as the default.
         let mut items = Vec::new();
         if let Some((_, name)) = &panel.game {
@@ -792,12 +809,9 @@ impl GameManager {
         .name("Apply to")
         .width(280.0);
         let mut rows = vec![
-            row([
-                heading(title).fill_width(),
-                text("Apply to").color(theme::TEXT_SECONDARY),
-                apply_to,
-            ])
-            .gap(10.0),
+            row([text("Apply to").color(theme::TEXT_SECONDARY), apply_to])
+                .gap(10.0)
+                .halign(Align::Start),
         ];
         if let Some(settings) = settings {
             rows.push(self.target_line(panel, settings));
@@ -816,7 +830,7 @@ impl GameManager {
         // What applying is called at the start of a sentence, and inside one.
         let (what, applying, applying_inside) = match part {
             Part::Shaders => ("selection", "Deploy", "Deploy"),
-            Part::Addons => ("add-ons", "Closing this page", "closing this page"),
+            Part::Addons => ("add-ons", "Apply", "Apply"),
         };
         let (line, use_shared) = match (panel.target(), &panel.game) {
             (Some(id), Some((_, name))) => {
@@ -852,8 +866,8 @@ impl GameManager {
                         format!("Deploy puts this selection into every game with ReShade{except}.")
                     }
                     Part::Addons => format!(
-                        "Closing this page puts the add-ons switched on next to the program of \
-                         every game with ReShade{except}."
+                        "Apply, or leaving Add-ons, puts the add-ons switched on next to the \
+                         program of every game with ReShade{except}."
                     ),
                 };
                 (line, false)
@@ -878,7 +892,7 @@ impl GameManager {
         row(parts).gap(12.0)
     }
 
-    /// The Add-ons page: the custom folder's link, a card per add-on, and Close.
+    /// The Add-ons view: the custom folder's link, a card per add-on, and Apply.
     fn addons_page(&self, panel: &ReshadePanel, enabled: Option<&BTreeSet<String>>) -> El<Message> {
         let library = self
             .addon_library
@@ -888,7 +902,7 @@ impl GameManager {
             .filter(|_| enabled.is_some())
             .map(|library| &library.settings);
         let mut rows = vec![
-            self.page_header(panel, "Add-ons", settings),
+            self.page_header(panel, settings),
             row([link(
                 "Place custom .addon64/.addon32 files here",
                 Message::OpenAddonFolder,
@@ -907,8 +921,9 @@ impl GameManager {
             _ => rows.push(working("Reading the add-on list…")),
         }
         rows.push(
-            row([accent_button("Close")
+            row([accent_button("Apply")
                 .min_width(160.0)
+                .enabled(enabled.is_some())
                 .tooltip("Save the add-ons switched on and put them next to ReShade")
                 .on_click(Message::CloseAddons)])
             .justify(Align::End),
@@ -916,7 +931,7 @@ impl GameManager {
         col(rows).gap(12.0)
     }
 
-    /// The Shaders page: the list of packs beside the profiles, then Deploy and Cancel.
+    /// The Shaders view: the list of packs beside the profiles, then Deploy and Discard changes.
     fn shaders_page(&self, panel: &ReshadePanel, draft: Option<&ShadersDraft>) -> El<Message> {
         let library = self
             .shader_library
@@ -925,7 +940,7 @@ impl GameManager {
         let settings = library
             .filter(|_| draft.is_some())
             .map(|library| &library.settings);
-        let header = self.page_header(panel, "Shaders", settings);
+        let header = self.page_header(panel, settings);
         let body = match (draft, library) {
             (Some(draft), Some(library)) => row([
                 self.shader_list(draft, library)
@@ -952,8 +967,10 @@ impl GameManager {
                 .min_width(160.0)
                 .tooltip(deploy_tip)
                 .on_click(Message::DeployShaders),
-            button("Cancel")
+            button("Discard changes")
                 .min_width(120.0)
+                .enabled(draft.is_some())
+                .tooltip("Go back to the saved selection")
                 .on_click(Message::CloseReshadePanel),
         ])
         .gap(8.0)

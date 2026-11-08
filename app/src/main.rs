@@ -2,8 +2,12 @@
 //! `Message`s go through `update`, `view` builds the element tree from the state.
 //!
 //! - **Layout**: the title bar, the library sidebar (`sidebar.rs`) and the page (`game_page.rs`):
-//!   the selected game's header, Play and tabs, or the Shaders, Add-ons, Upscalers and My PC
-//!   pages; the game menu and dialogs as layers over them (`app_view.rs`).
+//!   the Library grid (`library_page.rs`, where the window opens), the selected game's header,
+//!   Play and tabs, or My PC; the game menu and dialogs as layers over them (`app_view.rs`).
+//! - **Pages, tabs and views**: `Page` (Library, Game, My PC), `GameTab` and the ReShade tab's
+//!   `ReshadeView`. Leaving the game page, the ReShade tab, its view or the game leaves Shaders or
+//!   Add-ons (`leave_reshade_view`: Add-ons applies a change, Shaders drops its draft);
+//!   `open_reshade_view` opens the view's panel again, after a Deploy has finished.
 //! - **Logic**: `mods_view.rs` (ReShade, DXVK, LAA), `reshade_panel.rs` (shaders and add-ons),
 //!   `upscalers_view.rs` and `dlss_override_view.rs` (upscaler DLLs, NVIDIA overrides), `my_pc.rs`
 //!   (hardware, displays, Windows' game switches), `edit.rs` and `library.rs` (UI-free, tested).
@@ -18,6 +22,7 @@ mod dlss_override_view;
 mod edit;
 mod game_page;
 mod library;
+mod library_page;
 mod mods_view;
 mod my_pc;
 mod my_pc_page;
@@ -25,7 +30,7 @@ mod reshade_panel;
 mod shell;
 mod sidebar;
 mod ui;
-mod upscalers_page;
+mod upscaler_versions;
 mod upscalers_view;
 
 use edit::{EditChoice, EditDraft, EditField};
@@ -65,15 +70,11 @@ pub(crate) enum DialogResult {
 /// The page beside the sidebar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Page {
-    /// The selected game.
+    /// Every game as a tile (`library_page.rs`); the window opens on it.
     #[default]
+    Library,
+    /// The selected game.
     Game,
-    /// The Shaders page.
-    Shaders,
-    /// The Add-ons page.
-    Addons,
-    /// The upscaler versions downloaded and available.
-    Upscalers,
     /// The PC's hardware, displays and Windows' game switches.
     MyPc,
 }
@@ -84,11 +85,24 @@ pub(crate) enum GameTab {
     /// Game settings, graphics and links.
     #[default]
     Overview,
+    /// ReShade, and its Shaders and Add-ons (`ReshadeView`).
     Reshade,
     /// DXVK and Large Address Aware.
     Mods,
-    /// Upscaler DLLs and NVIDIA's overrides.
+    /// Upscaler DLLs, and the versions library.
     Upscalers,
+    /// NVIDIA's driver-level DLSS overrides; listed only with an NVIDIA driver.
+    Nvidia,
+}
+
+/// The ReShade tab's views.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ReshadeView {
+    /// Install, Reinstall, Uninstall and the settings.
+    #[default]
+    Install,
+    Shaders,
+    Addons,
 }
 
 #[derive(Clone)]
@@ -121,6 +135,8 @@ enum Message {
     Page(Page),
     /// A tab of the game page.
     Tab(GameTab),
+    /// A view of the ReShade tab.
+    ReshadeView(ReshadeView),
     /// The graphics APIs of a game; `None` when none were found.
     GraphicsDetected(String, Option<GraphicsInfo>),
     /// A game picked in the sidebar. `None` keeps the current game.
@@ -220,9 +236,9 @@ enum Message {
     ShaderPackDownloaded(String, Result<Vec<String>, String>),
     /// Saves the shader selection and deploys it to every game with ReShade.
     DeployShaders,
-    /// Leaves a ReShade page.
+    /// Shaders' Discard changes: drops the draft (the view opens the saved selection again).
     CloseReshadePanel,
-    /// The Shaders page's profiles, by name: load, start or end renaming (an empty name ends it),
+    /// Shaders' profiles, by name: load, start or end renaming (an empty name ends it),
     /// the name typed, delete, and Save and New with the selection.
     ProfileLoad(String),
     ProfileRename(String),
@@ -246,14 +262,14 @@ enum Message {
     OpenCustomFolder,
     /// Every add-on, the user's choices and what is cached, or what failed.
     AddonLibraryLoaded(Result<AddonLibrary, String>),
-    /// An add-on's switch on the Add-ons page: id, on.
+    /// An add-on's switch in Add-ons: id, on.
     AddonSwitched(String, bool),
     /// Opens the folder for the user's own add-ons.
     OpenAddonFolder,
-    /// Leaves the Add-ons page: saves and deploys a changed choice.
+    /// Add-ons' Apply (and leaving Add-ons): saves and deploys a changed choice.
     CloseAddons,
-    /// "Apply to" on a ReShade page: with a game selected, 0 is that game and 1 all games (else 0
-    /// is all games); `None` is ignored.
+    /// "Apply to" on Shaders or Add-ons: with a game selected, 0 is that game and 1 all games
+    /// (else 0 is all games); `None` is ignored.
     ReshadeTargetChosen(Option<usize>),
     /// Drops the selected game's own choice on the open ReShade page and deploys the shared one
     /// to it.
@@ -283,6 +299,8 @@ struct GameManager {
     selected: Option<String>,
     page: Page,
     tab: GameTab,
+    /// The ReShade tab's view, kept across games.
+    reshade_view: ReshadeView,
     /// The sidebar's width in DIPs (its resize grip).
     sidebar_width: f32,
     /// The game just launched: its Play button shows "Starting…" for a few seconds.
@@ -315,9 +333,10 @@ struct GameManager {
     /// What each game's ReShade row read from the disk, by id.
     reshade: HashMap<String, ReshadeStatus>,
     reshade_pending: HashSet<String>,
-    /// The Shaders or Add-ons page, while open.
+    /// The ReShade tab's Shaders or Add-ons view, while it shows.
     reshade_panel: Option<ReshadePanel>,
-    /// The upscaler DLLs found in games, their versions and cache, and the Upscalers page.
+    /// The upscaler DLLs found in games, their versions and cache (Versions), and the NVIDIA
+    /// overrides tab's driver facts and draft.
     upscalers: UpscalerState,
     /// What the ReShade pages read: read again each time one opens.
     shader_library: Option<Result<ShaderLibrary, String>>,
@@ -378,20 +397,20 @@ impl App for GameManager {
         self.request_laa(ctx);
         // What the ReShade row needs from the disk, whenever it is unknown.
         self.request_reshade(ctx);
-        // The Upscalers tab's DLLs, while it is open.
+        // The Upscalers and NVIDIA overrides tabs' DLLs and the overrides' draft, while open.
         self.request_upscalers(ctx);
-        // A ReShade page whose panel closed (Deploy, Cancel, Close, a list that failed) gives
-        // way to the game.
-        if matches!(self.page, Page::Shaders | Page::Addons) && self.reshade_panel.is_none() {
-            self.page = Page::Game;
-        }
+        self.request_overrides(ctx);
+        // Shaders or Add-ons showing without its panel (just chosen, or after Deploy, Discard
+        // changes or Apply) opens it.
+        self.open_reshade_view(ctx);
     }
 
     fn view(&self, window: &WindowInfo) -> El<Message> {
         self.root_view(window)
     }
 
-    /// Escape closes the topmost of the game menu, a dialog, or a page.
+    /// Escape closes the topmost of the game menu, a dialog, then leaves My PC, or Shaders and
+    /// Add-ons for the ReShade view.
     fn escape(&self) -> Option<Message> {
         if self.row_menu.is_some() {
             Some(Message::CloseRowMenu)
@@ -405,9 +424,14 @@ impl App for GameManager {
             Some(Message::DraftClosed(DialogResult::Cancel))
         } else {
             match self.page {
-                Page::Shaders => Some(Message::CloseReshadePanel),
-                Page::Addons => Some(Message::CloseAddons),
-                Page::Upscalers | Page::MyPc => Some(Message::Page(Page::Game)),
+                Page::MyPc => Some(Message::Page(Page::Game)),
+                Page::Library => None,
+                Page::Game
+                    if self.tab == GameTab::Reshade
+                        && self.reshade_view != ReshadeView::Install =>
+                {
+                    Some(Message::ReshadeView(ReshadeView::Install))
+                }
                 Page::Game => None,
             }
         }
@@ -428,8 +452,9 @@ impl GameManager {
             filter: LibraryFilter::All,
             folded: HashSet::new(),
             selected: None,
-            page: Page::Game,
+            page: Page::Library,
             tab: GameTab::Overview,
+            reshade_view: ReshadeView::Install,
             sidebar_width: ui::theme::SIDEBAR_WIDTH,
             launching: None,
             row_menu: None,
@@ -467,6 +492,8 @@ impl GameManager {
         ctx.spawn_background(|_cancel| {
             Message::ModsLoaded(gm_core::mods::load().map_err(|e| format!("Mods: {e}")))
         });
+        // The NVIDIA overrides tab shows only with an NVIDIA driver: read it now.
+        this.request_driver(ctx);
         this.start_scan(ctx);
         this
     }
@@ -551,28 +578,55 @@ impl GameManager {
         });
     }
 
-    /// Shows another page. Leaving Add-ons saves and deploys a changed choice, as its Close does;
-    /// leaving Shaders drops its draft, as its Cancel does.
+    /// Shows another page. Leaving the game page leaves its Shaders or Add-ons view
+    /// (`leave_reshade_view`).
     fn go_to(&mut self, page: Page, context: &Ctx<Message>) {
         if page == self.page {
             return;
         }
-        match self.page {
-            Page::Addons if self.reshade_panel.is_some() => {
-                self.handle_addons(Message::CloseAddons, context);
-            }
-            Page::Shaders => self.reshade_panel = None,
-            Page::Upscalers => self.upscalers.panel = false,
-            Page::Addons | Page::Game | Page::MyPc => {}
+        if self.page == Page::Game {
+            self.leave_reshade_view(context);
         }
         self.page = page;
-        match page {
-            Page::Shaders => self.open_reshade_panel("shaders", context),
-            Page::Addons => self.open_reshade_panel("addons", context),
-            Page::Upscalers => self.handle_upscalers(UpscalerMessage::OpenPanel, context),
+        if page == Page::MyPc {
             // Read afresh at each visit, as Settings or a driver may have changed things.
-            Page::MyPc => self.handle_my_pc(MyPcMessage::Refresh, context),
-            Page::Game => {}
+            self.handle_my_pc(MyPcMessage::Refresh, context);
+        }
+    }
+
+    /// Selects a game and shows its page. Another game first leaves the Shaders or Add-ons view
+    /// of the one before (the view opens again for the new game).
+    fn select(&mut self, id: String, context: &Ctx<Message>) {
+        if self.selected.as_deref() != Some(id.as_str()) {
+            self.leave_reshade_view(context);
+        }
+        self.selected = Some(id);
+        self.go_to(Page::Game, context);
+    }
+
+    /// Opens the panel of the ReShade tab's Shaders or Add-ons view when it shows without one,
+    /// once a Deploy that closed it has finished (so it reads what was saved).
+    fn open_reshade_view(&mut self, context: &Ctx<Message>) {
+        // A panel opened for another game than the one selected now (added, removed, rescanned)
+        // is left like a click on another game leaves it.
+        if let Some(panel) = &self.reshade_panel
+            && panel.game.as_ref().map(|(id, _)| id.as_str()) != self.selected.as_deref()
+        {
+            self.leave_reshade_view(context);
+        }
+        let deploying = matches!(self.mod_job, Some((_, ModKind::Deploy)));
+        if self.page != Page::Game
+            || self.tab != GameTab::Reshade
+            || self.reshade_panel.is_some()
+            || self.selected_game().is_none()
+            || deploying
+        {
+            return;
+        }
+        match self.reshade_view {
+            ReshadeView::Shaders => self.open_reshade_panel("shaders", context),
+            ReshadeView::Addons => self.open_reshade_panel("addons", context),
+            ReshadeView::Install => {}
         }
     }
 
@@ -649,8 +703,7 @@ impl GameManager {
                 }
             }
             Message::RowContext(id, (x, y)) => {
-                self.selected = Some(id.clone());
-                self.go_to(Page::Game, context);
+                self.select(id.clone(), context);
                 self.row_menu = Some(RowMenu { id, x, y });
             }
             Message::RowMenuPlay => {
@@ -674,14 +727,21 @@ impl GameManager {
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),
             Message::Tab(tab) => {
+                if tab != GameTab::Reshade {
+                    self.leave_reshade_view(context);
+                }
                 self.tab = tab;
-                // The tab's DLLs are looked for only while it shows (`request_upscalers`).
-                self.upscalers.open = tab == GameTab::Upscalers;
+                // The game's upscaler DLLs are looked for only while these tabs show
+                // (`request_upscalers`); the NVIDIA tab's hint needs them too.
+                self.upscalers.open = matches!(tab, GameTab::Upscalers | GameTab::Nvidia);
             }
-            Message::Select(Some(id)) => {
-                self.selected = Some(id);
-                self.go_to(Page::Game, context);
+            Message::ReshadeView(view) => {
+                if view != self.reshade_view {
+                    self.leave_reshade_view(context);
+                    self.reshade_view = view;
+                }
             }
+            Message::Select(Some(id)) => self.select(id, context),
             Message::Select(None) => {}
             Message::Launch { id, option } => {
                 self.launch(&id, option);
@@ -941,7 +1001,6 @@ impl GameManager {
                             Message::ModJobDone(saved.map_err(|e| e.to_string()))
                         });
                     }
-                    Some(ModDialog::Overrides(draft)) => self.save_overrides(game, draft, context),
                     _ => {}
                 }
             }

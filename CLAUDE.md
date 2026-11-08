@@ -92,9 +92,9 @@ DLSS overrides in their driver profiles.
   - `app.exe --file-ops <percent-encoded ops>` can be run directly (not elevated).
   - **Upscalers**: give the throwaway game real old vendor DLLs (from the upscaler cache after
     `live_upscalers`) in a subfolder, then swap, swap again and restore, and compare the folder.
-  - **Deploy on the Shaders page, and leaving the Add-ons page, with "All games with ReShade"
-    reach every game with ReShade in `mods.json`** that has no choice of its own, the user's real
-    ones too. Before clicking them, check that only throwaway games have a `reshade` record (or test
+  - **Deploy in ReShade ▸ Shaders, and Apply in (or leaving) ReShade ▸ Add-ons, with "All
+    games with ReShade" reach every game with ReShade in `mods.json`** that has no choice of its
+    own, the user's real ones too. Before clicking them, check that only throwaway games have a `reshade` record (or test
     with a `mods.json` that holds only them). "Only <game>" reaches just that game.
 
 ## Conventions

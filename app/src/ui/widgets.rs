@@ -433,6 +433,34 @@ pub fn resize_grip<M>(name: &str, on_drag: impl Fn(f32) -> M + 'static) -> El<M>
     .on_drag(move |(x, _)| on_drag(x))
 }
 
+/// Pills switching between a tab's views (the ReShade tab's ReShade, Shaders and Add-ons): left
+/// aligned in a faint track, the selected one filled. They are tabs to UI Automation.
+pub fn segmented<M>(items: Vec<(&str, bool, M)>) -> El<M> {
+    row(items.into_iter().map(|(label, selected, message)| {
+        row([text(label)
+            .weight(if selected { 600 } else { 400 })
+            .color(if selected {
+                theme::TEXT
+            } else {
+                theme::TEXT_SECONDARY
+            })])
+        .pad_xy(16.0, 0.0)
+        .height(28.0)
+        .radius(14.0)
+        .hover_bg(theme::SUBTLE_HOVER)
+        .pressed_bg(theme::SUBTLE_PRESSED)
+        .role(Role::Tab)
+        .selected(selected)
+        .on_click(message)
+    }))
+    .gap(2.0)
+    .pad(3.0)
+    .bg(theme::CARD)
+    .stroke(theme::CARD_STROKE, 1.0)
+    .radius(17.0)
+    .halign(Align::Start)
+}
+
 /// A usage bar, `ratio` (0–1) of it filled: the accent, or red from 90% (a drive nearly full).
 pub fn meter<M>(ratio: f32) -> El<M> {
     let ratio = ratio.clamp(0.0, 1.0);

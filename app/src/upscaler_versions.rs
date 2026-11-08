@@ -1,25 +1,73 @@
-//! The Upscalers page of the sidebar: the library of the vendors' DLL versions. One section per
-//! kind (DLSS Super Resolution, Streamline, …), folded until clicked, listing its versions newest
-//! first: downloaded or not (a release archive's size), how many games use it, and Download or
-//! Delete. Deleting is always safe: a game keeps its own copy of what was swapped in. The state is
-//! `UpscalerState` (`upscalers_view.rs`).
+//! The Upscalers tab's Versions section: the library of the vendors' DLL versions, folded at the
+//! bottom of the tab until its header is clicked (`UpscalerState::versions_open`). Unfolded: one
+//! section per kind (DLSS Super Resolution, Streamline, …), folded until clicked, listing its
+//! versions newest first: downloaded or not (a release archive's size), how many games use it,
+//! and Download or Delete. Deleting is always safe: a game keeps its own copy of what was swapped
+//! in. The library is the one the tab reads (`request_upscalers`); the state is `UpscalerState`
+//! (`upscalers_view.rs`).
 
 use crate::ui::el::{El, col, glyph, row, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{card, heading, hint, icon_text_button, working};
+use crate::ui::widgets::{card, hint, icon_text_button, working};
 use crate::upscalers_view::{UpscalerLibrary, UpscalerMessage, megabytes};
 use crate::{GameManager, Message};
 use gm_core::mods::upscalers::{Available, Kind};
 
 impl GameManager {
-    pub(crate) fn upscalers_page(&self) -> El<Message> {
+    /// The Versions card: its header (folds it, with what is downloaded), then, unfolded, Refresh
+    /// list, Open cache folder and the kinds.
+    pub(crate) fn versions_section(&self) -> El<Message> {
         let library = match &self.upscalers.library {
             Some(Ok(library)) => Some(library),
             _ => None,
         };
+        let open = self.upscalers.versions_open;
+        let summary = library.map_or_else(String::new, |library| {
+            let size: u64 = library.downloaded.iter().map(|item| item.size).sum();
+            format!(
+                "{} downloaded, {}",
+                library.downloaded.len(),
+                megabytes(size)
+            )
+        });
+        let header = row([
+            glyph(
+                if open {
+                    g::CHEVRON_DOWN
+                } else {
+                    g::CHEVRON_RIGHT
+                },
+                10.0,
+            )
+            .color(theme::TEXT_SECONDARY)
+            .width(16.0),
+            col([
+                text("Versions").text_size(theme::TEXT_SUBTITLE).bold(),
+                text(format!(
+                    "Download or delete the vendors' versions{}",
+                    if summary.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {summary}")
+                    }
+                ))
+                .text_size(theme::TEXT_SMALL)
+                .color(theme::TEXT_TERTIARY),
+            ])
+            .gap(2.0)
+            .fill_width(),
+        ])
+        .gap(10.0)
+        .pad_xy(4.0, 4.0)
+        .radius(theme::RADIUS_CONTROL)
+        .hover_bg(theme::SUBTLE_HOVER)
+        .name("Versions")
+        .on_click(UpscalerMessage::VersionsToggled.into());
+        if !open {
+            return card([header]).pad(10.0);
+        }
         let busy = self.upscalers.library_pending || self.upscalers.download.is_some();
-        let title = row([
-            heading("Upscalers").fill_width(),
+        let actions = row([
             icon_text_button(g::REFRESH, "Refresh list")
                 .enabled(!busy)
                 .tooltip("Ask NVIDIA's, AMD's and Intel's repositories for new versions")
@@ -29,23 +77,13 @@ impl GameManager {
         ])
         .gap(8.0);
         let mut rows = vec![
-            title,
-            hint(match library {
-                Some(library) => {
-                    let size: u64 = library.downloaded.iter().map(|item| item.size).sum();
-                    format!(
-                        "The versions are NVIDIA's, AMD's and Intel's own, from their GitHub \
-                         repositories, each checked for a valid signature. {} downloaded ({}). A \
-                         game keeps its own copy of what was swapped in, so deleting is always \
-                         safe.",
-                        library.downloaded.len(),
-                        megabytes(size)
-                    )
-                }
-                None => "The versions are NVIDIA's, AMD's and Intel's own, from their GitHub \
-                         repositories."
-                    .to_owned(),
-            }),
+            header,
+            actions,
+            hint(
+                "The versions are NVIDIA's, AMD's and Intel's own, from their GitHub repositories, \
+                 each checked for a valid signature. A game keeps its own copy of what was \
+                 swapped in, so deleting is always safe.",
+            ),
         ];
         if let Some(library) = library
             && !library.failed.is_empty()
@@ -70,7 +108,7 @@ impl GameManager {
             }
             _ => rows.push(working("Listing the versions…")),
         }
-        col(rows).gap(12.0)
+        card(rows).gap(12.0).pad(10.0)
     }
 
     /// A kind's section: a header that folds it, then its versions, each with Download or Delete.

@@ -1,14 +1,16 @@
-//! The page beside the sidebar: the selected game, or the Shaders, Add-ons and Upscalers pages.
+//! The page beside the sidebar: the Library grid (`library_page.rs`), the selected game, or My PC
+//! (`my_pc_page.rs`).
 //!
 //! The game page: a header with the icon, the name in the title
 //! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan), a
 //! launch bar with the Play button, the alternative launches, Folder and PCGamingWiki, then the
-//! tabs (Overview, ReShade, DXVK & LAA, Upscalers) and the open tab's cards.
+//! tabs and the open tab's cards.
 //!
-//! Overview holds Game settings (the draft in `edit.rs`) beside the game's details. The other tabs
-//! come from `mods_view.rs` (ReShade, DXVK & LAA) and `upscalers_view.rs` (Upscalers, with
-//! NVIDIA's overrides from `dlss_override_view.rs`); the Shaders and Add-ons pages from
-//! `reshade_panel.rs`, the Upscalers page from `upscalers_page.rs`, My PC from `my_pc_page.rs`.
+//! The tabs: Overview (Game settings, the draft in `edit.rs`, beside the game's details), ReShade
+//! with its Shaders and Add-ons views (`mods_view.rs`, `reshade_panel.rs`), DXVK & LAA
+//! (`mods_view.rs`), Upscalers with its Versions section (`upscalers_view.rs`,
+//! `upscaler_versions.rs`), and NVIDIA overrides (`dlss_override_view.rs`), listed only once an
+//! NVIDIA driver was found.
 
 use gm_core::graphics::GraphicsSource;
 use gm_core::mods::dxvk;
@@ -22,7 +24,7 @@ use crate::ui::el::{Align, El, col, dropdown, row, scroll, spacer, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
     PlayState, Tab, accent_button, button, card, card_header, chip, heading, hint,
-    icon_text_button, play_button, subtle_button, tabs, text_box, working,
+    icon_text_button, play_button, subtle_button, tabs, text_box,
 };
 use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list};
 
@@ -31,16 +33,17 @@ pub(crate) const PAGE_MAX_WIDTH: f32 = 1180.0;
 
 impl GameManager {
     pub(crate) fn page_view(&self, window: &WindowInfo) -> El<Message> {
-        let content = match self.page {
-            Page::Game => return self.game_page(),
-            // The panel opens with the page; `update` leaves the page once it closes.
-            Page::Shaders | Page::Addons => {
-                self.reshade_page().unwrap_or_else(|| working("Opening…"))
-            }
-            Page::Upscalers => self.upscalers_page(),
-            Page::MyPc => self.my_pc_page(window),
-        };
-        page(content)
+        match self.page {
+            Page::Library => page("library", self.library_page(window)),
+            Page::Game => self.game_page(),
+            Page::MyPc => page("my-pc", self.my_pc_page(window)),
+        }
+    }
+
+    /// The page's content width: the window less the sidebar, its grip and the page's padding,
+    /// at most `PAGE_MAX_WIDTH`.
+    pub(crate) fn page_width(&self, window: &WindowInfo) -> f32 {
+        (window.size.0 - self.sidebar_width - 52.0).min(PAGE_MAX_WIDTH)
     }
 
     fn game_page(&self) -> El<Message> {
@@ -54,7 +57,7 @@ impl GameManager {
             };
             return col([hint(message)]).center().grow();
         };
-        let tab_strip = tabs(vec![
+        let mut strip = vec![
             tab(
                 g::OVERVIEW,
                 theme::BLUE,
@@ -78,19 +81,35 @@ impl GameManager {
             ),
             tab(
                 g::CHIP,
-                theme::GREEN,
+                theme::CYAN,
                 "Upscalers",
                 self.tab == GameTab::Upscalers,
                 GameTab::Upscalers,
             ),
-        ]);
+        ];
+        let nvidia = self.nvidia_tab_shown();
+        if nvidia {
+            strip.push(tab(
+                g::NVIDIA,
+                theme::GREEN,
+                "NVIDIA overrides",
+                self.tab == GameTab::Nvidia,
+                GameTab::Nvidia,
+            ));
+        }
         let body = match self.tab {
             GameTab::Overview => self.overview(game),
             GameTab::Reshade => self.reshade_tab(game),
             GameTab::Mods => self.mods_tab(game),
             GameTab::Upscalers => self.upscalers_tab(game),
+            GameTab::Nvidia if nvidia => self.nvidia_tab(game),
+            GameTab::Nvidia => self.overview(game),
         };
-        page(col([self.header(game), self.launch_bar(game), tab_strip, body]).gap(18.0))
+        let tab_strip = tabs(strip);
+        page(
+            "game",
+            col([self.header(game), self.launch_bar(game), tab_strip, body]).gap(18.0),
+        )
     }
 
     fn header(&self, game: &Game) -> El<Message> {
@@ -433,10 +452,11 @@ fn store_tint(store: Store) -> ColorF {
     }
 }
 
-/// A page's content, scrolled and no wider than `PAGE_MAX_WIDTH`.
-fn page(content: El<Message>) -> El<Message> {
+/// A page's content, scrolled and no wider than `PAGE_MAX_WIDTH`. Each page keeps its own scroll
+/// position (`key`), so the Library doesn't open where a game's page was scrolled to.
+fn page(key: &str, content: El<Message>) -> El<Message> {
     scroll(
-        "page",
+        format!("page:{key}"),
         col([content
             .fill_width()
             .max_width(PAGE_MAX_WIDTH)

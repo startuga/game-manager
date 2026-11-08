@@ -1,20 +1,20 @@
 //! The game page's Upscalers tab: the DLSS, FSR, XeSS and Streamline DLLs in the selected game's
 //! folder (`gm_core::mods::upscalers`), one card per place, each with its version, a drop-down of
-//! the vendors' versions, Swap and Restore (✕). The Upscalers page (the versions downloaded and
-//! available) is in `upscalers_page.rs`; both share `UpscalerState`.
+//! the vendors' versions, Swap and Restore (✕); then the folded Versions section (the versions
+//! downloaded and available, `upscaler_versions.rs`). `UpscalerState` also holds the NVIDIA
+//! overrides tab's driver facts and draft (`dlss_override_view.rs`).
 //!
-//! - **Scanning** walks the game's folder, so it runs in the background, and only while the tab
-//!   shows (`request_upscalers`, from `update`). Results are kept per game and cleared after a
-//!   library scan, a mod job or `ModsLoaded`, as their state may have changed.
+//! - **Scanning** walks the game's folder, so it runs in the background, and only while this tab
+//!   or the NVIDIA overrides tab shows (`request_upscalers`, from `update`). Results are kept per
+//!   game and cleared after a library scan, a mod job or `ModsLoaded`, as their state may have
+//!   changed.
 //! - **The library** (the kinds, GitHub's version lists and the cache) is read once, when the tab
-//!   or the page first needs it; Refresh asks GitHub again.
+//!   first needs it; Refresh asks GitHub again.
 //! - **Swap and Restore** are mod jobs (`ModKind::Upscaler`, one at a time like the others);
 //!   `UpscalerState::row` says which card shows "Working…". A swap downloads what the cache lacks,
 //!   so the cache is read again after each job.
-//! - **NVIDIA overrides**: with an NVIDIA driver, a last card opens the driver-level DLSS overrides
-//!   dialog (`dlss_override_view.rs`).
 
-use crate::dlss_override_view::OverrideLibrary;
+use crate::dlss_override_view::{OverrideDraft, OverrideLibrary};
 use crate::mods_view::{ModDialog, ModKind, shown_path};
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
@@ -43,14 +43,16 @@ pub(crate) struct UpscalerState {
     pub row: Option<String>,
     /// The panel's download running: kind and version.
     pub download: Option<(String, String)>,
-    /// The Upscalers page's kinds shown unfolded, by id.
+    /// The Versions section is unfolded.
+    pub versions_open: bool,
+    /// The Versions section's kinds shown unfolded, by id.
     pub unfolded: HashSet<String>,
-    /// The Upscalers page shows.
-    pub panel: bool,
-    /// NVIDIA's override settings and the driver's facts, read once when the tab opens
-    /// (`Ok(None)`: no NVIDIA driver).
+    /// NVIDIA's override settings and the driver's facts, read once at start (`Ok(None)`: no
+    /// NVIDIA driver, and no NVIDIA overrides tab).
     pub driver: Option<Result<Option<OverrideLibrary>, String>>,
     pub driver_pending: bool,
+    /// The NVIDIA overrides tab's draft, for the game it was made for.
+    pub overrides: Option<OverrideDraft>,
 }
 
 /// The kinds, every kind's versions (newest first) with what GitHub could not list, and the
@@ -95,7 +97,9 @@ pub(crate) fn megabytes(bytes: u64) -> String {
 
 #[derive(Clone)]
 pub(crate) enum UpscalerMessage {
-    /// A kind's section on the Upscalers page was folded or unfolded.
+    /// The Versions section was folded or unfolded.
+    VersionsToggled,
+    /// A kind's section in Versions was folded or unfolded.
     KindToggled(String),
     /// The kinds, their versions and the cache, or what failed.
     LibraryLoaded(Result<UpscalerLibrary, String>),
@@ -108,10 +112,9 @@ pub(crate) enum UpscalerMessage {
     /// Puts the game's own DLLs of the row back.
     Restore(String),
     ShowInfo,
-    OpenPanel,
     /// Asks GitHub for the version lists again.
     Refresh,
-    /// The panel's Download and Delete: kind and version.
+    /// Versions' Download and Delete: kind and version.
     Download(String, String),
     Delete(String, String),
     /// The cache after a download, a delete or a mod job, or what failed.
@@ -119,14 +122,15 @@ pub(crate) enum UpscalerMessage {
     OpenCacheFolder,
     /// NVIDIA's override settings and the driver's facts, or what failed (`dlss_override_view.rs`).
     DriverLoaded(Result<Option<OverrideLibrary>, String>),
-    ShowOverrides,
     ShowOverridesInfo,
-    /// A game's driver profile for the overrides dialog, by id (`None`: no NVIDIA driver).
+    /// A game's driver profile for the NVIDIA overrides tab, by id (`None`: no NVIDIA driver).
     OverridesLoaded(String, Result<Option<OverrideState>, String>),
-    /// A setting's drop-down in the dialog: its id and the index picked (0 is "Original");
-    /// `None` is ignored.
+    /// A setting's drop-down in the tab: its id and the index picked (0 is "Original"); `None`
+    /// is ignored.
     OverrideChosen(u32, Option<usize>),
     ResetOverrides,
+    /// The tab's Save.
+    SaveOverrides,
 }
 
 impl From<UpscalerMessage> for Message {
@@ -206,11 +210,8 @@ impl GameManager {
                 });
             }
             UpscalerMessage::ShowInfo => self.mod_dialog = Some(ModDialog::UpscalerInfo),
-            UpscalerMessage::OpenPanel => {
-                self.upscalers.panel = true;
-                if !matches!(self.upscalers.library, Some(Ok(_))) {
-                    self.load_upscaler_library(false, context);
-                }
+            UpscalerMessage::VersionsToggled => {
+                self.upscalers.versions_open = !self.upscalers.versions_open;
             }
             UpscalerMessage::Refresh => self.load_upscaler_library(true, context),
             UpscalerMessage::Download(kind, version) => {
@@ -262,18 +263,20 @@ impl GameManager {
                     .map(|e| e.to_string());
             }
             message @ (UpscalerMessage::DriverLoaded(_)
-            | UpscalerMessage::ShowOverrides
             | UpscalerMessage::ShowOverridesInfo
             | UpscalerMessage::OverridesLoaded(..)
             | UpscalerMessage::OverrideChosen(..)
-            | UpscalerMessage::ResetOverrides) => self.handle_overrides(message, context),
+            | UpscalerMessage::ResetOverrides
+            | UpscalerMessage::SaveOverrides) => self.handle_overrides(message, context),
         }
     }
 
-    /// After a mod job: the rows' state may have changed, and a swap may have downloaded.
+    /// After a mod job: the rows' state may have changed, and a swap may have downloaded; saved
+    /// overrides are read back from the profile (a new draft).
     pub(crate) fn upscaler_job_done(&mut self, context: &Ctx<Message>) {
         self.upscalers.found.clear();
         self.upscalers.row = None;
+        self.upscalers.overrides = None;
         if matches!(self.upscalers.library, Some(Ok(_))) {
             context.spawn_background(|_cancel| {
                 UpscalerMessage::DownloadsChanged(Ok(upscalers::downloaded())).into()
@@ -291,7 +294,8 @@ impl GameManager {
         });
     }
 
-    /// While the tab is open: the library once, and the selected game's DLLs.
+    /// While the Upscalers or NVIDIA overrides tab is open: the library once, and the selected
+    /// game's DLLs.
     pub(crate) fn request_upscalers(&mut self, context: &Ctx<Message>) {
         if !self.upscalers.open {
             return;
@@ -351,8 +355,7 @@ impl GameManager {
         offered.get(index).or_else(|| offered.first()).copied()
     }
 
-    /// The Upscalers tab: what it does, a card per place with upscaler DLLs, and NVIDIA's
-    /// overrides.
+    /// The Upscalers tab: what it does, a card per place with upscaler DLLs, and Versions.
     pub(crate) fn upscalers_tab(&self, game: &Game) -> El<Message> {
         let mut cards = vec![card([row([
             hint(
@@ -386,7 +389,7 @@ impl GameManager {
                 cards.extend(found.iter().map(|found| self.upscaler_card(game, found)));
             }
         }
-        cards.extend(self.overrides_card(game));
+        cards.push(self.versions_section());
         col(cards).gap(16.0)
     }
 

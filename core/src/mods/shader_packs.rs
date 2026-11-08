@@ -1,4 +1,4 @@
-//! ReShade's shader packs (the Shaders page): which packs there are, from the shipped
+//! ReShade's shader packs (ReShade ▸ Shaders): which packs there are, from the shipped
 //! `reshade-shaders.json` (copied from `config/`), and laying out the `reshade-shaders` folder
 //! that Game Manager deploys into games for the user's `Selection`.
 //!

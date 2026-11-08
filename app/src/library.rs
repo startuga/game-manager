@@ -1,4 +1,5 @@
-//! Library logic behind the sidebar: search, filter and selection. No UI code.
+//! Library logic behind the sidebar and the Library page: search, filter, selection, and how
+//! many tiles a row of the grid holds. No UI code.
 
 use gm_core::{Game, Store};
 
@@ -52,6 +53,11 @@ pub fn filter_options(games: &[Game]) -> Vec<(LibraryFilter, String)> {
         }
     }
     options
+}
+
+/// How many tiles `tile` wide, `gap` apart, fit in `width`: at least one.
+pub fn columns(width: f32, tile: f32, gap: f32) -> usize {
+    (((width + gap) / (tile + gap)).floor() as usize).max(1)
 }
 
 /// The selection after a rescan: the same game if it is still installed, else the first game.
@@ -135,6 +141,16 @@ mod tests {
                 (LibraryFilter::Favorites, "Favorites (0)".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn the_grid_holds_as_many_tiles_as_fit() {
+        // 140-wide tiles 12 apart: 4 need 596, 5 need 748.
+        assert_eq!(columns(596.0, 140.0, 12.0), 4);
+        assert_eq!(columns(747.0, 140.0, 12.0), 4);
+        assert_eq!(columns(748.0, 140.0, 12.0), 5);
+        // Never none, however narrow.
+        assert_eq!(columns(80.0, 140.0, 12.0), 1);
     }
 
     #[test]

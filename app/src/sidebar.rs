@@ -1,5 +1,7 @@
-//! The library sidebar: search and the filter, the pages (Library, Shaders, Add-ons, Upscalers,
-//! My PC), the games grouped by store, and Add a game.
+//! The library sidebar: search and the filter, the pages (My PC, then Library: the games grid),
+//! the games grouped by store, and Add a game. ReShade's Shaders and Add-ons and the upscaler
+//! versions are in the game page's tabs. The selected game's row is highlighted while its page
+//! shows.
 //!
 //! Store groups fold with a click on their header. Each row is
 //! keyed by its game's id, so hover, focus and the scroll position stay with the game when the
@@ -32,34 +34,16 @@ impl GameManager {
         .name("Filter");
         let pages = col([
             nav_item(
-                g::LIBRARY,
-                "Library",
-                self.page == Page::Game,
-                Message::Page(Page::Game),
-            ),
-            nav_item(
-                g::BRUSH,
-                "Shaders",
-                self.page == Page::Shaders,
-                Message::Page(Page::Shaders),
-            ),
-            nav_item(
-                g::PUZZLE,
-                "Add-ons",
-                self.page == Page::Addons,
-                Message::Page(Page::Addons),
-            ),
-            nav_item(
-                g::CHIP,
-                "Upscalers",
-                self.page == Page::Upscalers,
-                Message::Page(Page::Upscalers),
-            ),
-            nav_item(
                 g::PC,
                 "My PC",
                 self.page == Page::MyPc,
                 Message::Page(Page::MyPc),
+            ),
+            nav_item(
+                g::LIBRARY,
+                "Library",
+                self.page == Page::Library,
+                Message::Page(Page::Library),
             ),
         ])
         .gap(2.0);
@@ -113,7 +97,7 @@ impl GameManager {
                 continue;
             }
             let folded = self.folded.contains(&store);
-            rows.push(store_header(store, games.len(), folded));
+            rows.push(store_header("store", store, games.len(), folded));
             if !folded {
                 rows.extend(games.into_iter().map(|game| self.game_row(game)));
             }
@@ -156,8 +140,9 @@ impl GameManager {
     }
 }
 
-/// A store's group header: its name, how many games, and a chevron that folds it.
-fn store_header(store: Store, count: usize, folded: bool) -> El<Message> {
+/// A store's group header: its name, how many games, and a chevron that folds it. `key` keeps
+/// the sidebar's and the Library page's headers apart.
+pub(crate) fn store_header(key: &str, store: Store, count: usize, folded: bool) -> El<Message> {
     let chevron = if folded {
         g::CHEVRON_RIGHT
     } else {
@@ -181,7 +166,7 @@ fn store_header(store: Store, count: usize, folded: bool) -> El<Message> {
     .height(30.0)
     .radius(theme::RADIUS_CONTROL)
     .hover_bg(theme::SUBTLE_HOVER)
-    .key(format!("store:{}", store.name()))
+    .key(format!("{key}:{}", store.name()))
     .name(format!(
         "{} games, {}",
         store.name(),

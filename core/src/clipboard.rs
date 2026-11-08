@@ -1,4 +1,4 @@
-//! The clipboard, for Export on the Shaders page: a file put on it as a dropped file (`CF_HDROP`),
+//! The clipboard, for Export in ReShade ▸ Shaders: a file put on it as a dropped file (`CF_HDROP`),
 //! which File Explorer and Discord paste. Setting clipboard data needs a window to own it, so a
 //! message-only window is made for the call and destroyed afterwards; the data stays on the
 //! clipboard, which owns its memory once `SetClipboardData` succeeds.

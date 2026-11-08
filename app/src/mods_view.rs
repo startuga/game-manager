@@ -3,18 +3,20 @@
 //! Reinstall, Settings and the red ✕, then a line saying what Install does, what is installed, or
 //! why it can't be. Then the dialogs these open (Info or settings), as modal layers: one at a
 //! time, and the mod buttons wait while one is open.
+//!
+//! The ReShade tab has three views (`ReshadeView`), switched by pills under the tab strip:
+//! ReShade (its card), Shaders and Add-ons (`reshade_panel.rs`; `main.rs` opens and leaves them).
 
 use crate::app_view::{dialog, field_label};
-use crate::dlss_override_view::OverrideDraft;
 use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
     accent_button, button, card, hint, icon_button, icon_square, icon_text_button, link,
-    radio_group, remove_button, text_box, toggle, working_button,
+    radio_group, remove_button, segmented, text_box, toggle, working, working_button,
 };
-use crate::{DialogResult, GameManager, Message, Page};
+use crate::{DialogResult, GameManager, Message, ReshadeView};
 use gm_core::graphics::GraphicsApi;
 use gm_core::mods::dxvk::{self, Blocked, DxvkConfig, DxvkVariant, Hud};
 use gm_core::mods::laa::{LAA_INFO, LaaStatus};
@@ -33,8 +35,6 @@ pub(crate) enum ModDialog {
     /// ReShade settings: the variant being chosen.
     ReshadeSettings(ReshadeVariant),
     UpscalerInfo,
-    /// NVIDIA's DLSS overrides for the game's driver profile, being edited.
-    Overrides(OverrideDraft),
     OverridesInfo,
 }
 
@@ -290,21 +290,56 @@ impl GameManager {
             .is_some_and(|(id, job)| *id == game.id && *job == kind)
     }
 
-    /// The ReShade tab: ReShade's card, and where its shaders and add-ons are chosen.
+    /// The ReShade tab: its views (ReShade, Shaders, Add-ons), then the one chosen.
     pub(crate) fn reshade_tab(&self, game: &Game) -> El<Message> {
-        let pages = card([
-            text("Shaders and add-ons").bold(),
-            hint(
-                "Chosen for every game with ReShade, or for this game alone, on the Shaders and \
-                 Add-ons pages; Install and Reinstall bring them.",
+        let view = self.reshade_view;
+        let views = segmented(vec![
+            (
+                "ReShade",
+                view == ReshadeView::Install,
+                Message::ReshadeView(ReshadeView::Install),
             ),
-            row([
-                icon_text_button(g::BRUSH, "Shaders").on_click(Message::Page(Page::Shaders)),
-                icon_text_button(g::PUZZLE, "Add-ons").on_click(Message::Page(Page::Addons)),
-            ])
-            .gap(8.0),
+            (
+                "Shaders",
+                view == ReshadeView::Shaders,
+                Message::ReshadeView(ReshadeView::Shaders),
+            ),
+            (
+                "Add-ons",
+                view == ReshadeView::Addons,
+                Message::ReshadeView(ReshadeView::Addons),
+            ),
         ]);
-        col([self.reshade_card(game), pages]).gap(16.0)
+        let body = match view {
+            ReshadeView::Install => {
+                let choose = card([
+                    text("Shaders and add-ons").bold(),
+                    hint(
+                        "Chosen for every game with ReShade, or for this game alone, in Shaders \
+                         and Add-ons; Install and Reinstall bring them.",
+                    ),
+                    row([
+                        icon_text_button(g::BRUSH, "Choose shaders")
+                            .on_click(Message::ReshadeView(ReshadeView::Shaders)),
+                        icon_text_button(g::PUZZLE, "Choose add-ons")
+                            .on_click(Message::ReshadeView(ReshadeView::Addons)),
+                    ])
+                    .gap(8.0),
+                ]);
+                col([self.reshade_card(game), choose]).gap(16.0)
+            }
+            // The panel opens in `update` (`open_reshade_view`); a Deploy closes it until done.
+            ReshadeView::Shaders | ReshadeView::Addons => {
+                self.reshade_page().unwrap_or_else(|| {
+                    working(if matches!(self.mod_job, Some((_, ModKind::Deploy))) {
+                        "Deploying…"
+                    } else {
+                        "Opening…"
+                    })
+                })
+            }
+        };
+        col([views, body]).gap(16.0)
     }
 
     /// ReShade's card, and below it what Install does, what is installed, or why it can't be.
@@ -401,7 +436,7 @@ impl GameManager {
                         };
                         format!(
                             "Installs the latest {} build through ReShade's Vulkan layer{why}, with \
-                             the shaders chosen on the Shaders page.{}",
+                             the shaders chosen in Shaders.{}",
                             variant.name(),
                             layer_note(apps)
                         )
@@ -618,7 +653,7 @@ impl GameManager {
         })
     }
 
-    /// The open mod dialog: an Info, ReShade's or DXVK's settings, or NVIDIA's overrides.
+    /// The open mod dialog: an Info, or ReShade's or DXVK's settings.
     pub(crate) fn mod_dialog_view(&self, window: &WindowInfo) -> Option<El<Message>> {
         let close = Message::ModDialogClosed(DialogResult::Cancel);
         let save = Some((
@@ -634,7 +669,6 @@ impl GameManager {
             dialog(window, title, body, None, close.clone())
         };
         Some(match self.mod_dialog.as_ref()? {
-            ModDialog::Overrides(draft) => self.overrides_dialog(window, draft),
             ModDialog::OverridesInfo => {
                 info("NVIDIA overrides", gm_core::mods::dlss_override::INFO, None)
             }

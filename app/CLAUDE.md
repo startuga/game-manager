@@ -15,15 +15,22 @@ in `crates/samples/`) instead of guessing.
   - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
     dialogs).
   - `sidebar.rs` (search, filter, the pages, store groups, game rows, Add a game).
-  - `game_page.rs` (header, launch bar, tabs, Overview; picks the page).
+  - `library_page.rs` (the Library grid: a tile per game, by store; the window opens on it).
+  - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
+    scroll position).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
-    Shaders and Add-ons pages), `upscalers_view.rs` (the Upscalers tab and its state),
-    `upscalers_page.rs` (the Upscalers page), `dlss_override_view.rs` (NVIDIA's overrides),
-    `my_pc.rs` and `my_pc_page.rs` (My PC: its state and messages, and its view).
-- **Pages and tabs**: `Page` (Game, Shaders, Add-ons, Upscalers, My PC) is the sidebar's choice,
-  `GameTab` the game page's. Change pages only through `go_to`: leaving Add-ons saves and deploys its choice
-  (as its Close did), leaving Shaders drops its draft. Escape closes the menu, then a dialog, then
-  a page.
+    ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
+    state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA
+    overrides tab), `my_pc.rs` and `my_pc_page.rs` (My PC: its state and messages, and its view).
+- **Pages, tabs and views**: `Page` (Library, Game, My PC) is the sidebar's choice; `GameTab` the
+  game page's (NVIDIA overrides only with an NVIDIA driver, read at start); `ReshadeView` (ReShade,
+  Shaders, Add-ons) the ReShade tab's, as `widgets::segmented` pills.
+  - Change pages through `go_to` and games through `select`. Leaving the game page, the ReShade
+    tab, its view or the game runs `leave_reshade_view`: Add-ons saves and deploys a change (as
+    Apply does), Shaders drops its draft (as Discard changes does).
+  - `open_reshade_view` (from `update`) opens the view's panel when it shows without one, after a
+    Deploy has finished; a list that fails to load sends the view back to ReShade.
+  - Escape closes the menu, then a dialog, then leaves My PC, or Shaders and Add-ons for ReShade.
 - **UI-free logic**, unit-tested: `edit.rs` (the Game settings draft), `library.rs` (search,
   filter, selection). Put logic there, not in views.
 - `ui/` – the toolkit:
@@ -87,8 +94,8 @@ in `crates/samples/`) instead of guessing.
   separate windows, so their text isn't in the capture (read it through UI Automation).
 - **Right-clicks** can be posted (`WM_RBUTTONDOWN`/`WM_RBUTTONUP` at client coordinates), and
   so can a drag (`WM_LBUTTONDOWN`, `WM_MOUSEMOVE` with `MK_LBUTTON`, `WM_LBUTTONUP`).
-- **Names repeat**: "Upscalers" is both a page and a tab, "ReShade" a tab and a card. Search
-  under the tab strip, or pick the element by its control type.
+- **Names repeat**: "ReShade" is a tab, a view pill (both TabItems, the tab first) and a card.
+  Pick elements by control type, and the nth match where names repeat.
 - **DXVK in an agent session**: when the user's DXVK cache holds a build of an older layout,
   Install has to replace it and fails with os error 4395 (root `CLAUDE.md`). ReShade and LAA can
   be checked; ask the user to try DXVK.
@@ -116,8 +123,9 @@ in `crates/samples/`) instead of guessing.
   - **LAA**: only for 32-bit games (`game.arch == X86`, the chosen bitness counts). Its status
     comes from `request_laa` (cleared after a scan, a mod job or `ModsLoaded`). `mod_job` carries
     a `ModKind`, so only the working row shows "Working…".
-  - **NVIDIA overrides** (`dlss_override_view.rs`): the dialog reads the game's profile when it
-    opens (`OverridesLoaded`). When the profile no longer holds what Game Manager set
+  - **NVIDIA overrides** (`dlss_override_view.rs`): the tab's draft is made for the game it
+    shows, and the game's profile read then (`request_overrides`, `OverridesLoaded`); a save makes
+    it again from the profile. When the profile no longer holds what Game Manager set
     (`OverrideState::changed_elsewhere`, the NVIDIA app writes the same settings), a warning names
     them and Save sets them again. To change a profile from outside in a check, run
     `app.exe --nvidia-ops` with a plan (`[uri]::EscapeDataString` of its JSON).

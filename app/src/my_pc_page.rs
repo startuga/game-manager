@@ -33,10 +33,7 @@ impl GameManager {
         let Some(pc) = state.snapshot.as_deref() else {
             return col([self.my_pc_header(None), working("Reading the PC…")]).gap(16.0);
         };
-        // The page's content width: the window less the sidebar, its grip and the page's padding.
-        let width =
-            (window.size.0 - self.sidebar_width - 52.0).min(crate::game_page::PAGE_MAX_WIDTH);
-        let wide = width >= TWO_COLUMNS;
+        let wide = self.page_width(window) >= TWO_COLUMNS;
         let mut cards = Vec::new();
         match &pc.gpus {
             Ok(gpus) if !gpus.is_empty() => cards.extend(gpus.iter().map(gpu_card)),

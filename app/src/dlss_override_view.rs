@@ -1,30 +1,35 @@
-//! NVIDIA's driver-level DLSS overrides (`gm_core::mods::dlss_override`): the last card of the
-//! Upscalers tab, and the dialog it opens.
+//! NVIDIA's driver-level DLSS overrides (`gm_core::mods::dlss_override`): the game page's NVIDIA
+//! overrides tab, right of Upscalers.
 //!
-//! - **The card** shows only with an NVIDIA driver: the driver's version and its own DLLs'
-//!   versions are read once, in the background, when the tab first opens (`request_driver`, from
-//!   `request_upscalers`). It says how many overrides are set, and when the game's folder has no
-//!   NVIDIA DLL that only Smooth Motion works then.
-//! - **The dialog** reads the game's driver profile in the background when it opens
-//!   (`OverridesLoaded`, matched to the game); its drop-downs wait for it. Each group of the
-//!   catalog has a heading, and each setting the driver knows a drop-down whose first item is
-//!   "Original: …" (as in DXVK settings). Reset to original sets every one back to it; Save runs
-//!   `dlss_override::save` as a mod job (`ModKind::Overrides`).
+//! - **The tab** is listed only with an NVIDIA driver: the driver's version and its own DLLs'
+//!   versions are read once, in the background, at start (`request_driver`). A driver that
+//!   failed to read shows the tab with the error.
+//! - **Its header card** says how many overrides are set, and when the game's folder has no
+//!   NVIDIA DLL that only Smooth Motion works then (from the game's DLL scan, which runs for this
+//!   tab too).
+//! - **The draft** (`UpscalerState::overrides`) is made when the tab shows a game it wasn't made
+//!   for (`request_overrides`, from `update`), from what `mods.json` holds; the game's driver
+//!   profile is read in the background (`OverridesLoaded`, matched to the game) and the
+//!   drop-downs wait for it. Selecting another game drops an unsaved draft, as Game settings
+//!   does.
+//! - **The form**: each group of the catalog has a heading, and each setting the driver knows a
+//!   drop-down whose first item is "Original: …" (as in DXVK settings). Reset to original sets
+//!   every one back to it; Save runs `dlss_override::save` as a mod job (`ModKind::Overrides`),
+//!   after which the draft is made again from the profile.
 //! - **Changed elsewhere**: the NVIDIA app writes the same settings (resetting its DLSS override
 //!   writes them all as Off or N/A), and may delete a profile. When the profile no longer holds
 //!   what Game Manager set (`OverrideState::changed_elsewhere`), a warning names each setting with
 //!   its value now, and Save sets them again even when the choice is unchanged.
-//! - Like every dialog, its body scrolls when it doesn't fit the window (`app_view::dialog`).
 
-use crate::app_view::dialog;
 use crate::mods_view::{ModCard, ModDialog, ModKind, mod_card, original_label};
-use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{button, hint, icon_button, icon_text_button, working, working_button};
+use crate::ui::widgets::{
+    accent_button, button, card, hint, icon_text_button, working, working_button,
+};
 use crate::upscalers_view::UpscalerMessage;
-use crate::{DialogResult, GameManager, Message};
+use crate::{GameManager, GameTab, Message, Page};
 use gm_core::Game;
 use gm_core::mods::dlss_override::{self, Catalog, Driver, OverrideState, Setting};
 use gm_core::mods::dxvk::Blocked;
@@ -37,9 +42,9 @@ pub(crate) struct OverrideLibrary {
     pub driver: Driver,
 }
 
-/// The overrides being edited in their dialog.
+/// The overrides being edited in the tab.
 pub(crate) struct OverrideDraft {
-    /// The game the dialog opened for.
+    /// The game the draft was made for.
     pub game: String,
     /// The values chosen, by setting id; a setting left out is "Original".
     pub choice: BTreeMap<u32, u32>,
@@ -123,36 +128,69 @@ impl GameManager {
         context.spawn_background(|_cancel| UpscalerMessage::DriverLoaded(load_driver()).into());
     }
 
+    /// The NVIDIA overrides tab is listed: an NVIDIA driver was found, or reading it failed.
+    pub(crate) fn nvidia_tab_shown(&self) -> bool {
+        matches!(self.upscalers.driver, Some(Ok(Some(_)) | Err(_)))
+    }
+
+    /// While the NVIDIA overrides tab shows a game its draft wasn't made for: a new draft from
+    /// `mods.json`, and the game's driver profile read in the background. Not while a save runs:
+    /// its end makes the draft again.
+    pub(crate) fn request_overrides(&mut self, context: &Ctx<Message>) {
+        if self.page != Page::Game || self.tab != GameTab::Nvidia || self.mod_job.is_some() {
+            return;
+        }
+        let (Some(game), Some(library)) = (self.selected_game(), self.override_library()) else {
+            return;
+        };
+        if game.program.is_none() && self.mods.dlss_override(&game.id).is_none() {
+            return;
+        }
+        if self
+            .upscalers
+            .overrides
+            .as_ref()
+            .is_some_and(|draft| draft.game == game.id)
+        {
+            return;
+        }
+        let (game, catalog) = (game.clone(), library.catalog.clone());
+        let choice = self
+            .mods
+            .dlss_override(&game.id)
+            .map(|record| record.choice.clone())
+            .unwrap_or_default();
+        self.upscalers.overrides = Some(OverrideDraft {
+            game: game.id.clone(),
+            choice,
+            state: None,
+        });
+        context.spawn_background(move |_cancel| {
+            let read = dlss_override::state(&game, &catalog).map_err(|e| e.to_string());
+            UpscalerMessage::OverridesLoaded(game.id, read).into()
+        });
+    }
+
     pub(crate) fn handle_overrides(&mut self, message: UpscalerMessage, context: &Ctx<Message>) {
         match message {
             UpscalerMessage::DriverLoaded(driver) => {
                 self.upscalers.driver_pending = false;
                 self.upscalers.driver = Some(driver);
             }
-            UpscalerMessage::ShowOverrides => {
-                let (Some(game), Some(library)) = (self.selected_game(), self.override_library())
-                else {
+            UpscalerMessage::ShowOverridesInfo => self.mod_dialog = Some(ModDialog::OverridesInfo),
+            UpscalerMessage::SaveOverrides => {
+                let (Some(game), Some(draft)) = (
+                    self.selected_game().cloned(),
+                    self.upscalers.overrides.take(),
+                ) else {
                     return;
                 };
-                let (game, catalog) = (game.clone(), library.catalog.clone());
-                let choice = self
-                    .mods
-                    .dlss_override(&game.id)
-                    .map(|record| record.choice.clone())
-                    .unwrap_or_default();
-                self.mod_dialog = Some(ModDialog::Overrides(OverrideDraft {
-                    game: game.id.clone(),
-                    choice,
-                    state: None,
-                }));
-                context.spawn_background(move |_cancel| {
-                    let read = dlss_override::state(&game, &catalog).map_err(|e| e.to_string());
-                    UpscalerMessage::OverridesLoaded(game.id, read).into()
-                });
+                self.save_overrides(game, &draft, context);
+                // Shown while the save runs; its end makes the draft again from the profile.
+                self.upscalers.overrides = Some(draft);
             }
-            UpscalerMessage::ShowOverridesInfo => self.mod_dialog = Some(ModDialog::OverridesInfo),
             UpscalerMessage::OverridesLoaded(id, read) => {
-                if let Some(ModDialog::Overrides(draft)) = &mut self.mod_dialog
+                if let Some(draft) = &mut self.upscalers.overrides
                     && draft.game == id
                 {
                     // What mods.json holds now is what was saved.
@@ -173,7 +211,7 @@ impl GameManager {
                 let value = index
                     .checked_sub(1)
                     .and_then(|index| shown_values(library, setting).get(index).map(|(v, _)| *v));
-                if let Some(ModDialog::Overrides(draft)) = &mut self.mod_dialog {
+                if let Some(draft) = &mut self.upscalers.overrides {
                     match value {
                         Some(value) => draft.choice.insert(id, value),
                         None => draft.choice.remove(&id),
@@ -181,7 +219,7 @@ impl GameManager {
                 }
             }
             UpscalerMessage::ResetOverrides => {
-                if let Some(ModDialog::Overrides(draft)) = &mut self.mod_dialog {
+                if let Some(draft) = &mut self.upscalers.overrides {
                     draft.choice.clear();
                 }
             }
@@ -189,13 +227,8 @@ impl GameManager {
         }
     }
 
-    /// The dialog's Save: applies the choice to the game's driver profile, when it changed.
-    pub(crate) fn save_overrides(
-        &mut self,
-        game: Game,
-        draft: OverrideDraft,
-        context: &Ctx<Message>,
-    ) {
+    /// The tab's Save: applies the choice to the game's driver profile, when it changed.
+    fn save_overrides(&mut self, game: Game, draft: &OverrideDraft, context: &Ctx<Message>) {
         let Some(state) = draft.loaded().filter(|_| draft.game == game.id) else {
             return;
         };
@@ -216,24 +249,24 @@ impl GameManager {
             return;
         }
         self.mod_job = Some((game.id.clone(), ModKind::Overrides));
-        let choice = draft.choice;
+        let choice = draft.choice.clone();
         context.spawn_background(move |_cancel| {
             let saved = dlss_override::save(&game, &catalog, choice);
             Message::ModJobDone(saved.map_err(|e| e.to_string()))
         });
     }
 
-    /// The Upscalers tab's last card: how many overrides are set, Info and the dialog's button.
-    /// Nothing without an NVIDIA driver.
-    pub(crate) fn overrides_card(&self, game: &Game) -> Option<El<Message>> {
+    /// The NVIDIA overrides tab: its header card, then the settings with Save and Reset to
+    /// original.
+    pub(crate) fn nvidia_tab(&self, game: &Game) -> El<Message> {
         let library = match &self.upscalers.driver {
             Some(Ok(Some(library))) => library,
             Some(Err(error)) => {
-                return Some(hint(format!(
+                return card([hint(format!(
                     "The NVIDIA driver's settings could not be read: {error}"
-                )));
+                ))]);
             }
-            _ => return None,
+            _ => return working("Reading the NVIDIA driver…"),
         };
         let record = self.mods.dlss_override(&game.id);
         let set = record.map_or(0, |record| record.choice.len());
@@ -243,7 +276,7 @@ impl GameManager {
             set => format!("Driver {}: {set} set", library.driver.label()),
         };
         let has_exe = game.program.is_some() || record.is_some();
-        let working = self
+        let saving = self
             .mod_job
             .as_ref()
             .is_some_and(|(id, kind)| *id == game.id && *kind == ModKind::Overrides);
@@ -257,7 +290,7 @@ impl GameManager {
             })),
             _ => None,
         };
-        let hint_text = if working {
+        let hint_text = if saving {
             "Working… Windows asks for administrator rights when the driver needs them.".to_owned()
         } else if !has_exe {
             Blocked::NoProgram.to_string()
@@ -269,14 +302,7 @@ impl GameManager {
              the game's files."
                 .to_owned()
         };
-        let settings = if working {
-            working_button()
-        } else {
-            icon_button(g::SETTINGS, "NVIDIA overrides settings")
-                .enabled(has_exe && !self.mods_busy())
-                .on_click(UpscalerMessage::ShowOverrides.into())
-        };
-        Some(mod_card(ModCard {
+        let header = mod_card(ModCard {
             icon: g::NVIDIA,
             tint: theme::GREEN,
             title: "NVIDIA overrides",
@@ -286,29 +312,42 @@ impl GameManager {
                     .enabled(!self.dialog_open())
                     .name("NVIDIA overrides information")
                     .on_click(UpscalerMessage::ShowOverridesInfo.into()),
-                settings,
             ],
             hint: hint_text,
-        }))
-    }
-
-    /// The overrides dialog: one drop-down per setting the driver knows, by group.
-    pub(crate) fn overrides_dialog(
-        &self,
-        window: &WindowInfo,
-        draft: &OverrideDraft,
-    ) -> El<Message> {
-        dialog(
-            window,
-            "NVIDIA overrides",
-            self.overrides_form(draft),
-            Some((
-                "Save",
-                draft.loaded().is_some(),
-                Message::ModDialogClosed(DialogResult::Primary),
-            )),
-            Message::ModDialogClosed(DialogResult::Cancel),
-        )
+        });
+        if !has_exe {
+            return header;
+        }
+        let Some(draft) = self
+            .upscalers
+            .overrides
+            .as_ref()
+            .filter(|draft| draft.game == game.id)
+        else {
+            return col([header, working("Reading the game's driver profile…")]).gap(16.0);
+        };
+        let save = if saving {
+            working_button()
+        } else {
+            accent_button("Save")
+                .min_width(120.0)
+                .enabled(draft.loaded().is_some() && !self.mods_busy())
+                .name("Save NVIDIA overrides")
+                .tooltip("Set these in the game's driver profile")
+                .on_click(UpscalerMessage::SaveOverrides.into())
+        };
+        let mut form = self.overrides_form(draft);
+        form.push(
+            row([
+                save,
+                icon_text_button(g::REFRESH, "Reset to original")
+                    .enabled(draft.loaded().is_some() && !draft.choice.is_empty() && !saving)
+                    .name("Reset NVIDIA overrides to original")
+                    .on_click(UpscalerMessage::ResetOverrides.into()),
+            ])
+            .gap(8.0),
+        );
+        col([header, card(form)]).gap(16.0)
     }
 
     fn overrides_form(&self, draft: &OverrideDraft) -> Vec<El<Message>> {
@@ -366,13 +405,9 @@ impl GameManager {
                 );
             }
         }
-        rows.push(row([icon_text_button(g::REFRESH, "Reset to original")
-            .enabled(state.is_some() && !draft.choice.is_empty())
-            .name("Reset NVIDIA overrides to original")
-            .on_click(UpscalerMessage::ResetOverrides.into())]));
         rows.push(hint(
             "The game must use DLSS (Smooth Motion aside). A DLL override also replaces a DLL \
-             swapped on this tab. Settings this driver is too old for are not shown.",
+             swapped on the Upscalers tab. Settings this driver is too old for are not shown.",
         ));
         rows
     }
