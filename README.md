@@ -1,56 +1,71 @@
 # Game Manager
 
-A native Windows 11 game launcher written in Rust with a WinUI 3 interface
-([`windows-reactor`](https://github.com/microsoft/windows-rs)) in WinUI's Compact sizing, for every
-control. It finds installed games from Steam, Epic Games, GOG, EA and the Xbox app, shows their
-icons, and starts them. Any other game can be added by hand with **Add game** (choose its program,
-then a name and optional command-line arguments), or by dropping the game's `.exe` or its desktop
-shortcut on the window (a shortcut brings its name, arguments and icon); those are saved in
+A native Windows 11 game launcher written in Rust. Its window is plain Win32 drawn with Direct2D and
+DirectWrite ([windows-rs](https://github.com/microsoft/windows-rs)'s `windows-window`,
+`windows-canvas` and `windows-text`): no WinUI, no XAML and no Windows App Runtime.
+
+It finds installed games from Steam, Epic Games, GOG, EA and the Xbox app, shows their icons, and
+starts them. Any other game can be added by hand with **Add a game** (choose its program, then a
+name and optional command-line arguments), or by dropping the game's `.exe` or its desktop shortcut
+on the window (a shortcut brings its name, arguments and icon); those are saved in
 `%APPDATA%\Game Manager\custom-games.json`.
 
-Each game's **Game settings** (an expander under its buttons) change the name shown, the program
-Play starts (instead of the store's launch), the command-line arguments (also passed to Steam
-games as launch options) and the game's own program (for its bitness, Open folder and mods). Its
-**Bitness** and **Graphics API** drop-downs set the game's 32 or 64-bit build and the one API it
-runs on, when detection got them wrong or found several APIs: mods such as ReShade and DXVK need
-exactly these. Edits are saved in `%APPDATA%\Game Manager\game-settings.json`; **Reset to
-detected** removes them.
+## The window
 
-Right-click a game in the library for **Play** and **Add to Favorites** (or Remove from
-Favorites); the **Favorites** entry of the filter above the list shows only those games. Favorites
-are saved in `game-settings.json` too.
+- **The sidebar**: search, a filter (all games, one store, or Favorites), the pages **Library**,
+  **Shaders**, **Add-ons** and **Upscalers**, then the games by store (click a store to fold it)
+  and **Add a game** at the bottom. Drag its edge to make it wider or narrower. Right-click a game
+  for **Play** and **Add to Favorites** (or Remove from Favorites); favorites are saved in
+  `game-settings.json`.
+- **The title bar** has **Rescan** (⟳), which looks for games again.
+- **A game's page**: its icon, name and install folder, with chips for its store, bitness and
+  graphics APIs; **Play** (and the store's other launches), **Folder**, **PCGamingWiki**, and
+  **Remove** for games added by hand. Below them are four tabs: **Overview**, **ReShade**, **DXVK &
+  LAA** and **Upscalers**.
 
-The game panel also shows the game's **graphics APIs** (DirectX 8–12, OpenGL, Vulkan): from
-PCGamingWiki's API table when the wiki has the game (looked up once, when you select it, and cached
-in `%LOCALAPPDATA%\Game Manager\cache`), otherwise read from the game's files, which can list APIs
-the game does not use. Hover over them to see where they come from. When several are shown, choose
-the one the game runs on in Game settings. With DXVK in the game's folder (installed by Game
-Manager or by hand), a Direct3D 8–11 game shows **→ Vulkan (DXVK)**: it then runs on Vulkan.
+The graphics API chips (DirectX 8–12, OpenGL, Vulkan) come from PCGamingWiki's API table when the
+wiki has the game (looked up once, when you select it, and cached in `%LOCALAPPDATA%\Game
+Manager\cache`), otherwise from the game's files, which can list APIs the game does not use. Hover
+over them to see where they come from. When several are shown, choose the one the game runs on in
+Game settings. With DXVK in the game's folder (installed by Game Manager or by hand), a Direct3D
+8–11 game shows **Vulkan (DXVK)**: it then runs on Vulkan.
 
-The **Enhancements** expander installs [ReShade](https://reshade.me), post-processing effects for
-games. **Install ReShade** copies ReShade as the game's graphics DLL (`d3d9.dll`, `dxgi.dll` or
-`opengl32.dll`), writes a `ReShade.ini` when the game has none, and adds the shaders and add-ons
-chosen in the top bar's ReShade menu (below) in `reshade-shaders` and next to its program; press
-Home in the game for its overlay. ⚙ chooses **Stable** (reshade.me, with add-ons), **Development** (the latest main build, via
-nightly.link) or **No Addons** (reshade.me, for online games). Vulkan games, and games with DXVK,
-use ReShade's Vulkan layer instead: the same install for the whole computer that ReShade's own
-setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rights. Direct3D 8
-games need DXVK first. Reinstall keeps ReShade's settings; uninstalling removes ReShade with
-`ReShade.ini`, `ReShadePreset.ini`, `ReShade.log` and the `reshade-shaders` folder.
+## Overview: Game settings
 
-The top bar's **ReShade** button chooses what games with ReShade get:
+**Game settings** change the name shown, the program Play starts (instead of the store's launch),
+the command-line arguments (also passed to Steam games as launch options) and the game's own
+program (for its bitness, Folder and mods). Its **Bitness** and **Graphics API** drop-downs set the
+game's 32 or 64-bit build and the one API it runs on, when detection got them wrong or found
+several APIs: mods such as ReShade and DXVK need exactly these. Edits are saved in
+`%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them. **Details** shows
+the store, the game's program and its bitness.
+
+## ReShade
+
+The **ReShade** tab installs [ReShade](https://reshade.me), post-processing effects for games.
+**Install** copies ReShade as the game's graphics DLL (`d3d9.dll`, `dxgi.dll` or `opengl32.dll`),
+writes a `ReShade.ini` when the game has none, and adds the shaders and add-ons chosen on the
+Shaders and Add-ons pages (below) in `reshade-shaders` and next to its program; press Home in the
+game for its overlay. ⚙ chooses **Stable** (reshade.me, with add-ons), **Development** (the latest
+main build, via nightly.link) or **No Addons** (reshade.me, for online games). Vulkan games, and
+games with DXVK, use ReShade's Vulkan layer instead: the same install for the whole computer that
+ReShade's own setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rights.
+Direct3D 8 games need DXVK first. Reinstall keeps ReShade's settings; uninstalling (✕) removes
+ReShade with `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log` and the `reshade-shaders` folder.
+
+The sidebar's **Shaders** and **Add-ons** pages choose what games with ReShade get:
 
 - **Shaders** lists 55 shader packs as Essential (Lilium's HDR shaders,
   selected until you choose), Recommended, Custom Shaders (your own) and Extra. ▶ downloads a
   pack and lists its effects, to pick single ones; search finds packs and effects. Profiles keep
   selections (Save, New, rename, delete); **Export** zips the selected shaders onto the clipboard,
   to paste into Discord or a folder, and **Import** adds a ZIP's shaders to your own (**Open
-  Custom Folder**). **Deploy** puts the selection into the games it applies to. Packs are cached
+  custom folder**). **Deploy** puts the selection into the games it applies to. Packs are cached
   in `%LOCALAPPDATA%\Game Manager\mods\reshade\packs` and updated when they change.
-- **Addons** lists ReShade's add-ons and a few more, and your own (`.addon32`/`.addon64`
-  files in the custom folder), each with an On/Off switch. Closing it puts the add-ons switched on
-  next to the program of the games it applies to, for each one's bitness; games with the No
-  Addons build get none.
+- **Add-ons** lists ReShade's add-ons and a few more, and your own (`.addon32`/`.addon64` files in
+  the custom folder), each with an On/Off switch. **Close**, or going to another page, puts the
+  add-ons switched on next to the program of the games it applies to, for each one's bitness;
+  games with the No Addons build get none.
 
 **Apply to**, at the top of both, chooses where: **Only** the game selected in the library (the
 default), which then keeps a selection of its own, or **All games with ReShade**. Deploying to
@@ -60,8 +75,9 @@ puts it back on the shared one. A game without a selection of its own starts fro
 Your choices are saved in `%APPDATA%\Game Manager\reshade.json` (a game's own under `games`), your
 own shaders and add-ons in `%APPDATA%\Game Manager\reshade\custom`.
 
-The **Mods** expander installs mods into the game's folder. The first is
-[DXVK](https://github.com/doitsujin/dxvk), which runs Direct3D 8–11 games on Vulkan: **Install DXVK**
+## DXVK & LAA
+
+[DXVK](https://github.com/doitsujin/dxvk) runs Direct3D 8–11 games on Vulkan: **Install**
 downloads the latest build and copies the DLLs for the game's bitness and graphics API next to its
 program (choose them in Game settings when they are unknown or several APIs were found). The
 version link opens the page that build came from, **Info** explains DXVK, ⚙ chooses **Stable**
@@ -74,12 +90,14 @@ Method** (Prefer layered on DXGI Swapchain) and its **flags** (Allow promoting D
 DXGI/DirectFlip, or Treat DXVK as Native), with **Reset to original** to put back what the
 profile had; they stay when DXVK is uninstalled.
 
-For 32-bit games, the Mods expander also shows **LAA** (Large Address Aware): whether the game's
-program may use 4 GB of memory instead of 2 GB, and **Enable LAA** to patch it (the original is
-kept as `<program>.gm-backup`, and ✕ puts it back). Programs wrapped by Steam's DRM get a warning,
-as a changed program may not start.
+For 32-bit games, the tab also shows **Large Address Aware**: whether the game's program may use
+4 GB of memory instead of 2 GB, and **Enable LAA** to patch it (the original is kept as
+`<program>.gm-backup`, and ✕ puts it back). Programs wrapped by Steam's DRM get a warning, as a
+changed program may not start.
 
-The **Upscalers** expander lists the upscaler DLLs in the game's folder and below:
+## Upscalers
+
+The **Upscalers** tab lists the upscaler DLLs in the game's folder and below:
 - **DLSS** Super Resolution, Ray Reconstruction and Frame Generation.
 - **NVIDIA Streamline**, swapped as one set, as its plugins must match. A game with Streamline 1
   can't use Streamline 2, so it is offered none.
@@ -89,12 +107,12 @@ The **Upscalers** expander lists the upscaler DLLs in the game's folder and belo
 Each shows its version. Pick another of its vendor's versions and **Swap** to upgrade or downgrade
 it without a game update; ✕ puts the game's own DLL back. The versions are NVIDIA's, AMD's and
 Intel's own, from their GitHub repositories, and each DLL must carry a valid signature. FSR 2 and
-3.0, and DLSS 1, are built into games and can't be swapped. The top bar's **Upscalers** button
-lists every version with Download and Delete. An online game's anti-cheat may object to changed
-files, and a game update puts the game's own DLL back.
+3.0, and DLSS 1, are built into games and can't be swapped. The sidebar's **Upscalers** page lists
+every version with Download and Delete. An online game's anti-cheat may object to changed files,
+and a game update puts the game's own DLL back.
 
-On NVIDIA GPUs, the expander's last row, **NVIDIA overrides**, sets NVIDIA's driver-level DLSS
-override in the game's driver profile, as the NVIDIA app does, without changing the game's files:
+On NVIDIA GPUs, the tab's last card, **NVIDIA overrides**, sets NVIDIA's driver-level DLSS override
+in the game's driver profile, as the NVIDIA app does, without changing the game's files:
 - **Latest DLLs**: the driver's own DLSS Super Resolution, Ray Reconstruction, Frame Generation
   and Streamline, with their versions.
 - **Model presets**: Super Resolution's and Ray Reconstruction's.
@@ -106,6 +124,8 @@ Each drop-down starts with what the profile held, and **Reset to original** puts
 Game Manager created is deleted). Settings the driver is too old for are not shown. The settings
 come from `config/nvidia-overrides.json`. The NVIDIA app writes the same settings: when it (or
 another tool) has changed them since, the dialog says which, and Save sets them again.
+
+## Files
 
 Files of the game that a mod replaces are kept as `<name>.gm-backup` and put back on uninstall.
 When a game is in a protected folder (such as `C:\Program Files`), Windows asks for administrator
@@ -134,9 +154,7 @@ start. Your own choices stay in `%APPDATA%\Game Manager`.
    The windows-rs crates come straight from
    [microsoft/windows-rs](https://github.com/microsoft/windows-rs) master, so the first build
    also downloads that repository (about 1.4 GB). `cargo update` moves them to its latest commit.
-3. **Windows App Runtime 2.x** (needed to run WinUI 3 apps). It is usually already installed
-   with Windows 11 apps; otherwise install it from Microsoft.
-4. **Git** and, optionally, the **GitHub CLI** (`winget install GitHub.cli`).
+3. **Git** and, optionally, the **GitHub CLI** (`winget install GitHub.cli`).
 
 Then:
 
@@ -165,7 +183,9 @@ together. A running `app.exe` cannot be replaced: close it before rebuilding.
 
 ## Project layout
 
-- `app/` – the WinUI 3 window (top bar, library sidebar, game panel).
+- `app/` – the window (Win32, Direct2D and DirectWrite): the sidebar, the game page and its tabs,
+  and the Shaders, Add-ons and Upscalers pages. `app/assets` holds the Oxanium font used for
+  titles (SIL Open Font License, `Oxanium-OFL.txt`).
 - `core/` (crate `gm-core`) – store scanners, icon extraction and launching; no UI code.
 - `config/games.json` – per-game knowledge used by the scanners (no game-specific data in code).
 - `tools/7-Zip` – the 7-Zip command line (`7z.exe`, `7z.dll`) that unpacks downloaded mods.

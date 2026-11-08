@@ -9,17 +9,25 @@ workspace = true
 
 [dependencies]
 gm-core = { path = "../core" }
-# The startup error dialog (winuser) and the "Windows App Runtime missing" code (winerror).
-windows = { workspace = true, features = ["winuser", "winerror"] }
-windows-pickers = { workspace = true, features = ["reactor"] }
-windows-reactor = { workspace = true }
-# For the WinUI calls the reactor has no API for (`winui_bindings.rs`, generated), and boxing
-# their struct values (`compact.rs`).
-windows-collections = { workspace = true }
+# The window drawn with Direct2D (windows-canvas, `system` host) and DirectWrite (windows-text),
+# its HWND and message loop (windows-window), and background work on the thread pool.
+windows-canvas = { workspace = true }
 windows-core = { workspace = true }
-windows-reference = { workspace = true }
-
-[dev-dependencies]
-# `examples/winui_bindings.rs`, which generates `src/winui_bindings.rs`.
-serde_json = { workspace = true }
-windows-bindgen = { workspace = true }
+windows-text = { workspace = true }
+windows-threading = { workspace = true }
+windows-window = { workspace = true }
+# Win32 features are named after C headers: the window's frame and messages (winuser, dwmapi,
+# shellapi for dropped files), text boxes (commctrl subclassing, wingdi fonts and colours), the
+# Open dialog (shobjidl_core, shtypes, combaseapi, objbase), icons (wincodec, shlwapi), clipping
+# (d2d), UI Automation (uiautomationcore, uiautomationcoreapi, uiautomationclient, oleauto),
+# efficiency mode (processthreadsapi, memoryapi) and the start error (winerror).
+windows = { workspace = true, features = [
+    "winuser", "dwmapi", "shellapi", "uxtheme",
+    "commctrl", "wingdi",
+    "shobjidl_core", "shtypes", "combaseapi", "objbase", "objidl", "objidlbase", "wtypesbase",
+    "wincodec", "shlwapi",
+    "d2d", "dcommon",
+    "uiautomationcore", "uiautomationcoreapi", "uiautomationclient", "oleauto", "oaidl", "propidl", "shared", "winnt", "wtypes",
+    "processthreadsapi", "memoryapi", "winbase",
+    "winerror", "windef", "minwindef",
+] }

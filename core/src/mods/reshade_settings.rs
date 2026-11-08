@@ -1,4 +1,4 @@
-//! The user's ReShade choices (ReShade ▸ Shaders and Addons), in
+//! The user's ReShade choices (the Shaders and Add-ons pages), in
 //! `%APPDATA%\Game Manager\reshade.json`:
 //!
 //! - **Shared**: the shader selection (`shader_packs::Selection`; the packs' defaults until the

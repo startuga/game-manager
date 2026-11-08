@@ -1,35 +1,38 @@
-//! The game panel's Upscalers expander: the DLSS, FSR, XeSS and Streamline DLLs in the selected
-//! game's folder (`gm_core::mods::upscalers`), one row per place, each with its version, a
-//! drop-down of the vendors' versions, Swap and Restore (✕). The top bar's library panel is in
-//! `upscalers_panel.rs`; both share `UpscalerState`.
+//! The game page's Upscalers tab: the DLSS, FSR, XeSS and Streamline DLLs in the selected game's
+//! folder (`gm_core::mods::upscalers`), one card per place, each with its version, a drop-down of
+//! the vendors' versions, Swap and Restore (✕). The Upscalers page (the versions downloaded and
+//! available) is in `upscalers_page.rs`; both share `UpscalerState`.
 //!
-//! - **Scanning** walks the game's folder, so it runs in the background, and only while the
-//!   expander is open (`request_upscalers`, from `update`). Results are kept per game and
-//!   cleared after a library scan, a mod job or `ModsLoaded`, as their state may have changed.
-//! - **The library** (the kinds, GitHub's version lists and the cache) is read once, when the
-//!   expander or the panel first needs it; Refresh asks GitHub again.
+//! - **Scanning** walks the game's folder, so it runs in the background, and only while the tab
+//!   shows (`request_upscalers`, from `update`). Results are kept per game and cleared after a
+//!   library scan, a mod job or `ModsLoaded`, as their state may have changed.
+//! - **The library** (the kinds, GitHub's version lists and the cache) is read once, when the tab
+//!   or the page first needs it; Refresh asks GitHub again.
 //! - **Swap and Restore** are mod jobs (`ModKind::Upscaler`, one at a time like the others);
-//!   `UpscalerState::row` says which row shows "Working…". A swap downloads what the cache lacks,
+//!   `UpscalerState::row` says which card shows "Working…". A swap downloads what the cache lacks,
 //!   so the cache is read again after each job.
-//! - **NVIDIA overrides**: with an NVIDIA driver, a last row opens the driver-level DLSS overrides
+//! - **NVIDIA overrides**: with an NVIDIA driver, a last card opens the driver-level DLSS overrides
 //!   dialog (`dlss_override_view.rs`).
 
 use crate::dlss_override_view::OverrideLibrary;
-use crate::mods_view::{ModDialog, ModKind, UNINSTALL_GLYPH, shown_path};
+use crate::mods_view::{ModDialog, ModKind, shown_path};
+use crate::shell::ctx::Ctx;
+use crate::ui::el::{El, col, dropdown, row, text};
+use crate::ui::theme::{self, glyph as g};
+use crate::ui::widgets::{button, card, hint, icon_square, remove_button, working, working_button};
 use crate::{GameManager, Message};
 use gm_core::Game;
 use gm_core::mods::dlss_override::OverrideState;
 use gm_core::mods::upscalers::{self, Available, Catalog, Downloaded, Found, State};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use windows_reactor::*;
 
-/// What the Upscalers expander and panel show.
+/// What the Upscalers tab and page show.
 #[derive(Default)]
 pub(crate) struct UpscalerState {
     /// The DLLs found in each game's folder, by id, once scanned.
     pub found: HashMap<String, Vec<Found>>,
     pub pending: HashSet<String>,
-    /// The expander is open (kept while switching games).
+    /// The tab shows (kept while switching games).
     pub open: bool,
     /// The kinds, their versions and the cache, once read (`Err`: what failed).
     pub library: Option<Result<UpscalerLibrary, String>>,
@@ -40,9 +43,11 @@ pub(crate) struct UpscalerState {
     pub row: Option<String>,
     /// The panel's download running: kind and version.
     pub download: Option<(String, String)>,
-    /// Top bar ▸ Upscalers, while open.
+    /// The Upscalers page's kinds shown unfolded, by id.
+    pub unfolded: HashSet<String>,
+    /// The Upscalers page shows.
     pub panel: bool,
-    /// NVIDIA's override settings and the driver's facts, read once when the expander opens
+    /// NVIDIA's override settings and the driver's facts, read once when the tab opens
     /// (`Ok(None)`: no NVIDIA driver).
     pub driver: Option<Result<Option<OverrideLibrary>, String>>,
     pub driver_pending: bool,
@@ -90,8 +95,8 @@ pub(crate) fn megabytes(bytes: u64) -> String {
 
 #[derive(Clone)]
 pub(crate) enum UpscalerMessage {
-    /// The expander was opened or closed.
-    Expanded(bool),
+    /// A kind's section on the Upscalers page was folded or unfolded.
+    KindToggled(String),
     /// The kinds, their versions and the cache, or what failed.
     LibraryLoaded(Result<UpscalerLibrary, String>),
     /// A game's upscaler DLLs, by id.
@@ -104,7 +109,6 @@ pub(crate) enum UpscalerMessage {
     Restore(String),
     ShowInfo,
     OpenPanel,
-    ClosePanel,
     /// Asks GitHub for the version lists again.
     Refresh,
     /// The panel's Download and Delete: kind and version.
@@ -154,13 +158,13 @@ fn load_library(refresh: bool) -> Result<UpscalerLibrary, String> {
 }
 
 impl GameManager {
-    pub(crate) fn handle_upscalers(
-        &mut self,
-        message: UpscalerMessage,
-        context: &ComponentContext<Self>,
-    ) {
+    pub(crate) fn handle_upscalers(&mut self, message: UpscalerMessage, context: &Ctx<Message>) {
         match message {
-            UpscalerMessage::Expanded(open) => self.upscalers.open = open,
+            UpscalerMessage::KindToggled(kind) => {
+                if !self.upscalers.unfolded.remove(&kind) {
+                    self.upscalers.unfolded.insert(kind);
+                }
+            }
             UpscalerMessage::LibraryLoaded(library) => {
                 self.upscalers.library_pending = false;
                 self.upscalers.library = Some(library);
@@ -208,7 +212,6 @@ impl GameManager {
                     self.load_upscaler_library(false, context);
                 }
             }
-            UpscalerMessage::ClosePanel => self.upscalers.panel = false,
             UpscalerMessage::Refresh => self.load_upscaler_library(true, context),
             UpscalerMessage::Download(kind, version) => {
                 let Some(Ok(library)) = &self.upscalers.library else {
@@ -268,7 +271,7 @@ impl GameManager {
     }
 
     /// After a mod job: the rows' state may have changed, and a swap may have downloaded.
-    pub(crate) fn upscaler_job_done(&mut self, context: &ComponentContext<Self>) {
+    pub(crate) fn upscaler_job_done(&mut self, context: &Ctx<Message>) {
         self.upscalers.found.clear();
         self.upscalers.row = None;
         if matches!(self.upscalers.library, Some(Ok(_))) {
@@ -278,7 +281,7 @@ impl GameManager {
         }
     }
 
-    fn load_upscaler_library(&mut self, refresh: bool, context: &ComponentContext<Self>) {
+    fn load_upscaler_library(&mut self, refresh: bool, context: &Ctx<Message>) {
         if self.upscalers.library_pending {
             return;
         }
@@ -288,8 +291,8 @@ impl GameManager {
         });
     }
 
-    /// While the expander is open: the library once, and the selected game's DLLs.
-    pub(crate) fn request_upscalers(&mut self, context: &ComponentContext<Self>) {
+    /// While the tab is open: the library once, and the selected game's DLLs.
+    pub(crate) fn request_upscalers(&mut self, context: &Ctx<Message>) {
         if !self.upscalers.open {
             return;
         }
@@ -348,69 +351,47 @@ impl GameManager {
         offered.get(index).or_else(|| offered.first()).copied()
     }
 
-    pub(crate) fn upscalers_expander(&self, game: &Game, context: &ViewContext<Self>) -> View {
-        let intro = Grid::new()
-            .columns([GridLength::Star(1.0), GridLength::Auto])
-            .column_spacing(12.0)
-            .children((
-                TextBlock::new()
-                    .text(
-                        "The DLSS, FSR 3.1+, XeSS and Streamline DLLs in this game's folder. Swap \
-                         one for another of its vendor's versions; ✕ puts the game's own back.",
-                    )
-                    .font_size(12.0)
-                    .opacity(0.7)
-                    .text_wrapping(TextWrapping::Wrap)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .grid_column(0),
-                Button::new()
-                    .is_enabled(!self.dialog_open())
-                    .on_click(context.message(UpscalerMessage::ShowInfo.into()))
-                    .automation_name("Upscalers information")
-                    .content("Info")
-                    .grid_column(1),
-            ));
-        let mut rows: Vec<View> = vec![intro.into()];
+    /// The Upscalers tab: what it does, a card per place with upscaler DLLs, and NVIDIA's
+    /// overrides.
+    pub(crate) fn upscalers_tab(&self, game: &Game) -> El<Message> {
+        let mut cards = vec![card([row([
+            hint(
+                "The DLSS, FSR 3.1+, XeSS and Streamline DLLs in this game's folder. Swap one for \
+                 another of its vendor's versions; ✕ puts the game's own back.",
+            )
+            .fill_width(),
+            button("Info")
+                .enabled(!self.dialog_open())
+                .name("Upscalers information")
+                .on_click(UpscalerMessage::ShowInfo.into()),
+        ])
+        .gap(12.0)])];
         if let Some(Ok(library)) = &self.upscalers.library
             && !library.failed.is_empty()
         {
-            rows.push(note(&format!(
+            cards.push(hint(format!(
                 "Some versions could not be listed: {}",
                 library.failed.join("; ")
             )));
         }
         if let Some(Err(error)) = &self.upscalers.library {
-            rows.push(note(&format!("The versions could not be read: {error}")));
+            cards.push(hint(format!("The versions could not be read: {error}")));
         }
         match self.upscalers.found.get(&game.id) {
-            None => rows.push(working("Looking for upscaler DLLs…")),
-            Some(found) if found.is_empty() => rows.push(note(
+            None => cards.push(working("Looking for upscaler DLLs…")),
+            Some(found) if found.is_empty() => cards.push(hint(
                 "No DLSS, FSR 3.1+, XeSS or Streamline DLLs in this game's folder.",
             )),
             Some(found) => {
-                rows.extend(
-                    found
-                        .iter()
-                        .map(|found| self.upscaler_row_view(game, found, context)),
-                );
+                cards.extend(found.iter().map(|found| self.upscaler_card(game, found)));
             }
         }
-        rows.extend(self.overrides_row(game, context));
-        Expander::new()
-            .is_expanded(self.upscalers.open)
-            .on_is_expanded_changed(
-                context.callback(|open: bool| UpscalerMessage::Expanded(open).into()),
-            )
-            .horizontal_alignment(HorizontalAlignment::Stretch)
-            .horizontal_content_alignment(HorizontalAlignment::Stretch)
-            .automation_name("Upscalers")
-            .header("Upscalers")
-            .content(StackPanel::new().spacing(12.0).children(rows))
-            .into()
+        cards.extend(self.overrides_card(game));
+        col(cards).gap(16.0)
     }
 
     /// One place's DLLs: name and state, the version drop-down, Swap and ✕.
-    fn upscaler_row_view(&self, game: &Game, found: &Found, context: &ViewContext<Self>) -> View {
+    fn upscaler_card(&self, game: &Game, found: &Found) -> El<Message> {
         let key = row_key(found);
         let library = match &self.upscalers.library {
             Some(Ok(library)) => Some(library),
@@ -418,6 +399,7 @@ impl GameManager {
         };
         let kind = library.and_then(|library| library.catalog.kind(&found.kind));
         let name = kind.map_or(found.kind.as_str(), |kind| kind.name.as_str());
+        let vendor = kind.map_or("", |kind| kind.vendor.as_str());
         let version = found.version.as_deref().unwrap_or("unknown version");
         let mut state = match &found.state {
             State::Game => format!("{version}, the game's"),
@@ -462,22 +444,6 @@ impl GameManager {
             found.files.join(", "),
             shown_path(game, &found.folder)
         );
-        let label = StackPanel::new()
-            .spacing(2.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0)
-            .children((
-                TextBlock::new()
-                    .text(name)
-                    .font_weight(FontWeight::SEMI_BOLD)
-                    .text_wrapping(TextWrapping::Wrap),
-                TextBlock::new()
-                    .text(state)
-                    .font_size(12.0)
-                    .opacity(0.7)
-                    .text_wrapping(TextWrapping::Wrap),
-            ))
-            .tooltip(place);
 
         let chosen = self
             .upscalers
@@ -499,24 +465,22 @@ impl GameManager {
         let busy = self.mods_busy();
         let picker = {
             let key = key.clone();
-            ComboBox::new()
-                .items_source(if has_versions {
-                    items
-                } else if listed {
-                    vec!["No version fits this one".to_owned()]
-                } else {
-                    vec!["No version listed".to_owned()]
-                })
-                .selected_index(Some(chosen))
-                .is_enabled(has_versions && !busy && found.x64)
-                .horizontal_alignment(HorizontalAlignment::Stretch)
-                // A ComboBox sits at the top of a taller row, unlike Swap and ✕.
-                .vertical_alignment(VerticalAlignment::Center)
-                .automation_name(format!("Version of {name}"))
-                .on_selection_changed(context.callback(move |index: Option<usize>| {
-                    UpscalerMessage::VersionChosen(key.clone(), index).into()
-                }))
-                .grid_column(1)
+            let items = if has_versions {
+                items
+            } else if listed {
+                vec!["No version fits this one".to_owned()]
+            } else {
+                vec!["No version listed".to_owned()]
+            };
+            dropdown(
+                format!("upscaler:{key}"),
+                items,
+                Some(chosen),
+                move |index| UpscalerMessage::VersionChosen(key.clone(), Some(index)).into(),
+            )
+            .enabled(has_versions && !busy && found.x64)
+            .name(format!("Version of {name}"))
+            .width(300.0)
         };
         // The version swapped in already needs no swap.
         let already = matches!(
@@ -524,75 +488,46 @@ impl GameManager {
             State::Swapped { version, .. }
                 if versions.get(chosen).is_some_and(|available| available.version.to_string() == *version)
         );
-        let working = self.upscalers.row.as_deref() == Some(key.as_str())
+        let working_here = self.upscalers.row.as_deref() == Some(key.as_str())
             && matches!(self.mod_job, Some((_, ModKind::Upscaler)));
-        let swap_content: View = if working {
-            StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .children((
-                    ProgressRing::new().is_active(true).width(16.0).height(16.0),
-                    TextBlock::new().text("Working…"),
-                ))
-                .into()
+        let swap = if working_here {
+            working_button()
         } else {
-            TextBlock::new().text("Swap").into()
+            crate::ui::widgets::accent_button("Swap")
+                .enabled(has_versions && !busy && found.x64 && !already)
+                .name(format!("Swap {name}"))
+                .tooltip(if already {
+                    "This version is the one in the game"
+                } else {
+                    "Download the version picked if needed, and put it in place of the game's DLL"
+                })
+                .on_click(UpscalerMessage::Swap(key.clone()).into())
         };
-        let swap = Button::new()
-            .is_enabled(has_versions && !busy && found.x64 && !already)
-            .on_click(context.message(UpscalerMessage::Swap(key.clone()).into()))
-            .automation_name(format!("Swap {name}"))
-            .content(swap_content)
-            .grid_column(2)
-            .tooltip(if already {
-                "This version is the one in the game".to_owned()
-            } else {
-                "Download the version picked if needed, and put it in place of the game's DLL"
-                    .to_owned()
-            });
         let restorable = !matches!(found.state, State::Game);
-        let restore = Button::new()
-            .is_enabled(restorable && !busy)
-            .on_click(context.message(UpscalerMessage::Restore(key).into()))
-            .automation_name(format!("Restore the game's {name}"))
-            .content(
-                FontIcon::new()
-                    .glyph(UNINSTALL_GLYPH)
-                    .foreground(ThemeBrush::SystemCritical),
-            )
-            .grid_column(3)
-            .tooltip("Put the game's own DLL back");
-        Grid::new()
-            .columns([
-                GridLength::Pixel(240.0),
-                GridLength::Star(1.0),
-                GridLength::Auto,
-                GridLength::Auto,
+        let restore = remove_button(format!("Restore the game's {name}"))
+            .enabled(restorable && !busy)
+            .on_click(UpscalerMessage::Restore(key).into());
+        let tint = match vendor {
+            "NVIDIA" => theme::GREEN,
+            "AMD" => theme::RED,
+            "Intel" => theme::BLUE,
+            _ => theme::SLATE,
+        };
+        card([
+            row([
+                icon_square(g::CHIP, tint, 36.0),
+                col([
+                    text(name).text_size(theme::TEXT_SUBTITLE).bold(),
+                    text(state).color(theme::TEXT_SECONDARY).wrap(),
+                ])
+                .gap(2.0)
+                .fill_width(),
+                picker,
+                swap,
+                restore,
             ])
-            .column_spacing(8.0)
-            .children((label, picker, swap, restore))
-            .into()
+            .gap(10.0),
+            hint(place),
+        ])
     }
-}
-
-/// A line of small, dimmed text.
-pub(crate) fn note(text: &str) -> View {
-    TextBlock::new()
-        .text(text)
-        .font_size(12.0)
-        .opacity(0.7)
-        .text_wrapping(TextWrapping::Wrap)
-        .into()
-}
-
-/// A spinning ring and what it waits for.
-pub(crate) fn working(text: &str) -> View {
-    StackPanel::new()
-        .orientation(Orientation::Horizontal)
-        .spacing(8.0)
-        .children((
-            ProgressRing::new().is_active(true).width(16.0).height(16.0),
-            TextBlock::new().text(text),
-        ))
-        .into()
 }

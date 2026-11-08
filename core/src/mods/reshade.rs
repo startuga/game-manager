@@ -22,12 +22,12 @@
 //!   Vulkan layer instead. Direct3D 8 needs d3d8to9 or DXVK, so it is refused without DXVK.
 //! - **`ReShade.ini`**, only when there is none: the shader paths, the overlay key (Home) and no
 //!   proxy DLL. ReShade saves its settings into it, so Reinstall keeps it once changed.
-//! - **Effects**: the shaders chosen in ReShade ▸ Shaders (`shader_packs`, `reshade_settings`),
+//! - **Effects**: the shaders chosen on the Shaders page (`shader_packs`, `reshade_settings`),
 //!   laid out as `reshade-shaders\Shaders` and `\Textures`. That folder is Game Manager's: a
 //!   game's own one is set aside as `reshade-shaders.gm-backup` on the first install and put back
 //!   on uninstall, and Reinstall or Deploy replaces the whole folder (`DeleteTree` then
 //!   `CopyTree`, two short operations a game).
-//! - **Add-ons** chosen in ReShade ▸ Addons go next to the program, for its bitness, in builds
+//! - **Add-ons** chosen on the Add-ons page go next to the program, for its bitness, in builds
 //!   that load add-ons.
 //! - **Whose choice**: each game gets its own shaders or add-ons when it has them
 //!   (`reshade_settings`), else the shared ones. `deploy` brings a changed shared choice to the
@@ -89,8 +89,8 @@ Variants:
 • No Addons: the latest release without add-on support, for online games whose anti-cheat \
 accepts ReShade.
 
-Install also adds the shaders and add-ons chosen in the top bar's ReShade menu; Deploy in \
-ReShade ▸ Shaders brings a new selection to every game with ReShade.
+Install also adds the shaders and add-ons chosen on the Shaders and Add-ons pages; Deploy on \
+the Shaders page brings a new selection to every game with ReShade.
 
 Vulkan games, and games with DXVK, use ReShade's Vulkan layer: one install for the whole \
 computer, shared with ReShade's own setup; installing updates it for every game on its list.
@@ -161,7 +161,7 @@ pub struct ReshadeState {
     /// The variant of the installed build (`variant` is the next install's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built: Option<ReshadeVariant>,
-    /// The add-on files (ReShade ▸ Addons) Game Manager put next to the program.
+    /// The add-on files (the Add-ons page) Game Manager put next to the program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addons: Option<Installed>,
 }

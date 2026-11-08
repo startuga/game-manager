@@ -5,7 +5,8 @@ games plus games added by hand, starts them, installs mods (ReShade, DXVK, LAA),
 upscaler DLLs (DLSS, Streamline, FSR, XeSS) for other versions, and sets NVIDIA's driver-level
 DLSS overrides in their driver profiles.
 
-- `app/` – the WinUI 3 window (windows-reactor); see `app/CLAUDE.md`.
+- `app/` – the window: Win32 and Direct2D (windows-window, windows-canvas, windows-text), no
+  WinUI or XAML; see `app/CLAUDE.md`.
 - `core/` (crate `gm-core`) – scanners, launching, configuration, graphics detection and mods,
   with no UI code; see `core/CLAUDE.md`.
 - `config/games.json` – shipped per-game knowledge.
@@ -16,20 +17,18 @@ DLSS overrides in their driver profiles.
 
 ## Toolchain
 - Rust 1.99.1 (`rust-toolchain.toml`), edition 2024, MSVC target.
-- **windows-rs**: `windows`, `windows-registry`, `windows-reactor`, `windows-pickers`,
-  `windows-core`, `windows-collections`, `windows-reference` and `windows-bindgen` always come
-  from https://github.com/microsoft/windows-rs master, never crates.io.
+- **windows-rs**: `windows`, `windows-registry`, `windows-core`, `windows-window`,
+  `windows-canvas`, `windows-text` and `windows-threading` always come from
+  https://github.com/microsoft/windows-rs master, never crates.io.
   - They are declared once in the root `[workspace.dependencies]`, and `Cargo.lock` pins the
     commit.
-  - To update, run `cargo update -p windows -p windows-pickers -p windows-reactor -p
-    windows-registry -p windows-core -p windows-collections -p windows-reference -p
-    windows-bindgen`.
-    - Then regenerate the app's WinUI bindings with `cargo run -p app --example winui_bindings`.
-    - Then fix what the API changes break.
+  - To update, run `cargo update -p windows -p windows-registry -p windows-core -p windows-window
+    -p windows-canvas -p windows-text -p windows-threading`, then fix what the API changes break.
   - **Adding another windows-rs crate** moves them all to the latest master, since they share
     one git source. Put them back with `cargo update -p windows --precise <the locked commit>`.
   - The first fetch downloads the whole repository (about 1.4 GB).
-- **Windows App Runtime**: WinUI apps need version 2.x installed.
+- **No Windows App Runtime**: the window needs Windows 10 1703+ (DirectWrite, Direct2D 1.1) and
+  the Visual C++ runtime (`VCRUNTIME140.dll`, which most PCs already have).
 - **7-Zip**: `tools/7-Zip` holds `7z.exe`, `7z.dll` (26.05 x64) and `License.txt`.
   - It is GNU LGPL, and the license file must ship with the binaries.
   - `core/build.rs` copies the folder next to `app.exe`, together with `games.json`.
@@ -40,7 +39,10 @@ DLSS overrides in their driver profiles.
     `multiple_unsafe_ops_per_block`, `unwrap_used`, `expect_used` and `todo`.
   - Tests may unwrap (`clippy.toml`); `build.rs` and `examples/scan.rs` allow `expect` with a
     reason.
-- **Release profile**: `lto`, `codegen-units = 1`, `strip`.
+- **Release profile**, tuned for speed: `opt-level = 3`, `lto`, `codegen-units = 1`,
+  `panic = "abort"` (nothing catches an unwinding panic), `strip`. `app.exe` was 2.28 MB on
+  2026-11-08, with every tab and page ported (1.68 MB with `opt-level = "s"`; the WinUI one
+  5.93 MB). It links the C runtime dynamically (`VCRUNTIME140.dll`).
 
 ## Commands
 - `cargo build`; `cargo run -p app`.
@@ -57,14 +59,15 @@ DLSS overrides in their driver profiles.
 
 ## Checking the app from an agent session
 - **No screen capture**: inspect the running window with UI Automation
-  (`System.Windows.Automation` in PowerShell).
+  (`System.Windows.Automation` in PowerShell), and see it as a PNG: start it with
+  `GAME_MANAGER_CAPTURE=<path>` and post `WM_APP + 9` to its window (`app/CLAUDE.md`).
   - The Open dialog (class `#32770`) shows its Win32 controls as plain panes. Use its
     `NativeWindowHandle`, then `GetDlgItem(dlg, 1148)` → `ComboBox` → `Edit` with `WM_SETTEXT`,
     then `PostMessage` `BM_CLICK` to `GetDlgItem(dlg, 1)`.
-- **No input desktop**: drag and drop, right-clicks and the UAC prompt can't be done (the cursor
-  reads 0,0 and there is no foreground window). Ask the user to try them on a build they run.
-  ReShade's Vulkan layer always needs the UAC prompt, so the user tests it. Keys posted to the
-  window (`WM_KEYDOWN` for Escape) do not reach WinUI's key events either.
+- **No input desktop**: drag and drop and the UAC prompt can't be done (the cursor reads 0,0 and
+  there is no foreground window). Ask the user to try them on a build they run. Right-clicks and
+  keys can be posted to the Direct2D window (`WM_RBUTTONDOWN`/`WM_RBUTTONUP`, `WM_KEYDOWN`).
+  ReShade's Vulkan layer always needs the UAC prompt, so the user tests it.
 - **Packaged session**: programs started from the Claude desktop app run inside its package.
   - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`.
   - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
@@ -84,9 +87,9 @@ DLSS overrides in their driver profiles.
   - `app.exe --file-ops <percent-encoded ops>` can be run directly (not elevated).
   - **Upscalers**: give the throwaway game real old vendor DLLs (from the upscaler cache after
     `live_upscalers`) in a subfolder, then swap, swap again and restore, and compare the folder.
-  - **ReShade ▸ Shaders' Deploy and closing ReShade ▸ Addons with "All games with ReShade" reach
-    every game with ReShade in `mods.json`** that has no choice of its own, the user's real ones
-    too. Before clicking them, check that only throwaway games have a `reshade` record (or test
+  - **Deploy on the Shaders page, and leaving the Add-ons page, with "All games with ReShade"
+    reach every game with ReShade in `mods.json`** that has no choice of its own, the user's real
+    ones too. Before clicking them, check that only throwaway games have a `reshade` record (or test
     with a `mods.json` that holds only them). "Only <game>" reaches just that game.
 
 ## Conventions

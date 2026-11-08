@@ -1,4 +1,4 @@
-//! The Game settings expander's draft: the fields as the user types them, and the edits a Save
+//! The Game settings card's draft (Overview tab): the fields as the user types them, and the edits a Save
 //! stores. No UI code.
 
 use gm_core::config::GameEdits;
@@ -16,7 +16,7 @@ pub enum EditField {
     Program,
 }
 
-/// The expander's drop-downs. Their first item is "As detected", then the choices.
+/// The card's drop-downs. Their first item is "As detected", then the choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditChoice {
     Bitness,
@@ -36,7 +36,7 @@ impl EditChoice {
     }
 }
 
-/// The expander's fields.
+/// The card's fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EditFields {
     pub name: String,

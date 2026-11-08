@@ -1,8 +1,8 @@
-//! NVIDIA's driver-level DLSS overrides (`gm_core::mods::dlss_override`): the last row of the
-//! Upscalers expander, and the dialog it opens.
+//! NVIDIA's driver-level DLSS overrides (`gm_core::mods::dlss_override`): the last card of the
+//! Upscalers tab, and the dialog it opens.
 //!
-//! - **The row** shows only with an NVIDIA driver: the driver's version and its own DLLs' versions
-//!   are read once, in the background, when the expander first opens (`request_driver`, from
+//! - **The card** shows only with an NVIDIA driver: the driver's version and its own DLLs'
+//!   versions are read once, in the background, when the tab first opens (`request_driver`, from
 //!   `request_upscalers`). It says how many overrides are set, and when the game's folder has no
 //!   NVIDIA DLL that only Smooth Motion works then.
 //! - **The dialog** reads the game's driver profile in the background when it opens
@@ -14,17 +14,21 @@
 //!   writes them all as Off or N/A), and may delete a profile. When the profile no longer holds
 //!   what Game Manager set (`OverrideState::changed_elsewhere`), a warning names each setting with
 //!   its value now, and Save sets them again even when the choice is unchanged.
-//! - The dialog doesn't scroll by itself, so its content is in a `ScrollViewer` fitted to the
-//!   window, as DXVK settings' is.
+//! - Like every dialog, its body scrolls when it doesn't fit the window (`app_view::dialog`).
 
-use crate::mods_view::{ModDialog, ModKind, original_label};
-use crate::upscalers_view::{UpscalerMessage, note, working};
-use crate::{GameManager, Message, icon_label};
+use crate::app_view::dialog;
+use crate::mods_view::{ModCard, ModDialog, ModKind, mod_card, original_label};
+use crate::shell::WindowInfo;
+use crate::shell::ctx::Ctx;
+use crate::ui::el::{El, col, dropdown, row, text};
+use crate::ui::theme::{self, glyph as g};
+use crate::ui::widgets::{button, hint, icon_button, icon_text_button, working, working_button};
+use crate::upscalers_view::UpscalerMessage;
+use crate::{DialogResult, GameManager, Message};
 use gm_core::Game;
 use gm_core::mods::dlss_override::{self, Catalog, Driver, OverrideState, Setting};
 use gm_core::mods::dxvk::Blocked;
 use std::collections::BTreeMap;
-use windows_reactor::*;
 
 /// The override settings and what the driver offers.
 #[derive(Clone)]
@@ -59,14 +63,19 @@ fn load_driver() -> Result<Option<OverrideLibrary>, String> {
     Ok(driver.map(|driver| OverrideLibrary { catalog, driver }))
 }
 
+/// A setting's values as the drop-down shows them, after "Original".
+fn shown_values(library: &OverrideLibrary, setting: &Setting) -> Vec<(u32, String)> {
+    setting.values(library.driver.dll(setting))
+}
+
 /// The overrides the profile no longer holds as Game Manager set them: the NVIDIA app or
 /// another tool changed them, or deleted the profile. Nothing when all are as set.
-fn changed_warning(state: &OverrideState, catalog: &Catalog) -> Option<View> {
+fn changed_warning(state: &OverrideState, catalog: &Catalog) -> Option<El<Message>> {
     let changed = state.changed_elsewhere();
     if changed.is_empty() {
         return None;
     }
-    let text = if state.profile.name.is_none() {
+    let message = if state.profile.name.is_none() {
         "⚠ The driver profile Game Manager set these in is gone: the NVIDIA app or another tool \
          deleted it. Save creates it again with them; Reset to original and Save forget them."
             .to_owned()
@@ -93,17 +102,7 @@ fn changed_warning(state: &OverrideState, catalog: &Catalog) -> Option<View> {
             settings.join(", ")
         )
     };
-    Some(
-        TextBlock::new()
-            .text(text)
-            .text_wrapping(TextWrapping::Wrap)
-            .into(),
-    )
-}
-
-/// A setting's values as the drop-down shows them, after "Original".
-fn shown_values(library: &OverrideLibrary, setting: &Setting) -> Vec<(u32, String)> {
-    setting.values(library.driver.dll(setting))
+    Some(text(message).wrap().color(theme::AMBER))
 }
 
 impl GameManager {
@@ -116,7 +115,7 @@ impl GameManager {
     }
 
     /// Reads the settings and the driver's facts in the background, once.
-    pub(crate) fn request_driver(&mut self, context: &ComponentContext<Self>) {
+    pub(crate) fn request_driver(&mut self, context: &Ctx<Message>) {
         if self.upscalers.driver.is_some() || self.upscalers.driver_pending {
             return;
         }
@@ -124,11 +123,7 @@ impl GameManager {
         context.spawn_background(|_cancel| UpscalerMessage::DriverLoaded(load_driver()).into());
     }
 
-    pub(crate) fn handle_overrides(
-        &mut self,
-        message: UpscalerMessage,
-        context: &ComponentContext<Self>,
-    ) {
+    pub(crate) fn handle_overrides(&mut self, message: UpscalerMessage, context: &Ctx<Message>) {
         match message {
             UpscalerMessage::DriverLoaded(driver) => {
                 self.upscalers.driver_pending = false;
@@ -199,7 +194,7 @@ impl GameManager {
         &mut self,
         game: Game,
         draft: OverrideDraft,
-        context: &ComponentContext<Self>,
+        context: &Ctx<Message>,
     ) {
         let Some(state) = draft.loaded().filter(|_| draft.game == game.id) else {
             return;
@@ -228,13 +223,13 @@ impl GameManager {
         });
     }
 
-    /// The Upscalers expander's last row: how many overrides are set, Info and the dialog's
-    /// button. Nothing without an NVIDIA driver.
-    pub(crate) fn overrides_row(&self, game: &Game, context: &ViewContext<Self>) -> Option<View> {
+    /// The Upscalers tab's last card: how many overrides are set, Info and the dialog's button.
+    /// Nothing without an NVIDIA driver.
+    pub(crate) fn overrides_card(&self, game: &Game) -> Option<El<Message>> {
         let library = match &self.upscalers.driver {
             Some(Ok(Some(library))) => library,
             Some(Err(error)) => {
-                return Some(note(&format!(
+                return Some(hint(format!(
                     "The NVIDIA driver's settings could not be read: {error}"
                 )));
             }
@@ -242,7 +237,7 @@ impl GameManager {
         };
         let record = self.mods.dlss_override(&game.id);
         let set = record.map_or(0, |record| record.choice.len());
-        let state = match set {
+        let status = match set {
             0 => format!("Driver {}: none set", library.driver.label()),
             1 => format!("Driver {}: 1 set", library.driver.label()),
             set => format!("Driver {}: {set} set", library.driver.label()),
@@ -262,7 +257,7 @@ impl GameManager {
             })),
             _ => None,
         };
-        let hint = if working {
+        let hint_text = if working {
             "Working… Windows asks for administrator rights when the driver needs them.".to_owned()
         } else if !has_exe {
             Blocked::NoProgram.to_string()
@@ -274,92 +269,55 @@ impl GameManager {
              the game's files."
                 .to_owned()
         };
-        let label = StackPanel::new()
-            .spacing(2.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0)
-            .children((
-                TextBlock::new()
-                    .text("NVIDIA overrides")
-                    .font_weight(FontWeight::SEMI_BOLD),
-                TextBlock::new()
-                    .text(state)
-                    .font_size(12.0)
-                    .opacity(0.7)
-                    .text_wrapping(TextWrapping::Wrap),
-            ));
-        let settings_content: View = if working {
-            StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .children((
-                    ProgressRing::new().is_active(true).width(16.0).height(16.0),
-                    TextBlock::new().text("Working…"),
-                ))
-                .into()
+        let settings = if working {
+            working_button()
         } else {
-            SymbolIcon::new().symbol(Symbol::Setting).into()
+            icon_button(g::SETTINGS, "NVIDIA overrides settings")
+                .enabled(has_exe && !self.mods_busy())
+                .on_click(UpscalerMessage::ShowOverrides.into())
         };
-        Some(
-            Grid::new()
-                .columns([
-                    GridLength::Pixel(240.0),
-                    GridLength::Star(1.0),
-                    GridLength::Auto,
-                    GridLength::Auto,
-                ])
-                .column_spacing(8.0)
-                .children((
-                    label,
-                    TextBlock::new()
-                        .text(hint)
-                        .font_size(12.0)
-                        .opacity(0.7)
-                        .text_wrapping(TextWrapping::Wrap)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(1),
-                    Button::new()
-                        .is_enabled(!self.dialog_open())
-                        .on_click(context.message(UpscalerMessage::ShowOverridesInfo.into()))
-                        .automation_name("NVIDIA overrides information")
-                        .content("Info")
-                        .grid_column(2),
-                    Button::new()
-                        .is_enabled(has_exe && !self.mods_busy())
-                        .on_click(context.message(UpscalerMessage::ShowOverrides.into()))
-                        .automation_name("NVIDIA overrides settings")
-                        .content(settings_content)
-                        .grid_column(3)
-                        .tooltip("NVIDIA overrides settings"),
-                ))
-                .into(),
-        )
+        Some(mod_card(ModCard {
+            icon: g::NVIDIA,
+            tint: theme::GREEN,
+            title: "NVIDIA overrides",
+            status: text(status).color(theme::TEXT_SECONDARY),
+            actions: vec![
+                button("Info")
+                    .enabled(!self.dialog_open())
+                    .name("NVIDIA overrides information")
+                    .on_click(UpscalerMessage::ShowOverridesInfo.into()),
+                settings,
+            ],
+            hint: hint_text,
+        }))
     }
 
     /// The overrides dialog: one drop-down per setting the driver knows, by group.
     pub(crate) fn overrides_dialog(
         &self,
-        dialog: ContentDialog,
+        window: &WindowInfo,
         draft: &OverrideDraft,
-        context: &ViewContext<Self>,
-    ) -> ContentDialog {
-        dialog
-            .title("NVIDIA overrides")
-            .primary_button_text("Save")
-            .close_button_text("Cancel")
-            .default_button(ContentDialogButton::Primary)
-            .is_primary_button_enabled(draft.loaded().is_some())
-            .content(self.overrides_form(draft, context))
+    ) -> El<Message> {
+        dialog(
+            window,
+            "NVIDIA overrides",
+            self.overrides_form(draft),
+            Some((
+                "Save",
+                draft.loaded().is_some(),
+                Message::ModDialogClosed(DialogResult::Primary),
+            )),
+            Message::ModDialogClosed(DialogResult::Cancel),
+        )
     }
 
-    fn overrides_form(&self, draft: &OverrideDraft, context: &ViewContext<Self>) -> View {
+    fn overrides_form(&self, draft: &OverrideDraft) -> Vec<El<Message>> {
         let state = draft.loaded();
         let game = self.games.iter().find(|game| game.id == draft.game);
-        let mut rows: Vec<View> = Vec::new();
-        rows.push(match &draft.state {
+        let mut rows: Vec<El<Message>> = vec![match &draft.state {
             None => working("Reading the NVIDIA driver settings…"),
-            Some(Err(error)) => note(error),
-            Some(Ok(None)) => note("No NVIDIA graphics driver was found."),
+            Some(Err(error)) => hint(error.clone()),
+            Some(Ok(None)) => hint("No NVIDIA graphics driver was found."),
             Some(Ok(Some(state))) => {
                 let name = state
                     .profile
@@ -379,70 +337,44 @@ impl GameManager {
                             )
                         )
                     });
-                note(&format!(
+                hint(format!(
                     "Saved in the driver profile of {} ({name}). \"Original\" is what the profile \
                      held before Game Manager changed it.",
                     state.exe
                 ))
             }
-        });
+        }];
         if let (Some(state), Some(library)) = (state, self.override_library()) {
             rows.extend(changed_warning(state, &library.catalog));
         }
         if let Some(library) = self.override_library() {
             let version = Some(library.driver.version);
             for group in &library.catalog.groups {
-                let settings: Vec<View> = group
+                let settings: Vec<El<Message>> = group
                     .settings
                     .iter()
                     .filter(|setting| setting.available(version))
-                    .map(|setting| self.override_picker(library, setting, draft, context))
+                    .map(|setting| self.override_picker(library, setting, draft))
                     .collect();
                 if settings.is_empty() {
                     continue;
                 }
                 rows.push(
-                    StackPanel::new()
-                        .spacing(6.0)
-                        .children((
-                            TextBlock::new()
-                                .text(group.name.as_str())
-                                .font_weight(FontWeight::SEMI_BOLD),
-                            StackPanel::new().spacing(6.0).children(settings),
-                        ))
-                        .into(),
+                    col([text(group.name.as_str()).bold(), col(settings).gap(6.0)])
+                        .gap(6.0)
+                        .padding(crate::ui::el::Edges::new(0.0, 8.0, 0.0, 0.0)),
                 );
             }
         }
-        rows.push(
-            Button::new()
-                .is_enabled(state.is_some() && !draft.choice.is_empty())
-                .on_click(context.message(UpscalerMessage::ResetOverrides.into()))
-                .automation_name("Reset NVIDIA overrides to original")
-                .content(icon_label(Symbol::Undo, "Reset to original"))
-                .into(),
-        );
-        rows.push(note(
+        rows.push(row([icon_text_button(g::REFRESH, "Reset to original")
+            .enabled(state.is_some() && !draft.choice.is_empty())
+            .name("Reset NVIDIA overrides to original")
+            .on_click(UpscalerMessage::ResetOverrides.into())]));
+        rows.push(hint(
             "The game must use DLSS (Smooth Motion aside). A DLL override also replaces a DLL \
-             swapped above. Settings this driver is too old for are not shown.",
+             swapped on this tab. Settings this driver is too old for are not shown.",
         ));
-        // As in DXVK settings: what does not fit the window would be cut off below the buttons.
-        let height = match self.window_size.1 {
-            height if height > 0.0 => (height - 280.0).max(200.0),
-            _ => 480.0,
-        };
-        ScrollViewer::new()
-            .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-            .max_height(height)
-            .content(
-                StackPanel::new()
-                    .spacing(12.0)
-                    .min_width(460.0)
-                    // Room for the scroll bar, so it never covers the controls.
-                    .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
-                    .children(rows),
-            )
-            .into()
+        rows
     }
 
     /// One setting: its name and a drop-down of "Original: …" and its values.
@@ -451,8 +383,7 @@ impl GameManager {
         library: &OverrideLibrary,
         setting: &Setting,
         draft: &OverrideDraft,
-        context: &ViewContext<Self>,
-    ) -> View {
+    ) -> El<Message> {
         let state = draft.loaded();
         let values = shown_values(library, setting);
         let label = |value: u32| {
@@ -475,32 +406,19 @@ impl GameManager {
             .chain(values.iter().map(|(_, name)| name.clone()))
             .collect();
         let id = setting.id;
-        let row = Grid::new()
-            .columns([GridLength::Pixel(200.0), GridLength::Star(1.0)])
-            .column_spacing(8.0)
-            .children((
-                TextBlock::new()
-                    .text(setting.name.as_str())
-                    .text_wrapping(TextWrapping::Wrap)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .grid_column(0),
-                ComboBox::new()
-                    .items_source(items)
-                    .selected_index(Some(selected))
-                    .is_enabled(state.is_some())
-                    .horizontal_alignment(HorizontalAlignment::Stretch)
-                    // Beside a name that wraps to two lines.
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .automation_name(setting.name.as_str())
-                    .on_selection_changed(context.callback(move |index: Option<usize>| {
-                        UpscalerMessage::OverrideChosen(id, index).into()
-                    }))
-                    .grid_column(1),
-            ));
-        if setting.hint.is_empty() {
-            row.into()
-        } else {
-            row.tooltip(setting.hint.as_str())
-        }
+        row([
+            text(setting.name.as_str()).wrap().width(190.0),
+            dropdown(
+                format!("override:{id}"),
+                items,
+                Some(selected),
+                move |index| UpscalerMessage::OverrideChosen(id, Some(index)).into(),
+            )
+            .enabled(state.is_some())
+            .name(setting.name.as_str())
+            .tooltip(setting.hint.as_str())
+            .fill_width(),
+        ])
+        .gap(8.0)
     }
 }

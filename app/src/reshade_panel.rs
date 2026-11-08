@@ -1,16 +1,14 @@
-//! ReShade ▸ Shaders and Addons: the panels the top bar's ReShade button opens.
-//! WinUI's ContentDialog is at most about 548 px wide, too narrow for the pack list, so a panel is
-//! drawn by the app as the window's last layer, as the game menu is: a dimmed backdrop that takes
-//! every click, and the panel centred on it.
+//! The Shaders and Add-ons pages of the sidebar (ReShade's shader packs and add-ons).
 //!
 //! - **Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single effects
 //!   of a pack (▶ lists them, downloading the pack first). Every pack can be left out, Lilium's
-//!   too. Escape and Cancel close it; Deploy saves the selection and brings it to the games
-//!   (`reshade::deploy`).
-//! - **Addons** lists every add-on with an On/Off switch. A switch takes effect when the panel
-//!   closes (Close or Escape): the choice is saved and deployed like the shaders.
+//!   too. Cancel (or leaving the page) drops the draft; Deploy saves the selection and brings it
+//!   to the games (`reshade::deploy`). Profiles, Export, Import and the custom folder are in the
+//!   column beside the list.
+//! - **Add-ons** lists every add-on with an On/Off switch. A switch takes effect when the page is
+//!   left (Close, or another page): the choice is saved and deployed like the shaders.
 //!
-//! **Apply to**: each panel shows and applies either the own choice of the game selected in the
+//! **Apply to**: each page shows and applies either the own choice of the game selected in the
 //! library when it opened ("Only <game>", the first item and the default;
 //! `ReshadeSettings::games`), or the shared choice ("All games with ReShade", leaving out the games
 //! with their own; the only item when no game is selected). A game without its own choice shows
@@ -18,22 +16,25 @@
 //! one to it.
 
 use crate::mods_view::ModKind;
-use crate::{GameManager, Message, icon_label};
+use crate::shell::ctx::Ctx;
+use crate::shell::ctx::FilePicker;
+use crate::ui::el::{Align, El, col, dropdown, glyph, row, spinner, text};
+use crate::ui::theme::{self, glyph as g};
+use crate::ui::widgets::{
+    accent_button, button, card, divider, heading, hint, icon_button, link, remove_button,
+    subtle_button, text_box, toggle, working,
+};
+use crate::{GameManager, Message};
 use gm_core::mods::reshade::{self, DeployTo};
 use gm_core::mods::reshade_addons::{self, Addon};
 use gm_core::mods::reshade_settings::{self, Part, ReshadeSettings};
 use gm_core::mods::shader_packs::{self, Catalog, Category, Pick, Selection};
 use std::collections::{BTreeSet, HashMap};
-use windows_pickers::OpenFilePicker;
-use windows_reactor::*;
 
 /// The user's own shaders, listed like a pack.
 pub(crate) const CUSTOM: &str = "__custom__";
-/// The panel's largest size, and its margin from the window's edges. Like its spacing, about three
-/// quarters of what it was before Compact sizing (1100 × 860, 32), with text at its usual sizes.
-const PANEL_WIDTH: f64 = 840.0;
-const PANEL_HEIGHT: f64 = 640.0;
-const PANEL_MARGIN: f64 = 24.0;
+/// The profiles column's width.
+const PROFILES_WIDTH: f32 = 260.0;
 
 /// What the Shaders panel reads from the disk.
 #[derive(Clone)]
@@ -273,27 +274,9 @@ fn effect_name(file: &str) -> &str {
 }
 
 impl GameManager {
-    /// The top bar's ReShade button: Shaders, then Addons.
-    pub(crate) fn reshade_button(&self, context: &ViewContext<Self>) -> View {
-        // Messages cross threads, so the key travels as text.
-        let menu = Menu::new(
-            [
-                MenuItem::item("shaders", "Shaders"),
-                MenuItem::item("addons", "Addons"),
-            ],
-            context.callback(|key: Key| {
-                Message::ReshadeMenu(key.as_str().unwrap_or_default().to_owned())
-            }),
-        );
-        DropDownButton::new()
-            .is_enabled(self.mod_job.is_none() && !self.dialog_open())
-            .automation_name("ReShade")
-            .content(icon_label(Symbol::Pictures, "ReShade"))
-            .menu(menu)
-    }
-
-    /// Opens what the ReShade button's menu picked, for the game selected in the library.
-    pub(crate) fn open_reshade_panel(&mut self, key: &str, context: &ComponentContext<Self>) {
+    /// Opens the Shaders (`shaders`) or Addons (`addons`) page for the game selected in the
+    /// library, and reads what it lists.
+    pub(crate) fn open_reshade_panel(&mut self, key: &str, context: &Ctx<Message>) {
         let game = self
             .selected_game()
             .map(|game| (game.id.clone(), game.name.clone()));
@@ -311,7 +294,7 @@ impl GameManager {
     }
 
     /// "Apply to" and "Use all games' selection", in either panel.
-    pub(crate) fn handle_target(&mut self, message: Message, context: &ComponentContext<Self>) {
+    pub(crate) fn handle_target(&mut self, message: Message, context: &Ctx<Message>) {
         match message {
             Message::ReshadeTargetChosen(Some(index)) => {
                 let Some(panel) = &mut self.reshade_panel else {
@@ -366,12 +349,7 @@ impl GameManager {
 
     /// Closes the panel, then saves `settings` and deploys them to `to` in the background. Both
     /// panels' copies of the settings take them, so neither brings back an older choice.
-    fn save_and_deploy(
-        &mut self,
-        settings: ReshadeSettings,
-        to: DeployTo,
-        context: &ComponentContext<Self>,
-    ) {
+    fn save_and_deploy(&mut self, settings: ReshadeSettings, to: DeployTo, context: &Ctx<Message>) {
         if let Some(Ok(library)) = &mut self.shader_library {
             library.settings = settings.clone();
         }
@@ -393,7 +371,7 @@ impl GameManager {
     }
 
     /// The Addons panel's messages.
-    pub(crate) fn handle_addons(&mut self, message: Message, context: &ComponentContext<Self>) {
+    pub(crate) fn handle_addons(&mut self, message: Message, context: &Ctx<Message>) {
         match message {
             Message::AddonLibraryLoaded(loaded) => {
                 match (&loaded, &mut self.reshade_panel) {
@@ -436,7 +414,7 @@ impl GameManager {
     }
 
     /// Closes the Addons panel; a changed choice is saved and deployed to the games it applies to.
-    fn apply_addons(&mut self, context: &ComponentContext<Self>) {
+    fn apply_addons(&mut self, context: &Ctx<Message>) {
         let panel = self.reshade_panel.take();
         let (Some(panel), Some(Ok(library))) = (panel, &self.addon_library) else {
             return;
@@ -464,7 +442,7 @@ impl GameManager {
     }
 
     /// The Shaders panel's messages.
-    pub(crate) fn handle_shaders(&mut self, message: Message, context: &ComponentContext<Self>) {
+    pub(crate) fn handle_shaders(&mut self, message: Message, context: &Ctx<Message>) {
         let library = self
             .shader_library
             .as_ref()
@@ -646,12 +624,12 @@ impl GameManager {
                 }
             }
             Message::ImportShaders => {
-                self.picking = OpenFilePicker::new()
+                self.picking = FilePicker::new()
                     .title("Choose a ZIP of ReShade shaders to import")
                     .filter_extensions("ZIP archives", ["zip"])
                     .request(context, |picked| {
                         Message::ImportPicked(
-                            picked.map_err(|e| format!("could not choose a file: {}", e.message())),
+                            picked.map_err(|e| format!("could not choose a file: {e}")),
                         )
                     });
             }
@@ -715,7 +693,7 @@ impl GameManager {
     /// the background. The shader selection saved stays the deployed one until Deploy.
     fn change_profiles(
         &mut self,
-        context: &ComponentContext<Self>,
+        context: &Ctx<Message>,
         change: impl FnOnce(&mut ReshadeSettings, &mut ShadersDraft),
     ) {
         let (Some(draft), Some(Ok(library))) = (
@@ -734,7 +712,7 @@ impl GameManager {
     }
 
     /// Downloads a pack that is not cached, to list its effects.
-    fn download_pack(&mut self, id: &str, context: &ComponentContext<Self>) {
+    fn download_pack(&mut self, id: &str, context: &Ctx<Message>) {
         let Some(Ok(library)) = &self.shader_library else {
             return;
         };
@@ -758,7 +736,7 @@ impl GameManager {
 
     /// Saves the selection (the shared one, or the game's own) and deploys it to the games it
     /// applies to.
-    fn deploy_shaders(&mut self, context: &ComponentContext<Self>) {
+    fn deploy_shaders(&mut self, context: &Ctx<Message>) {
         let (Some(panel), Some(Ok(library))) = (&self.reshade_panel, &self.shader_library) else {
             return;
         };
@@ -779,101 +757,56 @@ impl GameManager {
         };
         self.save_and_deploy(settings, to, context);
     }
+}
 
-    /// The panel layer, while one is open: a dimmed backdrop and the panel centred on it.
-    pub(crate) fn reshade_panel_view(&self, context: &ViewContext<Self>) -> Option<View> {
+impl GameManager {
+    /// The Shaders or Add-ons page, while its panel is open.
+    pub(crate) fn reshade_page(&self) -> Option<El<Message>> {
         let panel = self.reshade_panel.as_ref()?;
-        let content = match &panel.kind {
-            PanelKind::Shaders(draft) => self.shaders_panel(panel, draft.as_ref(), context),
-            PanelKind::Addons(enabled) => self.addons_panel(panel, enabled.as_ref(), context),
-        };
-        Some(self.panel_layer(content))
+        Some(match &panel.kind {
+            PanelKind::Shaders(draft) => self.shaders_page(panel, draft.as_ref()),
+            PanelKind::Addons(enabled) => self.addons_page(panel, enabled.as_ref()),
+        })
     }
 
-    /// A panel drawn over the window (ReShade's, the upscalers'): a dimmed backdrop that takes
-    /// every click, and `content` in a card centred on it, as large as the window allows.
-    pub(crate) fn panel_layer(&self, content: View) -> View {
-        let (width, height) = self.window_size;
-        let width = (width - 2.0 * PANEL_MARGIN).clamp(480.0, PANEL_WIDTH);
-        let height = (height - 2.0 * PANEL_MARGIN).clamp(360.0, PANEL_HEIGHT);
-        let card = Border::new()
-            .width(width)
-            .height(height)
-            .padding(Thickness::uniform(20.0))
-            .corner_radius(8.0)
-            .background(ThemeBrush::SolidBackground)
-            .border_brush(ThemeBrush::CardStroke)
-            .border_thickness(Thickness::uniform(1.0))
-            .horizontal_alignment(HorizontalAlignment::Center)
-            .vertical_alignment(VerticalAlignment::Center)
-            .content(content);
-        // The backdrop has a background, so it takes the clicks meant for what is under it.
-        let backdrop = Border::new().background(Color::argb(0x99, 0, 0, 0));
-        Grid::new()
-            .grid_row(0)
-            .grid_row_span(3)
-            .children((backdrop, card))
-            .into()
-    }
-
-    /// A panel's title with "Apply to" beside it, and under them what applying does: for every
+    /// A page's title with "Apply to" beside it, and under them what applying does: for every
     /// game with ReShade (but those with their own choice), or for the selected game alone (with
     /// "Use all games' …" when it has its own).
-    fn panel_header(
+    fn page_header(
         &self,
         panel: &ReshadePanel,
         title: &str,
         settings: Option<&ReshadeSettings>,
-        context: &ViewContext<Self>,
-    ) -> StackPanel {
+    ) -> El<Message> {
         // "Only <game>" first, as the default.
         let mut items = Vec::new();
         if let Some((_, name)) = &panel.game {
             items.push(format!("Only {name}"));
         }
         items.push("All games with ReShade".to_owned());
-        let selector = StackPanel::new()
-            .orientation(Orientation::Horizontal)
-            .spacing(8.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(1)
-            .children((
-                TextBlock::new()
-                    .text("Apply to")
-                    .vertical_alignment(VerticalAlignment::Center),
-                ComboBox::new()
-                    .items_source(items)
-                    .selected_index(Some(usize::from(panel.game.is_some() && !panel.only_game)))
-                    .is_enabled(panel.game.is_some() && settings.is_some())
-                    .min_width(280.0)
-                    .automation_name("Apply to")
-                    .on_selection_changed(context.callback(Message::ReshadeTargetChosen)),
-            ));
-        let top = Grid::new()
-            .columns([GridLength::Star(1.0), GridLength::Auto])
-            .column_spacing(12.0)
-            .children((
-                TextBlock::new()
-                    .text(title)
-                    .font_size(28.0)
-                    .font_weight(FontWeight::SEMI_BOLD)
-                    .grid_column(0),
-                selector,
-            ));
-        let mut rows: Vec<View> = vec![top.into()];
+        let selected = usize::from(panel.game.is_some() && !panel.only_game);
+        let apply_to = dropdown("reshade:apply-to", items, Some(selected), |i| {
+            Message::ReshadeTargetChosen(Some(i))
+        })
+        .enabled(panel.game.is_some() && settings.is_some())
+        .name("Apply to")
+        .width(280.0);
+        let mut rows = vec![
+            row([
+                heading(title).fill_width(),
+                text("Apply to").color(theme::TEXT_SECONDARY),
+                apply_to,
+            ])
+            .gap(10.0),
+        ];
         if let Some(settings) = settings {
-            rows.push(self.target_line(panel, settings, context));
+            rows.push(self.target_line(panel, settings));
         }
-        StackPanel::new().spacing(6.0).children(rows)
+        col(rows).gap(6.0)
     }
 
-    /// What applying the panel's choice does, for its target.
-    fn target_line(
-        &self,
-        panel: &ReshadePanel,
-        settings: &ReshadeSettings,
-        context: &ViewContext<Self>,
-    ) -> View {
+    /// What applying the page's choice does, for its target.
+    fn target_line(&self, panel: &ReshadePanel, settings: &ReshadeSettings) -> El<Message> {
         let part = panel.part();
         let has_reshade = |id: &str| {
             self.mods
@@ -883,12 +816,12 @@ impl GameManager {
         // What applying is called at the start of a sentence, and inside one.
         let (what, applying, applying_inside) = match part {
             Part::Shaders => ("selection", "Deploy", "Deploy"),
-            Part::Addons => ("add-ons", "Closing this", "closing this"),
+            Part::Addons => ("add-ons", "Closing this page", "closing this page"),
         };
-        let (text, use_shared) = match (panel.target(), &panel.game) {
+        let (line, use_shared) = match (panel.target(), &panel.game) {
             (Some(id), Some((_, name))) => {
                 let own = settings.has_own(id, part);
-                let text = match (has_reshade(id), own) {
+                let line = match (has_reshade(id), own) {
                     (false, _) => format!(
                         "ReShade is not installed in {name}: {applying_inside} saves its own \
                          {what} for its install."
@@ -901,7 +834,7 @@ impl GameManager {
                          leaves alone."
                     ),
                 };
-                (text, own)
+                (line, own)
             }
             _ => {
                 let own = settings
@@ -914,60 +847,39 @@ impl GameManager {
                     1 => format!(", except the one with its own {what}"),
                     n => format!(", except the {n} with their own {what}"),
                 };
-                let text = match part {
+                let line = match part {
                     Part::Shaders => {
                         format!("Deploy puts this selection into every game with ReShade{except}.")
                     }
                     Part::Addons => format!(
-                        "Closing this puts the add-ons switched on next to the program of every \
-                         game with ReShade{except}."
+                        "Closing this page puts the add-ons switched on next to the program of \
+                         every game with ReShade{except}."
                     ),
                 };
-                (text, false)
+                (line, false)
             }
         };
-        let text = match part {
-            Part::Shaders => text,
-            Part::Addons => format!("{text} Games with the No Addons build get none."),
+        let line = match part {
+            Part::Shaders => line,
+            Part::Addons => format!("{line} Games with the No Addons build get none."),
         };
-        let mut line: Vec<View> = vec![
-            TextBlock::new()
-                .text(text)
-                .font_size(12.0)
-                .opacity(0.7)
-                .text_wrapping(TextWrapping::Wrap)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0)
-                .into(),
-        ];
+        let mut parts = vec![hint(line).fill_width()];
         if use_shared {
             let label = match part {
                 Part::Shaders => "Use all games' selection",
                 Part::Addons => "Use all games' add-ons",
             };
-            line.push(
-                Button::new()
-                    .on_click(context.message(Message::UseSharedChoice))
-                    .automation_name(label)
-                    .content(label)
-                    .grid_column(1)
-                    .tooltip("Drop this game's own choice and deploy the one all games share"),
+            parts.push(
+                button(label)
+                    .tooltip("Drop this game's own choice and deploy the one all games share")
+                    .on_click(Message::UseSharedChoice),
             );
         }
-        Grid::new()
-            .columns([GridLength::Star(1.0), GridLength::Auto])
-            .column_spacing(12.0)
-            .children(line)
-            .into()
+        row(parts).gap(12.0)
     }
 
-    /// ReShade Addon Manager: the custom folder's link, a card per add-on, and Close.
-    fn addons_panel(
-        &self,
-        panel: &ReshadePanel,
-        enabled: Option<&BTreeSet<String>>,
-        context: &ViewContext<Self>,
-    ) -> View {
+    /// The Add-ons page: the custom folder's link, a card per add-on, and Close.
+    fn addons_page(&self, panel: &ReshadePanel, enabled: Option<&BTreeSet<String>>) -> El<Message> {
         let library = self
             .addon_library
             .as_ref()
@@ -975,59 +887,37 @@ impl GameManager {
         let settings = library
             .filter(|_| enabled.is_some())
             .map(|library| &library.settings);
-        let header = StackPanel::new().spacing(4.0).grid_row(0).children((
-            self.panel_header(panel, "ReShade Addon Manager", settings, context),
-            HyperlinkButton::new()
-                .content("Place custom .addon64/.addon32 files here")
-                .on_click(context.message(Message::OpenAddonFolder))
-                .automation_name("Place custom add-on files here"),
-        ));
-        let body: View = match (enabled, library) {
+        let mut rows = vec![
+            self.page_header(panel, "Add-ons", settings),
+            row([link(
+                "Place custom .addon64/.addon32 files here",
+                Message::OpenAddonFolder,
+            )
+            .name("Place custom add-on files here")]),
+        ];
+        match (enabled, library) {
             (Some(enabled), Some(library)) => {
-                let cards: Vec<View> = library
-                    .addons
-                    .iter()
-                    .map(|addon| addon_card(addon, enabled.contains(&addon.id), library, context))
-                    .collect();
-                ScrollViewer::new()
-                    .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-                    .content(
-                        StackPanel::new()
-                            .spacing(8.0)
-                            .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
-                            .children(cards),
-                    )
-                    .into()
+                rows.extend(
+                    library
+                        .addons
+                        .iter()
+                        .map(|addon| addon_card(addon, enabled.contains(&addon.id), library)),
+                );
             }
-            _ => StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .children((
-                    ProgressRing::new().is_active(true).width(20.0).height(20.0),
-                    TextBlock::new().text("Reading the add-on list…"),
-                ))
-                .into(),
-        };
-        let close = Button::new()
-            .horizontal_alignment(HorizontalAlignment::Right)
-            .min_width(280.0)
-            .on_click(context.message(Message::CloseAddons))
-            .automation_name("Close")
-            .content("Close")
-            .grid_row(2);
-        Grid::new()
-            .rows([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
-            .row_spacing(16.0)
-            .children((header, Border::new().grid_row(1).content(body), close))
-            .into()
+            _ => rows.push(working("Reading the add-on list…")),
+        }
+        rows.push(
+            row([accent_button("Close")
+                .min_width(160.0)
+                .tooltip("Save the add-ons switched on and put them next to ReShade")
+                .on_click(Message::CloseAddons)])
+            .justify(Align::End),
+        );
+        col(rows).gap(12.0)
     }
 
-    fn shaders_panel(
-        &self,
-        panel: &ReshadePanel,
-        draft: Option<&ShadersDraft>,
-        context: &ViewContext<Self>,
-    ) -> View {
+    /// The Shaders page: the list of packs beside the profiles, then Deploy and Cancel.
+    fn shaders_page(&self, panel: &ReshadePanel, draft: Option<&ShadersDraft>) -> El<Message> {
         let library = self
             .shader_library
             .as_ref()
@@ -1035,110 +925,70 @@ impl GameManager {
         let settings = library
             .filter(|_| draft.is_some())
             .map(|library| &library.settings);
-        let title = self
-            .panel_header(panel, "Select Shader Packs", settings, context)
-            .grid_row(0);
-        let body: View = match (draft, library) {
-            (Some(draft), Some(library)) => Grid::new()
-                .columns([GridLength::Star(1.0), GridLength::Pixel(240.0)])
-                .column_spacing(24.0)
-                .children((
-                    Border::new()
-                        .grid_column(0)
-                        .content(self.shader_list(draft, library, context)),
-                    Border::new()
-                        .grid_column(1)
-                        .content(profiles_column(draft, library, context)),
-                ))
-                .into(),
-            _ => StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .children((
-                    ProgressRing::new().is_active(true).width(20.0).height(20.0),
-                    TextBlock::new().text("Reading the shader packs…"),
-                ))
-                .into(),
+        let header = self.page_header(panel, "Shaders", settings);
+        let body = match (draft, library) {
+            (Some(draft), Some(library)) => row([
+                self.shader_list(draft, library)
+                    .fill_width()
+                    .valign(Align::Start),
+                profiles_column(draft, library)
+                    .width(PROFILES_WIDTH)
+                    .valign(Align::Start),
+            ])
+            .gap(20.0),
+            _ => working("Reading the shader packs…"),
         };
-        let buttons = Grid::new()
-            .columns([GridLength::Star(1.0), GridLength::Star(1.0)])
-            .column_spacing(12.0)
-            .grid_row(2)
-            .children((
-                Button::new()
-                    .is_enabled(draft.is_some())
-                    .style(ButtonStyle::Accent)
-                    .horizontal_alignment(HorizontalAlignment::Stretch)
-                    .on_click(context.message(Message::DeployShaders))
-                    .automation_name("Deploy")
-                    .content("Deploy")
-                    .grid_column(0)
-                    .tooltip(match &panel.game {
-                        Some((_, name)) if panel.only_game => {
-                            format!("Save the selection as {name}'s own and put it into {name}")
-                        }
-                        _ => "Save the selection and put it into every game with ReShade that \
-                              has no selection of its own"
-                            .to_owned(),
-                    }),
-                Button::new()
-                    .horizontal_alignment(HorizontalAlignment::Stretch)
-                    .on_click(context.message(Message::CloseReshadePanel))
-                    .automation_name("Cancel")
-                    .content("Cancel")
-                    .grid_column(1),
-            ));
-        Grid::new()
-            .rows([GridLength::Auto, GridLength::Star(1.0), GridLength::Auto])
-            .row_spacing(16.0)
-            .children((title, Border::new().grid_row(1).content(body), buttons))
-            .into()
+        let deploy_tip = match &panel.game {
+            Some((_, name)) if panel.only_game => {
+                format!("Save the selection as {name}'s own and put it into {name}")
+            }
+            _ => "Save the selection and put it into every game with ReShade that has no \
+                  selection of its own"
+                .to_owned(),
+        };
+        let buttons = row([
+            accent_button("Deploy")
+                .enabled(draft.is_some())
+                .min_width(160.0)
+                .tooltip(deploy_tip)
+                .on_click(Message::DeployShaders),
+            button("Cancel")
+                .min_width(120.0)
+                .on_click(Message::CloseReshadePanel),
+        ])
+        .gap(8.0)
+        .justify(Align::End);
+        col([header, body, buttons]).gap(14.0)
     }
 
     /// The toolbar and the packs by category.
-    fn shader_list(
-        &self,
-        draft: &ShadersDraft,
-        library: &ShaderLibrary,
-        context: &ViewContext<Self>,
-    ) -> View {
+    fn shader_list(&self, draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message> {
         let all_ids = library.catalog.packs.len() + 1;
         let expand_label = if draft.expanded.len() >= all_ids {
-            "Collapse All"
+            "Collapse all"
         } else {
-            "Expand All"
+            "Expand all"
         };
-        let toolbar = StackPanel::new()
-            .orientation(Orientation::Horizontal)
-            .spacing(8.0)
-            .grid_row(0)
-            .children((
-                Button::new()
-                    .on_click(context.message(Message::ShaderExpandAll))
-                    .automation_name(expand_label)
-                    .content(expand_label),
-                Button::new()
-                    .on_click(context.message(Message::ShaderDeselectAll))
-                    .automation_name("Deselect All")
-                    .content("Deselect All"),
-                TextBox::new()
-                    .text(draft.search.as_str())
-                    .placeholder_text("Search packs or shaders…")
-                    .width(240.0)
-                    .automation_name("Search packs or shaders")
-                    .on_text_changed(context.callback(|text: std::rc::Rc<str>| {
-                        Message::ShaderSearch(text.to_string())
-                    })),
-                Button::new()
-                    .is_enabled(!draft.search.is_empty())
-                    .on_click(context.message(Message::ShaderSearch(String::new())))
-                    .automation_name("Clear the search")
-                    .content(SymbolIcon::new().symbol(Symbol::Cancel)),
-            ));
+        let toolbar = row([
+            button(expand_label).on_click(Message::ShaderExpandAll),
+            button("Deselect all").on_click(Message::ShaderDeselectAll),
+            text_box(
+                "shaders:search",
+                draft.search.as_str(),
+                "Search packs or shaders…",
+                "Search packs or shaders",
+                Message::ShaderSearch,
+            )
+            .fill_width(),
+            icon_button(g::CLOSE, "Clear the search")
+                .enabled(!draft.search.is_empty())
+                .on_click(Message::ShaderSearch(String::new())),
+        ])
+        .gap(8.0);
 
-        let mut rows: Vec<View> = Vec::new();
+        let mut rows: Vec<El<Message>> = vec![toolbar];
         for category in [Category::Essential, Category::Recommended] {
-            self.category_rows(&mut rows, category, draft, library, context);
+            self.category_rows(&mut rows, category, draft, library);
         }
         // The user's own shaders sit between Recommended and Extra.
         let custom = library.effects.get(CUSTOM).cloned().unwrap_or_default();
@@ -1146,7 +996,7 @@ impl GameManager {
             || matches("General", &draft.search)
             || custom.iter().any(|file| matches(file, &draft.search));
         if custom_shown {
-            rows.push(heading("Custom Shaders"));
+            rows.push(section_heading("Custom Shaders"));
             rows.push(self.pack_row(
                 CUSTOM,
                 "General",
@@ -1154,43 +1004,22 @@ impl GameManager {
                 &custom,
                 true,
                 draft,
-                context,
             ));
         }
-        self.category_rows(&mut rows, Category::Extra, draft, library, context);
-        if rows.is_empty() {
-            rows.push(
-                TextBlock::new()
-                    .text("No pack or shader matches the search.")
-                    .opacity(0.7)
-                    .into(),
-            );
+        self.category_rows(&mut rows, Category::Extra, draft, library);
+        if rows.len() == 1 {
+            rows.push(hint("No pack or shader matches the search."));
         }
-        let list = ScrollViewer::new()
-            .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-            .grid_row(1)
-            .content(
-                StackPanel::new()
-                    .spacing(10.0)
-                    // Room for the scroll bar, so it never covers the rows.
-                    .margin(Thickness::new(0.0, 0.0, 16.0, 0.0))
-                    .children(rows),
-            );
-        Grid::new()
-            .rows([GridLength::Auto, GridLength::Star(1.0)])
-            .row_spacing(12.0)
-            .children((toolbar, list))
-            .into()
+        col(rows).gap(8.0)
     }
 
     /// A category's heading and the packs in it that match the search, by name.
     fn category_rows(
         &self,
-        rows: &mut Vec<View>,
+        rows: &mut Vec<El<Message>>,
         category: Category,
         draft: &ShadersDraft,
         library: &ShaderLibrary,
-        context: &ViewContext<Self>,
     ) {
         let mut packs: Vec<_> = library
             .catalog
@@ -1213,7 +1042,7 @@ impl GameManager {
             return;
         }
         packs.sort_by_key(|pack| pack.name.to_lowercase());
-        rows.push(heading(category.label()));
+        rows.push(section_heading(category.label()));
         for pack in packs {
             let effects = library.effects.get(&pack.id).cloned();
             let cached = effects.is_some();
@@ -1224,17 +1053,12 @@ impl GameManager {
                 &effects.unwrap_or_default(),
                 cached,
                 draft,
-                context,
             ));
         }
     }
 
     /// One pack: its box, name, ✓ when cached, ▶ for its effects, and its description; when
     /// expanded, its effects with their own boxes.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one row's facts, from two places"
-    )]
     fn pack_row(
         &self,
         id: &str,
@@ -1243,70 +1067,45 @@ impl GameManager {
         effects: &[String],
         cached: bool,
         draft: &ShadersDraft,
-        context: &ViewContext<Self>,
-    ) -> View {
+    ) -> El<Message> {
         let state = draft.state(id, effects);
         let expanded = draft.expanded.contains(id)
             || (!draft.search.is_empty()
                 && effects.iter().any(|file| matches(file, &draft.search)));
-        let key = id.to_owned();
-        let check = CheckBox::new()
-            .is_checked(state)
-            .automation_name(name)
-            .vertical_alignment(VerticalAlignment::Top)
-            // The compact box (centred in 24) level with the name (16 px text, 21 high).
-            .margin(Thickness::new(0.0, -1.0, 0.0, 0.0))
-            .on_is_checked_changed(
-                context
-                    .callback(move |on: Option<bool>| Message::ShaderPackChecked(key.clone(), on)),
-            )
-            .grid_column(0);
         let downloading = self.packs_downloading.contains(id);
-        let mut title: Vec<View> = vec![
-            TextBlock::new()
-                .text(name)
-                .font_size(16.0)
-                .vertical_alignment(VerticalAlignment::Center)
-                .into(),
-        ];
+        let check = crate::ui::widgets::check_square(state)
+            .role(crate::ui::el::Role::CheckBox)
+            .selected(state == Some(true))
+            .name(name)
+            .on_click(Message::ShaderPackChecked(
+                id.to_owned(),
+                Some(state != Some(true)),
+            ))
+            .valign(Align::Start);
+        let mut title = vec![text(name).text_size(15.0).weight(600)];
         if cached && id != CUSTOM {
             title.push(
-                FontIcon::new()
-                    .glyph("\u{E73E}")
-                    .foreground(ThemeBrush::Accent)
-                    .vertical_alignment(VerticalAlignment::Center)
+                glyph(g::CHECK, 12.0)
+                    .color(theme::GREEN)
                     .tooltip("Downloaded"),
             );
         }
-        let expand_glyph = if expanded { "\u{E70D}" } else { "\u{E76C}" };
+        let expand_glyph = if expanded {
+            g::CHEVRON_DOWN
+        } else {
+            g::CHEVRON_RIGHT
+        };
         title.push(
-            Button::new()
-                .style(ButtonStyle::Subtle)
-                .on_click(context.message(Message::ShaderPackExpanded(id.to_owned())))
-                .automation_name(format!("Effects of {name}"))
-                .content(FontIcon::new().glyph(expand_glyph).font_size(12.0))
-                .into(),
+            icon_button(expand_glyph, format!("Effects of {name}"))
+                .size(26.0, 26.0)
+                .on_click(Message::ShaderPackExpanded(id.to_owned())),
         );
         if downloading {
-            title.push(
-                ProgressRing::new()
-                    .is_active(true)
-                    .width(16.0)
-                    .height(16.0)
-                    .into(),
-            );
+            title.push(spinner(14.0));
         }
-        let mut lines: Vec<View> = vec![
-            StackPanel::new()
-                .orientation(Orientation::Horizontal)
-                .spacing(8.0)
-                .children(title)
-                .into(),
-            TextBlock::new()
-                .text(description)
-                .opacity(0.7)
-                .text_wrapping(TextWrapping::Wrap)
-                .into(),
+        let mut lines = vec![
+            row(title).gap(6.0),
+            text(description).color(theme::TEXT_TERTIARY).wrap(),
         ];
         if expanded {
             let shown: Vec<&String> = effects
@@ -1318,277 +1117,162 @@ impl GameManager {
                 })
                 .collect();
             if let Some(error) = self.pack_errors.get(id) {
-                lines.push(note(&format!("Could not download it: {error}")));
+                lines.push(hint(format!("Could not download it: {error}")));
             } else if downloading || (!cached && id != CUSTOM) {
-                lines.push(note("Downloading the pack to list its shaders…"));
+                lines.push(hint("Downloading the pack to list its shaders…"));
             } else if shown.is_empty() {
-                lines.push(note(if id == CUSTOM {
+                lines.push(hint(if id == CUSTOM {
                     "No shaders in the custom folder yet."
                 } else {
                     "This pack has no effects."
                 }));
             }
-            let mut boxes: Vec<View> = Vec::new();
-            for file in shown {
-                let (pack, effect) = (id.to_owned(), file.clone());
-                boxes.push(
-                    CheckBox::new()
-                        .is_checked(draft.takes(id, file))
-                        .content(effect_name(file))
-                        .automation_name(effect_name(file))
-                        .on_is_checked_changed(context.callback(move |on: Option<bool>| {
-                            Message::ShaderEffectChecked(pack.clone(), effect.clone(), on)
-                        }))
-                        .into(),
-                );
-            }
+            let boxes: Vec<El<Message>> = shown
+                .into_iter()
+                .map(|file| {
+                    crate::ui::widgets::checkbox(
+                        effect_name(file),
+                        draft.takes(id, file),
+                        Message::ShaderEffectChecked(
+                            id.to_owned(),
+                            file.clone(),
+                            Some(!draft.takes(id, file)),
+                        ),
+                    )
+                })
+                .collect();
             if !boxes.is_empty() {
-                lines.push(
-                    StackPanel::new()
-                        .spacing(0.0)
-                        .margin(Thickness::new(4.0, 4.0, 0.0, 0.0))
-                        .children(boxes)
-                        .into(),
-                );
+                lines.push(col(boxes).gap(0.0));
             }
         }
-        Grid::new()
-            .columns([GridLength::Auto, GridLength::Star(1.0)])
-            .column_spacing(8.0)
-            .children((
-                check,
-                StackPanel::new()
-                    .spacing(4.0)
-                    .grid_column(1)
-                    .children(lines),
-            ))
-            .into()
+        card([row([check, col(lines).gap(4.0).fill_width()]).gap(10.0)]).pad(12.0)
     }
 }
 
-/// Profiles (each with ✎ and ✕; Save, New), Export and Import, and Open Custom Folder.
-fn profiles_column(
-    draft: &ShadersDraft,
-    library: &ShaderLibrary,
-    context: &ViewContext<GameManager>,
-) -> View {
-    let wide = |label: &str, message: Message| {
-        Button::new()
-            .horizontal_alignment(HorizontalAlignment::Stretch)
-            .on_click(context.message(message))
-            .automation_name(label)
-            .content(label)
+/// A category's heading in the shader list.
+fn section_heading(label: &str) -> El<Message> {
+    text(label)
+        .text_size(theme::TEXT_SUBTITLE + 2.0)
+        .bold()
+        .padding(crate::ui::el::Edges::new(0.0, 10.0, 0.0, 2.0))
+}
+
+/// Profiles (each with ✎ and ✕; Save, New), Export and Import, and Open custom folder.
+fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message> {
+    let wide = |icon: &str, label: &str, message: Message| {
+        crate::ui::widgets::icon_text_button(icon, label).on_click(message)
     };
-    let mut rows: Vec<View> = vec![
-        TextBlock::new()
-            .text("Profiles")
-            .font_size(20.0)
-            .font_weight(FontWeight::SEMI_BOLD)
-            .into(),
+    let mut rows: Vec<El<Message>> = vec![
+        text("Profiles")
+            .text_size(theme::TEXT_SUBTITLE + 2.0)
+            .bold(),
     ];
     let current = library.settings.profile.as_deref();
+    if library.settings.profiles.is_empty() {
+        rows.push(hint("No profiles yet: Save keeps the selection as one."));
+    }
     for profile in &library.settings.profiles {
         let name = profile.name.clone();
-        let row: View = match &draft.renaming {
-            Some((old, typed)) if *old == profile.name => Grid::new()
-                .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
-                .column_spacing(4.0)
-                .children((
-                    TextBox::new()
-                        .text(typed.as_str())
-                        .automation_name(format!("New name for {name}"))
-                        .on_text_changed(context.callback(|text: std::rc::Rc<str>| {
-                            Message::ProfileRenameText(text.to_string())
-                        }))
-                        .grid_column(0),
-                    Button::new()
-                        .on_click(context.message(Message::ProfileRenamed))
-                        .automation_name("Rename")
-                        .content(SymbolIcon::new().symbol(Symbol::Accept))
-                        .grid_column(1)
-                        .tooltip("Rename"),
-                    Button::new()
-                        .on_click(context.message(Message::ProfileRename(String::new())))
-                        .automation_name("Keep the name")
-                        .content(SymbolIcon::new().symbol(Symbol::Cancel))
-                        .grid_column(2)
-                        .tooltip("Keep the name"),
-                ))
-                .into(),
+        let line = match &draft.renaming {
+            Some((old, typed)) if *old == profile.name => row([
+                text_box(
+                    "profile:rename",
+                    typed.as_str(),
+                    "",
+                    format!("New name for {name}"),
+                    Message::ProfileRenameText,
+                )
+                .fill_width(),
+                icon_button(g::CHECK, "Rename").on_click(Message::ProfileRenamed),
+                icon_button(g::CLOSE, "Keep the name")
+                    .on_click(Message::ProfileRename(String::new())),
+            ])
+            .gap(4.0),
             _ => {
-                let weight = if current == Some(profile.name.as_str()) {
-                    FontWeight::SEMI_BOLD
-                } else {
-                    FontWeight::NORMAL
-                };
-                Grid::new()
-                    .columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Auto])
-                    .column_spacing(4.0)
-                    .children((
-                        Button::new()
-                            .style(ButtonStyle::Subtle)
-                            .horizontal_alignment(HorizontalAlignment::Stretch)
-                            .horizontal_content_alignment(HorizontalAlignment::Left)
-                            .on_click(context.message(Message::ProfileLoad(name.clone())))
-                            .automation_name(format!("Load {name}"))
-                            .content(TextBlock::new().text(name.as_str()).font_weight(weight))
-                            .grid_column(0)
-                            .tooltip("Use this profile's selection"),
-                        Button::new()
-                            .style(ButtonStyle::Subtle)
-                            .on_click(context.message(Message::ProfileRename(name.clone())))
-                            .automation_name(format!("Rename {name}"))
-                            .content(SymbolIcon::new().symbol(Symbol::Edit))
-                            .grid_column(1)
-                            .tooltip("Rename"),
-                        Button::new()
-                            .style(ButtonStyle::Subtle)
-                            .on_click(context.message(Message::ProfileDelete(name.clone())))
-                            .automation_name(format!("Delete {name}"))
-                            .content(
-                                FontIcon::new()
-                                    .glyph("\u{E711}")
-                                    .foreground(ThemeBrush::SystemCritical),
-                            )
-                            .grid_column(2)
-                            .tooltip("Delete"),
-                    ))
-                    .into()
+                let label = text(name.as_str())
+                    .weight(if current == Some(profile.name.as_str()) {
+                        700
+                    } else {
+                        400
+                    })
+                    .fill_width();
+                row([
+                    row([label])
+                        .pad_xy(8.0, 0.0)
+                        .height(theme::CONTROL_HEIGHT)
+                        .radius(theme::RADIUS_CONTROL)
+                        .hover_bg(theme::SUBTLE_HOVER)
+                        .pressed_bg(theme::SUBTLE_PRESSED)
+                        .name(format!("Load {name}"))
+                        .tooltip("Use this profile's selection")
+                        .on_click(Message::ProfileLoad(name.clone()))
+                        .fill_width(),
+                    icon_button(g::EDIT, format!("Rename {name}"))
+                        .on_click(Message::ProfileRename(name.clone())),
+                    remove_button(format!("Delete {name}"))
+                        .on_click(Message::ProfileDelete(name.clone())),
+                ])
+                .gap(2.0)
             }
         };
-        rows.push(row);
+        rows.push(line);
     }
-    let separator = || -> View {
-        Border::new()
-            .height(1.0)
-            .background(ThemeBrush::CardStroke)
-            .margin(Thickness::xy(0.0, 6.0))
-            .into()
-    };
     rows.extend([
-        wide("Save", Message::ProfileSave)
+        wide(g::SAVE, "Save", Message::ProfileSave)
             .tooltip("Save the selection into the current profile (a new one when there is none)"),
-        wide("New", Message::ProfileNew).tooltip("Save the selection as a new profile"),
-        separator(),
-        wide("Export", Message::ExportShaders).tooltip(
-            "Zip the selected shader files and copy the archive to your clipboard. Paste it \
-             into Discord or a folder to share.",
+        wide(g::ADD, "New", Message::ProfileNew).tooltip("Save the selection as a new profile"),
+        divider(),
+        wide(g::EXPORT, "Export", Message::ExportShaders).tooltip(
+            "Zip the selected shader files and copy the archive to your clipboard. Paste it into \
+             Discord or a folder to share.",
         ),
-        wide("Import", Message::ImportShaders)
+        wide(g::IMPORT, "Import", Message::ImportShaders)
             .tooltip("Add the shaders of a ZIP to your own, under Custom Shaders"),
-        separator(),
-        wide("Open Custom Folder", Message::OpenCustomFolder)
-            .tooltip("Your own shaders and textures go here; they show as Custom Shaders"),
+        divider(),
+        subtle_button(g::FOLDER, "Open custom folder")
+            .tooltip("Your own shaders and textures go here; they show as Custom Shaders")
+            .on_click(Message::OpenCustomFolder),
     ]);
-    if let Some(text) = &draft.note {
-        rows.push(note(text));
+    if let Some(note) = &draft.note {
+        rows.push(hint(note.clone()));
     }
-    ScrollViewer::new()
-        .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-        .content(StackPanel::new().spacing(8.0).children(rows))
-        .into()
+    card(rows).gap(8.0)
 }
 
 /// One add-on: its name, version ✓ when downloaded, description and How to use, and its switch.
-fn addon_card(
-    addon: &Addon,
-    on: bool,
-    library: &AddonLibrary,
-    context: &ViewContext<GameManager>,
-) -> View {
-    let mut title: Vec<View> = vec![
-        TextBlock::new()
-            .text(addon.name.as_str())
-            .font_size(16.0)
-            .font_weight(FontWeight::SEMI_BOLD)
-            .text_wrapping(TextWrapping::Wrap)
-            .into(),
-    ];
+fn addon_card(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
+    let mut title = vec![text(addon.name.as_str()).text_size(15.0).weight(600)];
     if let Some(version) = library.cached.get(&addon.id) {
         if let Some(version) = version {
-            title.push(
-                TextBlock::new()
-                    .text(version.as_str())
-                    .opacity(0.7)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .into(),
-            );
+            title.push(text(version.as_str()).color(theme::TEXT_TERTIARY));
         }
         title.push(
-            FontIcon::new()
-                .glyph("\u{E73E}")
-                .foreground(ThemeBrush::Accent)
-                .vertical_alignment(VerticalAlignment::Center)
+            glyph(g::CHECK, 12.0)
+                .color(theme::GREEN)
                 .tooltip("Downloaded"),
         );
     }
-    let mut lines: Vec<View> = vec![
-        StackPanel::new()
-            .orientation(Orientation::Horizontal)
-            .spacing(8.0)
-            .children(title)
-            .into(),
-        TextBlock::new()
-            .text(addon.description.as_str())
-            .opacity(0.7)
-            .text_wrapping(TextWrapping::Wrap)
-            .into(),
+    let mut lines = vec![
+        row(title).gap(8.0),
+        text(addon.description.as_str())
+            .color(theme::TEXT_TERTIARY)
+            .wrap(),
     ];
     if let Some(page) = &addon.repository {
-        lines.push(
-            HyperlinkButton::new()
-                .content("How to use")
-                .on_click(context.message(Message::OpenModPage(page.clone())))
-                .automation_name(format!("How to use {}", addon.name))
-                .into(),
-        );
-    }
-    let id = addon.id.clone();
-    // Named after its add-on, for screen readers.
-    let switch = ToggleSwitch::new()
-        .is_on(on)
-        .on_content("On")
-        .off_content("Off")
-        .automation_name(addon.name.as_str())
-        .vertical_alignment(VerticalAlignment::Center)
-        .on_toggled(context.callback(move |on: bool| Message::AddonSwitched(id.clone(), on)));
-    Border::new()
-        .padding(Thickness::uniform(12.0))
-        .corner_radius(8.0)
-        .background(ThemeBrush::CardBackground)
-        .border_brush(ThemeBrush::CardStroke)
-        .border_thickness(Thickness::uniform(1.0))
-        .content(
-            Grid::new()
-                .columns([GridLength::Star(1.0), GridLength::Auto])
-                .column_spacing(16.0)
-                .children((
-                    StackPanel::new()
-                        .spacing(4.0)
-                        .grid_column(0)
-                        .children(lines),
-                    Border::new().grid_column(1).content(switch),
-                )),
+        lines.push(row([link(
+            "How to use",
+            Message::OpenModPage(page.clone()),
         )
-        .into()
-}
-
-fn heading(text: &str) -> View {
-    TextBlock::new()
-        .text(text)
-        .font_size(20.0)
-        .font_weight(FontWeight::SEMI_BOLD)
-        .margin(Thickness::new(0.0, 8.0, 0.0, 0.0))
-        .into()
-}
-
-fn note(text: &str) -> View {
-    TextBlock::new()
-        .text(text)
-        .font_size(12.0)
-        .opacity(0.7)
-        .text_wrapping(TextWrapping::Wrap)
-        .into()
+        .name(format!("How to use {}", addon.name))]));
+    }
+    let switch = toggle(
+        if on { "On" } else { "Off" },
+        on,
+        Message::AddonSwitched(addon.id.clone(), !on),
+    )
+    .name(addon.name.as_str())
+    .width(96.0);
+    card([row([col(lines).gap(4.0).fill_width(), switch]).gap(16.0)]).pad(14.0)
 }
 
 #[cfg(test)]

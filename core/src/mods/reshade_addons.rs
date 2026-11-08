@@ -1,4 +1,4 @@
-//! ReShade's add-ons (ReShade ▸ Addons): `.addon32`/`.addon64` files ReShade's add-on
+//! ReShade's add-ons (the Add-ons page): `.addon32`/`.addon64` files ReShade's add-on
 //! builds load from the game's folder. Three lists make the one shown:
 //!
 //! - **ReShade's own**, `Addons.ini` in crosire/reshade-shaders' `list` branch, read from the web

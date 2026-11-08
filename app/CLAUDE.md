@@ -1,134 +1,88 @@
 # app (the window)
 
-WinUI 3 through `windows-reactor`, a preview that changes often: when unsure of an API, read the
-source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<short rev>/crates/libs/`
-`reactor`, `pickers`, samples in `crates/samples/`) instead of guessing.
+A native Win32 window drawn with Direct2D and DirectWrite: windows-rs's `windows-window` (the HWND
+and message loop), `windows-canvas` (Direct2D, `system` host) and `windows-text` (DirectWrite). No
+WinUI, no XAML, no Windows App Runtime. These crates are 0.101 previews that change often: when
+unsure of an API, read the source of the commit in `Cargo.lock`
+(`~/.cargo/git/checkouts/windows-rs-*/<short rev>/crates/libs/{window,canvas,text,threading}`, samples
+in `crates/samples/`) instead of guessing.
 
 ## Structure
-- `main.rs` – `Message`, the `GameManager` state, `render` (top bar, sidebar, main panel,
-  dialogs) and `handle`. `update` runs `handle`, then `request_graphics`,
-  `request_hdr_mod_configs`, `request_laa` and `request_reshade`, so whatever selects a game or
-  shows HDR-mod looks things up once.
-- `mods_view.rs` (`impl GameManager`) – the Enhancements and Mods expanders and their dialog.
-- `reshade_panel.rs` (`impl GameManager`) – the top bar's ReShade button and its Shaders and
-  Addons panels; `ShadersDraft` is UI-free and unit-tested.
-  - **Apply to**: a panel applies the shared choice or the own choice of the game selected when
-    it opened (`ReshadePanel::game`, `only_game`). Deploy, and closing Addons after a change, run
-    `reshade::deploy` with `DeployTo::Sharing` (games without their own) or `DeployTo::Game`;
-    `mod_job` then holds that game's id, else an empty one.
-  - Profile changes are saved at once (`ReshadeSettings`' profile methods); the selection itself
-    only by Deploy. Export puts a ZIP on the clipboard; Import takes one through the Open dialog.
-- `upscalers_view.rs` (`impl GameManager`) – the Upscalers expander: one row per DLL or set
-  found, with a version drop-down, Swap and ✕. `upscalers_panel.rs` – the top bar's Upscalers
-  library (Download, Delete), on `panel_layer` like ReShade's panels.
-  - Their messages are `Message::Upscalers(UpscalerMessage)`, and their state is
-    `UpscalerState`.
-  - Scanning walks the game's folder, so it runs only while the expander is open, and is cleared
-    after a library scan, a mod job or `ModsLoaded`.
-  - `dlss_override_view.rs` – the expander's last row, NVIDIA overrides, shown with an NVIDIA
-    driver (read once, `UpscalerState::driver`), and its dialog (`ModDialog::Overrides`).
-    - The dialog reads the game's profile when it opens (`OverridesLoaded`); its drop-downs and
-      Save wait for it.
-    - Each drop-down starts with "Original: …" (`mods_view::original_label`, shared with DXVK
-      settings). Save runs `dlss_override::save` as a mod job (`ModKind::Overrides`).
-    - The NVIDIA app writes the same settings. When the profile no longer holds what Game
-      Manager set (`OverrideState::changed_elsewhere`), a warning names them, and Save sets them
-      again even with the choice unchanged.
-    - To change a profile from outside in a check, run `app.exe --nvidia-ops` with a plan
-      (`[uri]::EscapeDataString` of its JSON). An empty plan (`{"exe":"x.exe"}`) exits
-      `0xE00000A6` when no profile holds `x.exe`.
-    - A setting's label and its drop-down share a name, so UI Automation finds the drop-down by
-      `ControlType.ComboBox`.
-- `edit.rs` (the Game settings draft) and `library.rs` (search, filter, selection, list key) are
-  UI-free and unit-tested: put logic there, not in views.
-- `compact.rs` makes every control compact, from `GameManager::create`, before the first
-  render.
-  - It builds one dictionary in Rust, from static tables: Compact.xaml's values (copied from
-    WinUI's `DensityStyles/Compact.xaml`), this app's ThemeResource sizes, and compact styles
-    for buttons, menu items, check boxes and expanders. No XAML is parsed.
-  - **No string allocation**: keys, type names and thicknesses are `h!` literals; keep it so (no
-    `format!` or `HSTRING::from` outside error messages).
-  - **Layout to match**: controls are about 24 DIP high. Text keeps WinUI's sizes; spacing and
-    padding use 4, 6 or 8 within a group and 12–24 between groups, about three quarters of what
-    the standard sizes had (the ReShade panels: 840 × 640). Measure rows with UI Automation,
-    as `compact.rs` lists.
-  - A compact style is based on WinUI's own style object, looked up before the dictionary is
-    merged.
-  - **Two phases**: the sizes and the styles of controls the first frame shows (`FIRST_FRAME`)
-    in `create`; check boxes, menu items and Subtle buttons (`LATER`) 50 ms later
-    (`Message::CompactLater`). A control added to the main window needs its style in
-    `FIRST_FRAME`: WinUI doesn't restyle a control that already exists.
-  - It calls WinUI through `winui_bindings.rs`, generated by `examples/winui_bindings.rs` from
-    the reactor's own WinUI metadata. The bindings are not minimal, so they take `&HSTRING`.
-    Never edit them by hand: add a filter there and run `cargo run -p app --example
-    winui_bindings`.
-  - A failure shows in the error bar and stays there through scans (`compact_error`).
-- Blocking work runs through `ComponentContext::spawn_background` and comes back as a `Message`,
-  never on the UI thread. Errors arrive as `String`s (`to_string()` where received) and show in
-  the error bar.
-- `main()` with `--file-ops`, `--reshade-ops` or `--nvidia-ops` runs that work and exits before
-  any UI (the copy started as administrator). A failure to start shows a message box (there is no console),
-  except a missing Windows App Runtime, whose install the reactor already offered.
+- `main.rs` – `Message`, the `GameManager` state, `update` (`handle`, then the `request_*`
+  lookups), `go_to` (the pages), the elevated modes (`--file-ops`, `--reshade-ops`,
+  `--nvidia-ops`).
+- **Views**:
+  - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
+    dialogs).
+  - `sidebar.rs` (search, filter, the pages, store groups, game rows, Add a game).
+  - `game_page.rs` (header, launch bar, tabs, Overview; picks the page).
+  - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
+    Shaders and Add-ons pages), `upscalers_view.rs` (the Upscalers tab and its state),
+    `upscalers_page.rs` (the Upscalers page), `dlss_override_view.rs` (NVIDIA's overrides).
+- **Pages and tabs**: `Page` (Game, Shaders, Add-ons, Upscalers) is the sidebar's choice, `GameTab`
+  the game page's. Change pages only through `go_to`: leaving Add-ons saves and deploys its choice
+  (as its Close did), leaving Shaders drops its draft. Escape closes the menu, then a dialog, then
+  a page.
+- **UI-free logic**, unit-tested: `edit.rs` (the Game settings draft), `library.rs` (search,
+  filter, selection). Put logic there, not in views.
+- `ui/` – the toolkit:
+  - `el.rs` (the element tree views return; builders), `layout.rs` (a small flexbox, tested),
+    `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
+    `render.rs` (drawing; text and bitmap caches), `uia.rs` (UI Automation), `theme.rs` (design
+    tokens), `widgets.rs` (controls), `image.rs` (WIC decoding, PNG capture).
+- `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
+  frame, DPI), `edit_box.rs` (text boxes), `ctx.rs` (background work, effects), `dialogs.rs`
+  (Open dialog, start error), `efficiency.rs`.
 
-## windows-reactor quirks (each one cost a bug)
-- **No WinUI escape hatch**: its WinUI bindings are `pub(crate)` and there is no API for
-  application or element resources (`resource_overrides` exists only on Button and Expander,
-  for colors, corner radii and thicknesses). Calls it lacks go through `winui_bindings.rs`.
-- **WinUI's sizes**:
-  - Most control sizes are StaticResources inside WinUI's styles, which a later dictionary
-    can't override by key. Override the style instead (a style `BasedOn` WinUI's).
-  - Only ThemeResources (Compact.xaml's keys, `ButtonPadding` for HyperlinkButton, the
-    ToggleSwitch margins) can be overridden by key.
-  - The runtime's keys aren't always those in WinUI's source: it has no
-    `DefaultDropDownButtonStyle`.
-  - The runtime's ComboBox is at least `ComboBoxMinHeight` + 8 high, so Compact.xaml's 24 left it
-    at 32; `compact.rs` lowers that floor and lets the padding set the height.
-  - Some sizes are literal in WinUI's templates and stay: the radio button's 32 high grid.
-  - **Boxing**: WinUI reads a `Thickness` boxed by windows-reference as 0, though doubles from
-    `PropertyValue` and a boxed `TypeName` work. Let WinUI box it:
-    `XamlBindingHelper::ConvertValue` from its text.
-  - `use_compact_sizing`'s error names the key or type that failed. It stays in the error bar
-    through scans.
-- **Live lists**: it applies `selected_index` while it is still changing a live `ListView`'s rows,
-  which selected a row that did not exist yet (`E_INVALIDARG`, the app closed) or left rows
-  showing another game's name. The game list is a keyed `Grid` child whose key
-  (`library::list_key`) hashes the visible ids, so another set of games builds a new `ListView`.
-  There is no scroll-into-view.
-- **ComboBox items** may change while an item is selected (filter counts, "As detected: …",
-  HDR-mod configs): the reactor suppresses the selection event its own write raises and applies
-  `selected_index` again. `on_selection_changed` can still report `None` (the list losing its
-  selection), so messages carry an `Option` and ignore `None`.
-- **Menus** attach only to `Button`/`DropDownButton`/`MenuBarItem`, and nothing opens one at a
-  point (`AppContext::show_menu_at` went with the imperative `App` API). So the right-click menu
-  is drawn by the app:
-  - Each row is a `Border` (transparent, `min_width(ROW_WIDTH)` so all of it is hit-testable)
-    sending `RowPointer`.
-  - `row_menu_view` adds a last root-grid layer: a transparent backdrop that closes the menu on
-    any press, and a sibling `Canvas` with the menu, kept inside the window via `on_window_size`.
-  - Escape is an `on_key_up` on the root `Border`, present only while the menu is open.
-- **Dialogs**: a view carries one `ContentDialog` (`.content_dialog()`): Add on the top bar,
-  Remove on the body, the mod dialog on the main panel's `ScrollViewer`. WinUI opens one at a
-  time, so whatever opens one is disabled while another is open.
-- **Drop**: the root is a transparent `Border` (so empty areas are hit-testable) whose
-  `drop_policy` accepts storage items only while `can_add_game`.
-- **Wide panels**: `ContentDialog` is at most about 548 px wide, and the reactor cannot change
-  that. ReShade's panels are a last root-grid layer instead (as the game menu is): a dimmed
-  `Border` that takes every click, and the panel centred on it. Escape closes it, like the menu.
-- **Messages cross threads** (`spawn_background` needs `Message: Send`): a menu's `Key` is
-  passed on as a `String`.
-- **Tuple children stop at 16**: group rows, or pass a `Vec<View>` when rows come and go.
-- **Controls**:
-  - `Button` has no foreground: the red ✕ is a `FontIcon` with `ThemeBrush::SystemCritical`.
-  - Disabled controls show no tooltip, so reasons go in a hint line.
-  - `.tooltip()` returns a `View`.
-  - Use `GridLength::Auto.min(px)` for a column that must grow.
-  - A `ComboBox` aligns to the top of its cell by default, while a `Button` is centered. In a
-    row with a two-line label, give the ComboBox `VerticalAlignment::Center`.
-- `windows_pickers::OpenFilePicker::request` shows the Open dialog for the app's window, which is
-  disabled while it is open.
+## Toolkit rules
+- **Elm style**: every `Message` rebuilds the view and lays it out; hover and the like only
+  redraw. State a view can't know (hover, scroll offsets, focus, the open drop-down) is in
+  `UiState`, keyed by element id: give an element a `key` when that state must follow it across
+  frames (game rows, scroll views, text boxes, drop-downs).
+- **Design tokens only**: colours, sizes and fonts come from `theme.rs`; controls from
+  `widgets.rs`.
+- **Layout**: `Size::Px`, `Auto` or `Fill(weight)` along a row or column; `halign`/`valign`
+  across (both among `layers`). `row` centres its children vertically unless they say otherwise,
+  so a column that must fill a row's height needs `fill_height()`. A `scroll` clips its content.
+- **Text boxes** are real EDIT controls (`widgets::text_box`, `shell::edit_box`): IME, clipboard,
+  undo and screen readers are Windows'. Their text is written only while they have no focus; a
+  child window isn't clipped by a scroll view, so one shows only while its frame is fully visible.
+- **Layers** (menus, dialogs): a `modal` element stops hit-testing and scopes Tab to its layer.
+  Escape goes to `App::escape`. A dialog's body scrolls (`app_view::dialog`), so a tall one fits
+  the window.
+- **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
+  `resize_grip`, which also shows the resize cursor).
+- **Motion**: hover fills fade over `input::HOVER_FADE`; spinners turn. A frame that moves reports
+  `Drawn::animating` and the loop draws again; otherwise nothing draws at idle.
+- **Background work** goes through `Ctx::spawn_background` (the thread pool; the message comes
+  back through `WM_WAKE`). Modal dialogs (the Open dialog) and window commands are `Effect`s, run
+  by the loop with no state borrowed.
+- **Re-entrancy**: the shell's state is borrowed with `try_borrow_mut`; a message sent while it
+  is busy gets default handling. Never send our own window a message from inside `update` and
+  expect it handled; `WM_CTLCOLOREDIT`, `WM_NCCALCSIZE` and `WM_GETMINMAXINFO` need no state.
+- **Bindings**: the `windows` crate at this commit uses C types: `HWND` and other handles are raw
+  pointers (`is_null`), `WPARAM`/`LPARAM` are `usize`/`isize`, `WM_*`/`WS_*` constants are `i32`
+  (the shell matches messages as `i32`), many methods return `HRESULT` (`.ok()?`), and `VARIANT` is
+  the raw union (`uia.rs` builds them).
+- **Title bar**: drawn by the view; elements keyed `shell::CAPTION_*` tell `WM_NCHITTEST` where to
+  drag and where minimize, maximize (Snap Layouts) and close are.
+
+## Checking it from an agent session
+- **UI Automation** sees every control by name (buttons, rows, tabs, drop-downs, text boxes with
+  their Value). Invoke, SelectionItem, Toggle, ExpandCollapse and Value act like clicks and typing.
+- **The window draws itself to a PNG**: start the app with `GAME_MANAGER_CAPTURE=<path>` in its
+  environment, then post `WM_APP + 9` to its window; the Read tool shows the PNG. Text boxes are
+  separate windows, so their text isn't in the capture (read it through UI Automation).
+- **Right-clicks** can be posted (`WM_RBUTTONDOWN`/`WM_RBUTTONUP` at client coordinates), and
+  so can a drag (`WM_LBUTTONDOWN`, `WM_MOUSEMOVE` with `MK_LBUTTON`, `WM_LBUTTONUP`).
+- **Names repeat**: "Upscalers" is both a page and a tab, "ReShade" a tab and a card. Search
+  under the tab strip, or pick the element by its control type.
+- **DXVK in an agent session**: when the user's DXVK cache holds a build of an older layout,
+  Install has to replace it and fails with os error 4395 (root `CLAUDE.md`). ReShade and LAA can
+  be checked; ask the user to try DXVK.
 
 ## Game settings and Mods
-- **Game settings** (`game_settings`, `edit.rs`):
+- **Game settings** (`game_page::game_settings`, `edit.rs`):
   - The draft starts from the game's current values. `EditDraft::for_game` drops it once another
     game is selected or a scan changed the game.
   - Save stores only changed fields (blank = as detected) with `config::save_edits`; Reset calls
@@ -140,20 +94,18 @@ source of the commit in `Cargo.lock` (`~/.cargo/git/checkouts/windows-rs-*/<shor
     After a failed job it is read again, since a job may have saved part of its work.
   - **DXVK settings' NVIDIA section** (for every variant): opening the dialog reads the game's
     driver profile in the background (`NvidiaLoaded`, matched to the selected game; hidden when
-    there is no NVIDIA driver).
-    - The Present Method and flags drop-downs start with "Original: …" (the recorded original,
-      else what the profile holds now).
-    - Reset to original sets both back; Save applies them through `dxvk::save_settings`.
-    - Uninstalling DXVK leaves them.
-  - **Shared columns**: mod rows share `mod_columns()`, fixed widths, so each row's cells line up
-    with the others'.
-  - **Enhancements** (above Mods) holds ReShade's row, with settings for its variant. Its install
-    mode (DLL or Vulkan layer) depends on DXVK in the game's folder, which `request_reshade`
-    reads in the background with the layer's list. DXVK's Install is disabled while ReShade is
-    installed as one of DXVK's DLLs (`dxvk::reshade_dll`).
+    there is no NVIDIA driver). The Present Method and flags start with "Original: …" (the
+    recorded original, else what the profile holds now); Reset to original sets both back; Save
+    applies them through `dxvk::save_settings`; uninstalling DXVK leaves them.
+  - ReShade's install mode (DLL or Vulkan layer) depends on DXVK in the game's folder, which
+    `request_reshade` reads in the background with the layer's list. DXVK's Install is disabled
+    while ReShade is installed as one of DXVK's DLLs (`dxvk::reshade_dll`).
   - Mods use `mod_api`: the API chosen in Game settings, else the only one detected.
-  - **The LAA row**: under DXVK, only for 32-bit games (`game.arch == X86`, the chosen bitness
-    counts), with no settings.
-    - Its status comes from `request_laa` (in `update`, like `request_graphics`; cleared after a
-      scan, a mod job or `ModsLoaded`).
-    - `mod_job` carries a `ModKind`, so only the working row shows "Working…".
+  - **LAA**: only for 32-bit games (`game.arch == X86`, the chosen bitness counts). Its status
+    comes from `request_laa` (cleared after a scan, a mod job or `ModsLoaded`). `mod_job` carries
+    a `ModKind`, so only the working row shows "Working…".
+  - **NVIDIA overrides** (`dlss_override_view.rs`): the dialog reads the game's profile when it
+    opens (`OverridesLoaded`). When the profile no longer holds what Game Manager set
+    (`OverrideState::changed_elsewhere`, the NVIDIA app writes the same settings), a warning names
+    them and Save sets them again. To change a profile from outside in a check, run
+    `app.exe --nvidia-ops` with a plan (`[uri]::EscapeDataString` of its JSON).
