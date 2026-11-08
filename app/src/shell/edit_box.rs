@@ -8,8 +8,10 @@
 //!   centred in its frame.
 //! - **Text**: what the view says is written into the EDIT only while it has no focus, so typing
 //!   is never interrupted. Typed text reaches the app through `EN_CHANGE`.
-//! - **Keys**: a subclass passes Tab, Escape and Enter to the window (`WM_EDIT_KEY`), which moves
-//!   focus or closes what is open; an EDIT on its own would only beep.
+//! - **Keys**: a subclass passes Tab, Escape, Enter and Ctrl+F to the window (`WM_EDIT_KEY`); an
+//!   EDIT on its own would only beep. Tab moves focus; Enter sends the box's `on_enter`; Escape
+//!   empties a box made with `clear_on_escape` (`set_text`), else closes what is open; Ctrl+F
+//!   goes to the search box (`App::search_box`, `focus_select_all`).
 //! - **Clipping**: a child window isn't clipped by a scroll view, so an EDIT shows only while its
 //!   whole frame is visible.
 
@@ -18,12 +20,13 @@ use std::sync::OnceLock;
 use windows::Win32::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush, CreateWindowExW,
     DEFAULT_CHARSET, DEFAULT_PITCH, DWORD_PTR, DefSubclassProc, DeleteObject, DestroyWindow,
-    EC_LEFTMARGIN, EC_RIGHTMARGIN, EM_SETCUEBANNER, EM_SETMARGINS, ES_AUTOHSCROLL, EnableWindow,
-    FW_NORMAL, GetFocus, GetParent, GetWindowTextLengthW, GetWindowTextW, HDC, HFONT, HWND, LPARAM,
-    LRESULT, OUT_DEFAULT_PRECIS, PostMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOZORDER,
-    SendMessageW, SetBkColor, SetFocus, SetTextColor, SetWindowPos, SetWindowSubclass,
-    SetWindowTextW, ShowWindow, UINT, UINT_PTR, VK_ESCAPE, VK_RETURN, VK_TAB, WM_APP, WM_CHAR,
-    WM_KEYDOWN, WM_SETFONT, WPARAM, WS_CHILD, WS_CLIPSIBLINGS, WS_TABSTOP,
+    EC_LEFTMARGIN, EC_RIGHTMARGIN, EM_SETCUEBANNER, EM_SETMARGINS, EM_SETSEL, ES_AUTOHSCROLL,
+    EnableWindow, FW_NORMAL, GetFocus, GetKeyState, GetParent, GetWindowTextLengthW,
+    GetWindowTextW, HDC, HFONT, HWND, LPARAM, LRESULT, OUT_DEFAULT_PRECIS, PostMessageW, SW_HIDE,
+    SW_SHOWNA, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetBkColor, SetFocus, SetTextColor,
+    SetWindowPos, SetWindowSubclass, SetWindowTextW, ShowWindow, UINT, UINT_PTR, VK_CONTROL,
+    VK_ESCAPE, VK_RETURN, VK_TAB, WM_APP, WM_CHAR, WM_KEYDOWN, WM_SETFONT, WPARAM, WS_CHILD,
+    WS_CLIPSIBLINGS, WS_TABSTOP,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
@@ -31,8 +34,12 @@ use crate::ui::el::{El, Kind, Rect};
 use crate::ui::layout::Placed;
 use crate::ui::theme;
 
-/// Posted by an EDIT for Tab, Escape or Enter: `wparam` is the key, `lparam` the EDIT's window.
+/// Posted by an EDIT for Tab, Escape, Enter or Ctrl+F: `wparam` is the key, `lparam` the EDIT's
+/// window.
 pub const WM_EDIT_KEY: i32 = WM_APP + 3;
+
+/// The F of Ctrl+F (its virtual-key code is its letter's).
+pub const FIND_KEY: i32 = b'F' as i32;
 
 /// One text box of the frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -289,6 +296,28 @@ impl EditBoxes {
         let _ = unsafe { SetFocus(Some(edit.hwnd as HWND)) };
         true
     }
+
+    /// Gives an EDIT the keyboard focus with its text selected, so typing replaces it (Ctrl+F).
+    pub fn focus_select_all(&self, id: u64) -> bool {
+        if !self.focus(id) {
+            return false;
+        }
+        if let Some(edit) = self.edits.get(&id) {
+            // SAFETY: selecting all of our EDIT's text (0 to -1).
+            unsafe { SendMessageW(edit.hwnd as HWND, EM_SETSEL as u32, 0, -1) };
+        }
+        true
+    }
+
+    /// Writes an EDIT's text even while it has the focus (Escape emptying the search). The
+    /// EDIT's `EN_CHANGE` then reaches the window while it is busy and is dropped, so the caller
+    /// tells the app itself.
+    pub fn set_text(&self, id: u64, text: &str) {
+        if let Some(edit) = self.edits.get(&id) {
+            // SAFETY: the EDIT copies the text during the call.
+            let _ = unsafe { SetWindowTextW(edit.hwnd as HWND, &HSTRING::from(text)) };
+        }
+    }
 }
 
 impl Drop for EditBoxes {
@@ -311,7 +340,7 @@ pub fn text_of(hwnd: isize) -> String {
     String::from_utf16_lossy(&buffer[..(copied.max(0) as usize).min(length)])
 }
 
-/// The EDITs' subclass: Tab, Escape and Enter go to the window.
+/// The EDITs' subclass: Tab, Escape, Enter and Ctrl+F go to the window.
 unsafe extern "system" fn keys(
     hwnd: HWND,
     message: UINT,
@@ -321,7 +350,9 @@ unsafe extern "system" fn keys(
     _data: DWORD_PTR,
 ) -> LRESULT {
     let key = wparam as i32;
-    let ours = key == VK_TAB || key == VK_ESCAPE || key == VK_RETURN;
+    // SAFETY: a plain query of the keyboard state.
+    let control = key == FIND_KEY && unsafe { GetKeyState(VK_CONTROL) } < 0;
+    let ours = key == VK_TAB || key == VK_ESCAPE || key == VK_RETURN || control;
     if message == WM_KEYDOWN as u32 && ours {
         // SAFETY: a plain query of our EDIT's parent.
         let parent = unsafe { GetParent(hwnd) };
@@ -332,8 +363,8 @@ unsafe extern "system" fn keys(
         }
         return 0;
     }
-    // The characters of those keys would only make the EDIT beep.
-    if message == WM_CHAR as u32 && matches!(wparam, 9 | 13 | 27) {
+    // The characters of those keys (Ctrl+F's is 6) would only make the EDIT beep.
+    if message == WM_CHAR as u32 && matches!(wparam, 6 | 9 | 13 | 27) {
         return 0;
     }
     // SAFETY: the default handling for this subclassed window's message.

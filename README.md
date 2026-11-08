@@ -18,6 +18,11 @@ on the window (a shortcut brings its name, arguments and icon); those are saved 
   Favorites** (or Remove from Favorites); favorites are saved in `game-settings.json`.
 - **Library**, where the window opens: every game as a tile with its icon and name, by store,
   following the search and filter. Click a tile for the game's page, right-click it for its menu.
+- **Search** (**Ctrl+F** from anywhere): case, accents, ™ and ® and punctuation don't matter, and
+  the words can come in any order ("cry far 3"). It also finds a name typed without spaces
+  ("halflife"), by its initials ("gta", "tw3"), and by its program's file name ("ffxv").
+  - While searching, every store shows open and a line says how many games match.
+  - **Enter** opens the first match; **Escape** or ✕ clears the search.
 - **The title bar** has **Rescan** (⟳), which looks for games again.
 - **A game's page**: its icon, name and install folder, with chips for its store, bitness and
   graphics APIs; **Play** (and the store's other launches), **Folder**, **PCGamingWiki**, and

@@ -3,7 +3,7 @@
 //!
 //! - **Which games**: the sidebar's search and filter (`library::filter`), grouped by store in the
 //!   sidebar's order. A store folded in the sidebar is folded here too: both headers send
-//!   `ToggleStore`.
+//!   `ToggleStore`. While searching every store shows open, and the headers can't fold.
 //! - **A tile**: the game's icon and its name, with a gold star for a favorite. A click opens the
 //!   game's page; a right-click its menu, as in the sidebar. Store artwork (covers) comes later,
 //!   as its own change.
@@ -69,12 +69,15 @@ impl GameManager {
             if games.is_empty() {
                 continue;
             }
-            let folded = self.folded.contains(&store);
+            // A search shows every store open, as in the sidebar.
+            let searching = !self.query.trim().is_empty();
+            let folded = !searching && self.folded.contains(&store);
             rows.push(crate::sidebar::store_header(
                 "library-store",
                 store,
                 games.len(),
                 folded,
+                !searching,
             ));
             if folded {
                 continue;

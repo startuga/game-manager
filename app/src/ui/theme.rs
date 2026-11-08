@@ -129,6 +129,7 @@ pub const TOOLTIP_DELAY_MS: u32 = 600;
 pub mod glyph {
     pub const GAME: &str = "\u{E7FC}";
     pub const ADD: &str = "\u{E710}";
+    pub const SEARCH: &str = "\u{E721}";
     pub const REFRESH: &str = "\u{E72C}";
     pub const FOLDER: &str = "\u{E8B7}";
     pub const SETTINGS: &str = "\u{E713}";

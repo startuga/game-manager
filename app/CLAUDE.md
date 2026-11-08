@@ -55,6 +55,15 @@ in `crates/samples/`) instead of guessing.
 - **Text boxes** are real EDIT controls (`widgets::text_box`, `shell::edit_box`): IME, clipboard,
   undo and screen readers are Windows'. Their text is written only while they have no focus; a
   child window isn't clipped by a scroll view, so one shows only while its frame is fully visible.
+  - **Keys**: Enter sends a box's `on_enter`; Escape empties a box made with `.clear_on_escape()`
+    (the shell writes the EDIT with `set_text` and sends `on_change("")` itself, since the EDIT's
+    own change notice comes while the window is busy and is dropped).
+  - **Ctrl+F** focuses the box `App::search_box` names (the sidebar's `SEARCH_KEY`), its text
+    selected.
+  - **A click, or a UI Automation Invoke**, on a drawn control takes the keyboard from a text box,
+    so its text follows the app again (the search's ✕).
+- **Search** (`widgets::search_box`, `library::matches`, tested): the matching rules are in
+  `library.rs`'s `//!` doc.
 - **Layers** (menus, dialogs): a `modal` element stops hit-testing and scopes Tab to its layer.
   Escape goes to `App::escape`. A dialog's body scrolls (`app_view::dialog`), so a tall one fits
   the window.

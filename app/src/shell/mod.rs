@@ -39,13 +39,13 @@ use windows::Win32::{
     EN_CHANGE, GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON,
     HTMINBUTTON, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED, SW_SHOWNORMAL,
     SetCapture, SetCursor, SetFocus, SetProcessDpiAwarenessContext, SetTimer, ShowWindow,
-    TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_DOWN, VK_END, VK_ESCAPE,
-    VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
-    WM_ACTIVATEAPP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER,
-    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END,
+    VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+    VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_COMMAND, WM_CTLCOLOREDIT, WM_DPICHANGED, WM_DROPFILES,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+    WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SIZE, WM_TIMER, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -57,7 +57,7 @@ use crate::ui::render::{Renderer, Text};
 use crate::ui::theme;
 use crate::ui::uia::{self, Action, Uia, WM_UIA_ACTION};
 use ctx::{Ctx, Effect, WM_WAKE};
-use edit_box::{EditBoxes, WM_EDIT_KEY};
+use edit_box::{EditBoxes, FIND_KEY, WM_EDIT_KEY};
 use window::hwnd;
 
 /// Keys of the title bar's elements, which the window's hit-testing looks for.
@@ -91,6 +91,10 @@ pub trait App: 'static {
     fn escape(&self) -> Option<Self::Message>;
     /// Files dropped on the window; `None` when they aren't wanted now.
     fn drop_files(&self, paths: Vec<PathBuf>) -> Option<Self::Message>;
+    /// The key of the text box Ctrl+F goes to, if any.
+    fn search_box(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 pub struct Options {
@@ -442,9 +446,18 @@ impl<A: App> Shell<A> {
                 self.redraw |= self.ui.show_tooltip();
                 Some(0)
             }
+            WM_KEYDOWN if wparam as i32 == FIND_KEY && self.control() => {
+                self.focus_search();
+                Some(0)
+            }
             WM_KEYDOWN => {
                 let key = key_of(wparam as i32, self.shift())?;
                 self.key(key);
+                Some(0)
+            }
+            // The subclass sends Ctrl+F only with Control down.
+            WM_EDIT_KEY if wparam as i32 == FIND_KEY => {
+                self.focus_search();
                 Some(0)
             }
             WM_EDIT_KEY => {
@@ -459,7 +472,21 @@ impl<A: App> Shell<A> {
                         self.key(key);
                     }
                     Key::Escape => {
-                        let message = self.app.escape();
+                        // A search with text is emptied; otherwise Escape closes what is open.
+                        let message = match id.and_then(|id| self.empty_edit(id, lparam)) {
+                            Some(message) => Some(message),
+                            None => self.app.escape(),
+                        };
+                        self.dispatch_some(message);
+                    }
+                    Key::Enter => {
+                        let message = id.and_then(|id| {
+                            let frame = self.frame.as_ref()?;
+                            match &frame.find(id)?.el.kind {
+                                Kind::Edit { on_enter, .. } => on_enter.clone(),
+                                _ => None,
+                            }
+                        });
                         self.dispatch_some(message);
                     }
                     _ => {}
@@ -550,6 +577,44 @@ impl<A: App> Shell<A> {
         // SAFETY: a plain query of the keyboard state.
         let state = unsafe { GetKeyState(VK_SHIFT) };
         state < 0
+    }
+
+    fn control(&self) -> bool {
+        // SAFETY: a plain query of the keyboard state.
+        let state = unsafe { GetKeyState(VK_CONTROL) };
+        state < 0
+    }
+
+    /// Ctrl+F: the app's search box takes the keyboard, its text selected.
+    fn focus_search(&mut self) {
+        let Some(key) = self.app.search_box() else {
+            return;
+        };
+        let id = key_id(key);
+        if self.edits.focus_select_all(id) {
+            self.ui.focus = Some(id);
+            self.ui.focus_visible = false;
+        }
+    }
+
+    /// Escape in a text box made with `clear_on_escape` that has text: empties the EDIT and
+    /// returns its `on_change("")` (the EDIT's own change notice comes while the window is busy,
+    /// and is dropped). `None` for any other box.
+    fn empty_edit(&self, id: u64, edit: isize) -> Option<A::Message> {
+        let frame = self.frame.as_ref()?;
+        let Kind::Edit {
+            on_change,
+            clear_on_escape: true,
+            ..
+        } = &frame.find(id)?.el.kind
+        else {
+            return None;
+        };
+        if edit_box::text_of(edit).is_empty() {
+            return None;
+        }
+        self.edits.set_text(id, "");
+        Some(on_change(String::new()))
     }
 
     /// Asks for `WM_MOUSELEAVE` (or `WM_NCMOUSELEAVE` over the caption buttons).
@@ -667,6 +732,10 @@ impl<A: App> Shell<A> {
         match action {
             Action::Invoke => {
                 let message = hit.el.enabled.then(|| hit.el.on_click.clone()).flatten();
+                // Like a click, an invoked control takes the keyboard from a text box, so the
+                // box's text follows the app again (the search's ✕).
+                // SAFETY: focusing our own window.
+                let _ = unsafe { SetFocus(Some(hwnd(self.hwnd))) };
                 self.dispatch_some(message);
             }
             // Like the keyboard, these scroll the element into view first.

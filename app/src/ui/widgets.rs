@@ -112,6 +112,51 @@ pub fn text_box<M>(
         .name(name)
 }
 
+/// The search box: a magnifier, the EDIT, and a ✕ that sends `on_clear` while there is text, in
+/// one input frame. Escape empties it (`clear_on_escape`); Enter sends `on_enter`.
+pub fn search_box<M>(
+    key: impl Into<String>,
+    value: &str,
+    placeholder: impl Into<String>,
+    on_change: impl Fn(String) -> M + 'static,
+    on_enter: M,
+    on_clear: M,
+) -> El<M> {
+    let mut parts = vec![
+        glyph(theme::glyph::SEARCH, theme::ICON_SIZE)
+            .color(theme::TEXT_TERTIARY)
+            .padding(super::el::Edges::new(10.0, 0.0, 0.0, 0.0)),
+        super::el::edit(key, value, placeholder, on_change)
+            .on_enter(on_enter)
+            .clear_on_escape()
+            .name("Search games")
+            .fill_width(),
+    ];
+    if !value.is_empty() {
+        parts.push(
+            row([glyph(theme::glyph::CLOSE, 10.0)
+                .color(theme::TEXT_SECONDARY)
+                .text_align(TextAlign::Center)
+                .fill_width()])
+            .size(24.0, 24.0)
+            .radius(theme::RADIUS_CONTROL)
+            .hover_bg(theme::SUBTLE_HOVER)
+            .pressed_bg(theme::SUBTLE_PRESSED)
+            .role(Role::Button)
+            .name("Clear the search")
+            .tooltip("Clear the search (Escape)")
+            .on_click(on_clear),
+        );
+    }
+    row(parts)
+        .pad_xy(0.0, 0.0)
+        .padding(super::el::Edges::new(0.0, 0.0, 3.0, 0.0))
+        .height(theme::CONTROL_HEIGHT)
+        .bg(theme::INPUT)
+        .stroke(theme::INPUT_STROKE, 1.0)
+        .radius(theme::RADIUS_CONTROL)
+}
+
 /// A text link: a version that opens its download page, a web page.
 pub fn link<M>(label: impl Into<String>, message: M) -> El<M> {
     row([text(label).color(theme::BLUE)])

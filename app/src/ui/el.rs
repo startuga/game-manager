@@ -198,11 +198,14 @@ pub enum Kind<M> {
     },
     /// A progress ring, turning while it is shown.
     Spinner,
-    /// A Win32 EDIT control placed over the element (`shell::edit_box`).
+    /// A Win32 EDIT control placed over the element (`shell::edit_box`). Enter sends `on_enter`;
+    /// with `clear_on_escape`, Escape empties a box that has text (the search).
     Edit {
         text: String,
         placeholder: String,
         on_change: OnValue<M, String>,
+        on_enter: Option<M>,
+        clear_on_escape: bool,
     },
     /// A vertical scroll view of its one child.
     Scroll,
@@ -604,6 +607,8 @@ pub fn edit<M>(
         text: text.into(),
         placeholder: placeholder.into(),
         on_change: Rc::new(on_change),
+        on_enter: None,
+        clear_on_escape: false,
     })
     .key(key)
     .height(theme::CONTROL_HEIGHT)
@@ -659,6 +664,25 @@ pub fn slider<M>(
 }
 
 impl<M> El<M> {
+    /// A text box's Enter.
+    pub fn on_enter(mut self, message: M) -> Self {
+        if let Kind::Edit { on_enter, .. } = &mut self.kind {
+            *on_enter = Some(message);
+        }
+        self
+    }
+
+    /// Escape empties the text box while it has text (else Escape closes what is open).
+    pub fn clear_on_escape(mut self) -> Self {
+        if let Kind::Edit {
+            clear_on_escape, ..
+        } = &mut self.kind
+        {
+            *clear_on_escape = true;
+        }
+        self
+    }
+
     /// Takes a share of the space left in a row: `weight` against the others' (1 each).
     pub fn fill_width_by(mut self, weight: f32) -> Self {
         self.width = Size::Fill(weight);

@@ -115,6 +115,10 @@ enum Message {
     /// Decoded icons keyed by game id.
     IconsLoaded(Vec<(String, Arc<Picture>)>),
     Search(String),
+    /// Enter in the search: opens the first game shown.
+    SearchSubmit,
+    /// The search's ✕: empties it.
+    ClearSearch,
     /// The list filter picked; `None` keeps the current one.
     Filter(Option<LibraryFilter>),
     /// A store's group in the sidebar was folded or unfolded.
@@ -441,6 +445,11 @@ impl App for GameManager {
     fn drop_files(&self, paths: Vec<PathBuf>) -> Option<Message> {
         self.can_add_game().then_some(Message::Dropped(paths))
     }
+
+    /// Ctrl+F goes to the sidebar's search.
+    fn search_box(&self) -> Option<&'static str> {
+        Some(sidebar::SEARCH_KEY)
+    }
 }
 
 impl GameManager {
@@ -695,6 +704,13 @@ impl GameManager {
             }
             Message::IconsLoaded(icons) => self.icons.extend(icons),
             Message::Search(query) => self.query = query,
+            Message::ClearSearch => self.query.clear(),
+            Message::SearchSubmit => {
+                if let Some(index) = library::first_shown(&self.games, &self.query, self.filter) {
+                    let id = self.games[index].id.clone();
+                    self.select(id, context);
+                }
+            }
             Message::Filter(Some(filter)) => self.filter = filter,
             Message::Filter(None) => {}
             Message::ToggleStore(store) => {
