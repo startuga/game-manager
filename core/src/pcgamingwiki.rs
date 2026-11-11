@@ -12,7 +12,7 @@
 //!   bot-password login since August 2026, hence the wikitext.
 
 use crate::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
-use crate::text::percent_encode;
+use crate::text::{percent_encode, search_name};
 use crate::{Error, Game, Result, Store, http};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -183,14 +183,6 @@ pub fn page_url(game: &Game) -> String {
 fn store_number(id: &str) -> Option<&str> {
     let (_, number) = id.split_once(':')?;
     (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some(number)
-}
-
-/// The name as the wiki titles it: stores add ™ ® ©, which no title has.
-fn search_name(name: &str) -> String {
-    name.replace(['™', '®', '©'], "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]

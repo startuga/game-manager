@@ -166,6 +166,9 @@ pub mod glyph {
     pub const PIN: &str = "\u{E718}";
     pub const UNPIN: &str = "\u{E77A}";
     pub const RENAME: &str = "\u{E8AC}";
+    /// Choose cover… and Reset cover.
+    pub const PICTURE: &str = "\u{E8B9}";
+    pub const UNDO: &str = "\u{E7A7}";
     pub const HIDE: &str = "\u{ED1A}";
     pub const VIEW: &str = "\u{E890}";
     pub const REMOVE: &str = "\u{E738}";

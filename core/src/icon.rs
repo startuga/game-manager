@@ -234,7 +234,7 @@ fn extract(icon: &IconRef, size: u32) -> Option<OwnedIcon> {
 }
 
 /// Reads a whole memory stream from the beginning.
-fn read_all(stream: &IStream) -> Result<Vec<u8>> {
+pub(crate) fn read_all(stream: &IStream) -> Result<Vec<u8>> {
     let too_large = |_| windows::core::Error::empty();
     let mut stat = STATSTG::default();
     // SAFETY: `stat` is a valid out-pointer; with STATFLAG_NONAME, Stat allocates no name that

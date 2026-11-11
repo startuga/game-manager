@@ -124,6 +124,9 @@ pub enum Error {
          found automatically."
     )]
     ShortcutNotAProgram { name: String },
+    /// A file chosen as a game's cover is not a picture Windows can read.
+    #[error("{} is not a picture Windows can open.", .0.display())]
+    NotAPicture(PathBuf),
 }
 
 impl Error {

@@ -19,6 +19,7 @@
 #![windows_subsystem = "windows"]
 
 mod app_view;
+mod covers;
 mod dlss_override_view;
 mod edit;
 mod game_menu;
@@ -35,6 +36,7 @@ mod ui;
 mod upscaler_versions;
 mod upscalers_view;
 
+use covers::{CoverMessage, CoverState};
 use edit::{EditChoice, EditDraft, EditField};
 use game_menu::{MenuMessage, MenuState};
 use gm_core::custom::NewGame;
@@ -128,6 +130,8 @@ enum Message {
     ToggleStore(Store),
     /// The game menu and its Rename and Uninstall dialogs (`game_menu.rs`).
     Menu(MenuMessage),
+    /// Cover art on the Library's tiles (`covers.rs`).
+    Cover(CoverMessage),
     /// The title bar's minimize, maximize and close.
     Window(WindowCommand),
     /// A sidebar page.
@@ -299,6 +303,8 @@ struct GameManager {
     launching: Option<String>,
     /// A game's menu while it is open, and its Rename and Uninstall dialogs.
     menu: MenuState,
+    /// The covers on the Library's tiles, by game id.
+    covers: CoverState,
     /// Graphics APIs by game id, once looked up (`None`: none found).
     graphics: HashMap<String, Option<GraphicsInfo>>,
     /// Games whose graphics APIs are being looked up.
@@ -438,6 +444,11 @@ impl App for GameManager {
     fn search_box(&self) -> Option<&'static str> {
         Some(sidebar::SEARCH_KEY)
     }
+
+    /// Covers are decoded at the window's pixel size: made again for the new scaling.
+    fn scale_changed(&self, _scale: f32) -> Option<Message> {
+        Some(CoverMessage::ScaleChanged.into())
+    }
 }
 
 impl GameManager {
@@ -455,6 +466,7 @@ impl GameManager {
             sidebar_width: ui::theme::SIDEBAR_WIDTH,
             launching: None,
             menu: MenuState::default(),
+            covers: CoverState::default(),
             graphics: HashMap::new(),
             graphics_pending: HashSet::new(),
             scanning: false,
@@ -663,6 +675,8 @@ impl GameManager {
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
                 Self::load_icons(self.games.clone(), true, context);
+                self.drop_covers_of_missing_games();
+                self.load_covers(true, true, context);
             }
             Message::SnapshotLoaded(games) => {
                 // Only before the first scan has listed anything; the scan then replaces it.
@@ -670,6 +684,8 @@ impl GameManager {
                     self.games = games;
                     self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                     Self::load_icons(self.games.clone(), false, context);
+                    // What is on this PC already; the scan asks the network for the rest.
+                    self.load_covers(false, false, context);
                 }
             }
             Message::IconsLoaded(icons) => self.icons.extend(icons),
@@ -689,6 +705,7 @@ impl GameManager {
                 }
             }
             Message::Menu(message) => self.handle_menu(message, context),
+            Message::Cover(message) => self.handle_cover(message, context),
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),
             Message::Tab(tab) => {
@@ -1144,19 +1161,21 @@ impl GameManager {
                 Self::load_icons(vec![game.clone()], false, context);
                 self.games.push(game);
                 gm_core::sort_games(&mut self.games);
+                self.load_covers(true, false, context);
             }
             Message::RemoveGame(id) => self.removing = Some(id),
             Message::RemoveClosed(result) => {
                 if let Some(id) = self.removing.take()
                     && result == DialogResult::Primary
                 {
-                    // A pinned one leaves quick access too.
-                    let pinned = self
-                        .games
-                        .iter()
-                        .any(|game| game.id == id && game.pinned.is_some());
+                    // A pinned one leaves quick access too, and its cover goes.
+                    let game = self.games.iter().find(|game| game.id == id).cloned();
+                    let pinned = game.as_ref().is_some_and(|game| game.pinned.is_some());
                     context.spawn_background(move |_cancel| {
                         let removed = gm_core::custom::remove(&id).and_then(|()| {
+                            if let Some(game) = &game {
+                                gm_core::covers::clear_own(game)?;
+                            }
                             if pinned {
                                 gm_core::config::set_pinned(&id, false)
                             } else {
@@ -1170,6 +1189,7 @@ impl GameManager {
             Message::CustomGameRemoved(Ok(id)) => {
                 self.games.retain(|game| game.id != id);
                 self.icons.remove(&id);
+                self.drop_covers_of_missing_games();
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.drop_empty_store_filter();
             }

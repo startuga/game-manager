@@ -3,7 +3,9 @@
 //!
 //! - **Background work** (`spawn_background`) runs on the Windows thread pool (windows-threading).
 //!   Its `Message` goes back through a channel, and `WM_WAKE` wakes the window to read it, so
-//!   blocking work (disk, registry, network) never runs on the UI thread.
+//!   blocking work (disk, registry, network) never runs on the UI thread. `spawn_stream` is the
+//!   same for work that sends several messages.
+//! - **The window's scaling** (`scale`), for pictures made at the window's own pixel size.
 //! - **Effects** (the Open dialog, minimize, maximize, close) are queued and run by the message
 //!   loop between messages, with no state borrowed: a modal dialog's own message loop then reaches
 //!   the window normally.
@@ -102,6 +104,8 @@ pub enum Effect<M> {
 
 pub struct Ctx<M> {
     hwnd: Cell<isize>,
+    /// The window's display scaling (1.0 at 96 DPI), kept current by the shell.
+    scale: Cell<f32>,
     sender: Sender<M>,
     effects: RefCell<Vec<Effect<M>>>,
 }
@@ -110,9 +114,20 @@ impl<M: Send + 'static> Ctx<M> {
     pub fn new(sender: Sender<M>) -> Self {
         Self {
             hwnd: Cell::new(0),
+            scale: Cell::new(1.0),
             sender,
             effects: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The window's display scaling: 1.0 at 96 DPI, 1.5 at 150%. Pictures made for the window
+    /// are sized with it; `App::scale_changed` says when it changes.
+    pub fn scale(&self) -> f32 {
+        self.scale.get()
+    }
+
+    pub fn set_scale(&self, scale: f32) {
+        self.scale.set(scale);
     }
 
     /// The window that background work wakes.
@@ -131,6 +146,24 @@ impl<M: Send + 'static> Ctx<M> {
             if sender.send(work(Cancel)).is_ok() {
                 wake(hwnd);
             }
+        });
+    }
+
+    /// Runs `work` on the thread pool like `spawn_background`, for work with several things to
+    /// say: every message it sends comes back to `update`, in order, as it is sent (covers
+    /// arriving one by one).
+    pub fn spawn_stream<F>(&self, work: F)
+    where
+        F: FnOnce(&dyn Fn(M)) + Send + 'static,
+    {
+        let sender = self.sender.clone();
+        let hwnd = self.hwnd.get();
+        windows_threading::submit(move || {
+            work(&|message| {
+                if sender.send(message).is_ok() {
+                    wake(hwnd);
+                }
+            });
         });
     }
 

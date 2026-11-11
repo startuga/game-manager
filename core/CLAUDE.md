@@ -20,6 +20,9 @@ holds the rules and facts that span them.
   - `uninstall.rs` (how a game is uninstalled: `route` reads the registry, `run` hands over
     through `launch`; nothing is deleted here).
   - `icon.rs` (icons as PNG via the Shell + WIC, cached).
+  - `covers.rs` (cover art: the user's own, the cache, the stores' files on this PC, the stores'
+    servers, the Steam store by name; 2:3 JPEG thumbnails made with WIC). Each store's facts are
+    in its own module (`steam::cached_cover`, `epic::cover_url`, `gog::cached_cover`, …).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
   - `http.rs` (WinHTTP `get`/`download`).
 - **Mods**:
@@ -61,7 +64,7 @@ holds the rules and facts that span them.
   - `text.rs`.
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v` (with each game's uninstall route), `--graphics`,
-  `--icons <dir>`, `--nvidia`, `--pc`.
+  `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source, read only).
 
 ## Scanning
 - `scan_all` runs these steps in order:
@@ -82,8 +85,8 @@ holds the rules and facts that span them.
 
 ## Files
 - `json_file::user_file` → `%APPDATA%\Game Manager`: the user's `game-settings.json`,
-  `custom-games.json`, `mods.json` and `reshade.json`, and their own shaders and add-ons in
-  `reshade\custom`.
+  `custom-games.json`, `mods.json` and `reshade.json`, their own shaders and add-ons in
+  `reshade\custom`, and their own covers in `covers` (`<game id>.jpg`, `:` as `_`).
   - They are loaded before saving, so an unreadable file is never overwritten, and unknown fields
     are kept.
 - `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete.
@@ -92,6 +95,7 @@ holds the rules and facts that span them.
 - **Format numbers**: bump the one whose layout changes.
   - `snapshot::VERSION`: the serde form of `Game`.
   - `icon::CACHE_FORMAT`.
+  - `covers::CACHE_FORMAT` (how thumbnails are made).
   - `dxvk::CACHE_FORMAT`.
   - `reshade::CACHE_FORMAT`.
 
@@ -147,6 +151,28 @@ holds the rules and facts that span them.
   - Epic keeps no Uninstall entry: the app opens the launcher's library
     (`com.epicgames.launcher://library`). Xbox games go to `ms-settings:appsfeatures`.
   - On 37 games, `scan -v` found every Steam, GOG and EA route.
+- **Cover art** (`covers.rs`):
+  - **Steam's client** keeps 300 × 450 covers in `appcache\librarycache\<appid>`, as
+    `library_600x900.jpg` whatever their size, or as `library_capsule.jpg`, often in a folder
+    named after a hash. The 600 × 900 one: `IStoreBrowseService/GetItems` with
+    `include_assets` gives `asset_url_format` and `library_capsule_2x`, under
+    `shared.fastly.steamstatic.com/store_item_assets/`.
+  - **GOG Galaxy** keeps 342 × 482 WebP covers in
+    `%ProgramData%\GOG.com\Galaxy\webcache\<user>\gog\<id>\<hash>_glx_vertical_cover.webp`; WIC
+    reads them through Windows' WebP extension. Else `api.gog.com/v2/games/<id>` →
+    `_links.boxArtImage`.
+  - **The Epic launcher** keeps its catalog, not the pictures: the legacy launcher in
+    `Data\Catalog\catcache.bin` (base64 JSON), the current one in `cache\prod\catalog-cache.json`.
+    Items list a `DieselGameBoxTall` (1200 × 1600) address on `cdn1.epicgames.com`, whose server
+    resizes on `?h=600&w=450&resize=1`. Epic's GraphQL store lookup needs a browser's User-Agent:
+    not used.
+  - **Xbox**: `displaycatalog.mp.microsoft.com/v7.0/products?bigIds=<StoreId>` lists a 2:3
+    `Poster`; `?w=400&h=600` resizes it.
+  - **By name**: the Steam store's `storesearch` is loose ("Alan Wake 2" finds a Beat Saber
+    song), so only a result with the same letters counts. It found all 3 EA games and Shadow of
+    War on 37; Alan Wake 2 isn't on Steam.
+  - On 37 games: all 16 Steam and 3 GOG covers were on the PC, all 9 Epic addresses were in the
+    catalog cache, and the first start had 48 covers cached after about 20 s.
 - **Protected folders**: Epic/EA under `C:\Program Files` need administrator rights; Steam's and
   some Epic folders grant Users full control. Mod file changes there run in
   `app.exe --file-ops <ops>`, started with `runas`. The ops go on the command line, so the

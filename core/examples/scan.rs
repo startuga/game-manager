@@ -11,6 +11,8 @@
 //! holds (read only).
 //! `--pc` prints My PC instead of the games: hardware, displays with their modes and colour
 //! profiles, DDC/CI brightness and the Windows switches (read only).
+//! `--covers` prints where each game's cover comes from, or would be looked for (read only:
+//! nothing is downloaded or cached).
 
 #![allow(
     clippy::expect_used,
@@ -78,6 +80,12 @@ fn main() {
     println!("{} games", report.games.len());
     for error in &report.errors {
         eprintln!("error: {error}");
+    }
+
+    if args.iter().any(|arg| arg == "--covers") {
+        for game in &report.games {
+            println!("{:<50} {}", game.name, gm_core::covers::describe(game));
+        }
     }
 
     if nvidia {

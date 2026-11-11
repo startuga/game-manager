@@ -6,6 +6,9 @@
 //!
 //! The default Play action starts the game directly (GOG games are DRM-free). When GOG Galaxy is
 //! installed, "Play via Galaxy" is offered as an extra action for playtime tracking and cloud saves.
+//!
+//! Cover art (for `covers.rs`): GOG Galaxy's own copy in its web cache, else the box art's
+//! address from GOG's public API.
 
 use crate::{Error, Game, IconRef, Launch, LaunchOption, Result, Store};
 use serde::Deserialize;
@@ -233,6 +236,57 @@ fn galaxy_launch(client: &Path, game_id: &str, game_dir: &str) -> Launch {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Cover art (`covers.rs`)
+// ---------------------------------------------------------------------------------------------
+
+/// How GOG Galaxy names a game's vertical cover (342 × 482, WebP) in its web cache.
+const GALAXY_COVER: &str = "_glx_vertical_cover.webp";
+
+/// `%ProgramData%\GOG.com\Galaxy\webcache`, where GOG Galaxy keeps the pictures it shows.
+pub(crate) fn galaxy_webcache() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("ProgramData")?).join(r"GOG.com\Galaxy\webcache");
+    dir.is_dir().then_some(dir)
+}
+
+/// GOG Galaxy's own copy of a game's vertical cover:
+/// `<webcache>\<user id>\gog\<product id>\<hash>_glx_vertical_cover.webp`. The newest, when
+/// several users' folders hold one.
+pub(crate) fn cached_cover(webcache: &Path, product_id: &str) -> Option<PathBuf> {
+    fs::read_dir(webcache)
+        .ok()?
+        .flatten()
+        .filter_map(|user| fs::read_dir(user.path().join("gog").join(product_id)).ok())
+        .flat_map(|files| files.flatten())
+        .filter(|file| file.file_name().to_string_lossy().ends_with(GALAXY_COVER))
+        .filter_map(|file| {
+            let modified = file.metadata().ok()?.modified().ok()?;
+            Some((modified, file.path()))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+/// The address of a game's box art (JPEG, 342 × 482), asked of GOG's public API; `None` when it
+/// lists none. Blocking.
+pub(crate) fn cover_url(product_id: &str) -> Result<Option<String>> {
+    let url = format!("https://api.gog.com/v2/games/{product_id}?locale=en-US");
+    let answer = crate::http::get(&url)?;
+    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+        url: url.clone(),
+        source,
+    })?;
+    Ok(parse_cover_url(&answer))
+}
+
+/// `_links.boxArtImage.href`.
+fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
+    answer["_links"]["boxArtImage"]["href"]
+        .as_str()
+        .filter(|url| url.starts_with("https://"))
+        .map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +489,48 @@ mod tests {
         .unwrap();
         assert_eq!(game_program(&launcher_only, &dir), None);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn finds_galaxys_vertical_cover() {
+        let webcache =
+            std::env::temp_dir().join(format!("gm-core-gog-covers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&webcache);
+        let put = |file: &str| {
+            let file = webcache.join(file);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"webp").unwrap();
+            file
+        };
+        // As Galaxy lays them out: a folder per user, "common", and overlays.
+        let cover = put(r"47443227069348028\gog\1495134320\e030ace5_glx_vertical_cover.webp");
+        put(r"47443227069348028\gog\1495134320\9da841d5_glx_square_icon_v2.webp");
+        put(r"47443227069348028\gog\1207658747\d730809f_glx_bg_top_padding_7.webp");
+        put(r"common\readme.txt");
+        fs::create_dir_all(webcache.join("1207658747-overlay")).unwrap();
+        assert_eq!(cached_cover(&webcache, "1495134320"), Some(cover));
+        // Only a background, or a game Galaxy never showed.
+        assert_eq!(cached_cover(&webcache, "1207658747"), None);
+        assert_eq!(cached_cover(&webcache, "42"), None);
+        assert_eq!(cached_cover(&webcache.join("missing"), "42"), None);
+        fs::remove_dir_all(&webcache).unwrap();
+    }
+
+    #[test]
+    fn reads_the_box_art_address() {
+        // Trimmed from a real api.gog.com/v2/games answer.
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{"_links":{
+                "logo":{"href":"https://images.gog-statics.com/bdec92f3.png"},
+                "boxArtImage":{"href":"https://images.gog-statics.com/7f74b69e.jpg"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_cover_url(&answer).as_deref(),
+            Some("https://images.gog-statics.com/7f74b69e.jpg")
+        );
+        let none: serde_json::Value =
+            serde_json::from_str(r#"{"_links":{"logo":{"href":"https://x/l.png"}}}"#).unwrap();
+        assert_eq!(parse_cover_url(&none), None);
     }
 }

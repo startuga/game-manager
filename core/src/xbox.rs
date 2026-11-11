@@ -7,6 +7,9 @@
 //!
 //! Packaged games cannot be started by running their `.exe`; Windows starts them through their
 //! package identity, `shell:AppsFolder\<PackageFamilyName>!<AppId>`, as the Start menu does.
+//!
+//! Cover art (for `covers.rs`): the game's Store id names its 2:3 poster in Microsoft's store
+//! catalog.
 
 use crate::text::{child_text, read_text, xml_body};
 use crate::{Arch, Error, Game, IconRef, Launch, LaunchOption, Result, Store};
@@ -266,6 +269,44 @@ fn qualifier_size(qualifiers: &str) -> u32 {
         .unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------------------------
+// Cover art (`covers.rs`)
+// ---------------------------------------------------------------------------------------------
+
+/// The Microsoft Store id in the `MicrosoftGame.config` of a game's folder.
+pub(crate) fn store_id(dir: &Path) -> Option<String> {
+    let config = parse_game_config(&read_text(&dir.join("MicrosoftGame.config"))?)?;
+    Some(config.store_id).filter(|id| !id.is_empty())
+}
+
+/// The address of a game's 2:3 poster, asked of Microsoft's store catalog and for 400 × 600;
+/// `None` when the catalog lists none. Blocking.
+pub(crate) fn cover_url(store_id: &str) -> Result<Option<String>> {
+    let url = format!(
+        "https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds={store_id}&market=US&languages=en-us"
+    );
+    let answer = crate::http::get(&url)?;
+    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+        url: url.clone(),
+        source,
+    })?;
+    Ok(parse_cover_url(&answer))
+}
+
+/// `Products[0].LocalizedProperties[0].Images[]`: the one whose `ImagePurpose` is `Poster`. Its
+/// `Uri` has no scheme ("//store-images.s-microsoft.com/image/…").
+fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
+    let images = answer["Products"][0]["LocalizedProperties"][0]["Images"].as_array()?;
+    let uri = images
+        .iter()
+        .find(|image| image["ImagePurpose"].as_str() == Some("Poster"))
+        .and_then(|image| image["Uri"].as_str())?;
+    let address = uri.strip_prefix("https:").unwrap_or(uri);
+    address
+        .starts_with("//")
+        .then(|| format!("https:{address}?w=400&h=600&q=90"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +501,43 @@ mod tests {
         assert_eq!(qualifier_size("scale-200"), 200);
         assert_eq!(qualifier_size("targetsize-256_altform-unplated"), 256);
         assert_eq!(qualifier_size("altform-unplated"), 0);
+    }
+
+    #[test]
+    fn reads_the_store_id_of_a_games_folder() {
+        let dir =
+            std::env::temp_dir().join(format!("gm-core-xbox-store-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(store_id(&dir), None);
+        fs::write(dir.join("MicrosoftGame.config"), WOLFENSTEIN_CONFIG).unwrap();
+        assert_eq!(store_id(&dir).as_deref(), Some("9N3PVJ211XZ2"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_the_poster_address() {
+        // Trimmed from a real displaycatalog answer (Forza Horizon 5).
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{"Products":[{"LocalizedProperties":[{"ProductTitle":"Forza Horizon 5","Images":[
+                {"ImagePurpose":"BoxArt","Width":2160,"Height":2160,
+                 "Uri":"//store-images.s-microsoft.com/image/apps.18975.box"},
+                {"ImagePurpose":"Poster","Width":1440,"Height":2160,
+                 "Uri":"//store-images.s-microsoft.com/image/apps.49800.poster"}]}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_cover_url(&answer).as_deref(),
+            Some("https://store-images.s-microsoft.com/image/apps.49800.poster?w=400&h=600&q=90")
+        );
+        // No poster, or an id the catalog does not know.
+        let square: serde_json::Value = serde_json::from_str(
+            r#"{"Products":[{"LocalizedProperties":[{"Images":[
+                {"ImagePurpose":"BoxArt","Uri":"//store-images.s-microsoft.com/image/box"}]}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_cover_url(&square), None);
+        let unknown: serde_json::Value = serde_json::from_str(r#"{"Products":[]}"#).unwrap();
+        assert_eq!(parse_cover_url(&unknown), None);
     }
 }

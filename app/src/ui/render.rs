@@ -571,6 +571,21 @@ impl Painter<'_> {
                 self.element(child, child_placed, ui);
             }
         }
+        // Over the children: a cover tile's picture would hide a hover fill.
+        if let Some(tint) = el.hover_overlay.filter(|_| el.enabled) {
+            let amount = if pressed {
+                1.6
+            } else {
+                ui.hover_amount(placed.id, self.now)
+            };
+            if amount > 0.0 && amount < 1.0 {
+                self.animating = true;
+            }
+            if amount > 0.0 {
+                let tint = ColorF::new(tint.r, tint.g, tint.b, (tint.a * amount).min(1.0));
+                self.fill_rounded(rect, el.radius, tint);
+            }
+        }
         if ui.focus_visible && ui.focus == Some(placed.id) {
             let ring = rect.inset(Edges::all(-2.0));
             self.stroke_rounded(ring, el.radius + 2.0, theme::TEXT, 2.0);

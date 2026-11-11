@@ -6,9 +6,10 @@
 //!
 //! - **What it holds**: a header with the game's
 //!   icon, name and store; Pin to quick access (or Unpin), Play and its alternative launches
-//!   ("Skip launcher"); Open folder, PCGamingWiki; Rename…, Hide from the list (or Show in the
-//!   list); Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups
-//!   are split by lines, and the two destructive items are red.
+//!   ("Skip launcher"); Open folder, PCGamingWiki; Rename…, Choose cover… (and Reset cover for a
+//!   game with the user's own, `covers.rs`), Hide from the list (or Show in the list);
+//!   Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups are
+//!   split by lines, and the two destructive items are red.
 //! - **Its size** is worked out from its rows, so it flips up or left to stay in the window.
 //! - **Keys**: ↑↓ go round its items (`Role::MenuItem`), Enter picks one.
 //! - **Pin to quick access**: pinned games come first in the sidebar and on Library, in the order
@@ -28,6 +29,7 @@ use gm_core::Store;
 use gm_core::uninstall::Route;
 
 use crate::app_view::dialog;
+use crate::covers::CoverMessage;
 use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{Align, Edges, El, Role, col, glyph, layers, row, text};
@@ -55,6 +57,9 @@ pub(crate) enum MenuAction {
     Folder,
     Wiki,
     Rename,
+    /// A picture of the user's as the game's cover (`covers.rs`), or back to the store's.
+    ChooseCover,
+    ResetCover,
     /// Hides it from the list, or shows it again.
     Hide,
     Uninstall,
@@ -281,6 +286,20 @@ impl GameManager {
             format!("Rename {}", game.name),
             MenuAction::Rename,
         );
+        rows.item(
+            g::PICTURE,
+            "Choose cover…",
+            format!("Choose a cover for {}", game.name),
+            MenuAction::ChooseCover,
+        );
+        if self.covers.own.contains(&game.id) {
+            rows.item(
+                g::UNDO,
+                "Reset cover",
+                format!("Reset {}'s cover", game.name),
+                MenuAction::ResetCover,
+            );
+        }
         let (eye, hide) = if game.hidden {
             (g::VIEW, "Show in the list")
         } else {
@@ -487,6 +506,8 @@ impl GameManager {
                 let name = game.name.clone();
                 self.menu.renaming = Some(Rename { id, name });
             }
+            MenuAction::ChooseCover => self.handle_cover(CoverMessage::Choose(id), context),
+            MenuAction::ResetCover => self.handle_cover(CoverMessage::Reset(id), context),
             MenuAction::Hide => self.toggle_hidden(id, context),
             MenuAction::Uninstall => {
                 let game = game.clone();

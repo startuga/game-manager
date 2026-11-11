@@ -268,6 +268,9 @@ pub struct El<M> {
     pub fill: Option<ColorF>,
     pub hover_fill: Option<ColorF>,
     pub pressed_fill: Option<ColorF>,
+    /// A tint drawn over the children while the pointer is on the element (a cover tile, whose
+    /// picture would hide a hover fill). It fades like a hover fill, and is stronger pressed.
+    pub hover_overlay: Option<ColorF>,
     pub stroke: Option<(ColorF, f32)>,
     pub radius: f32,
     pub opacity: f32,
@@ -314,6 +317,7 @@ impl<M> El<M> {
             justify: Align::Start,
             fill: None,
             hover_fill: None,
+            hover_overlay: None,
             pressed_fill: None,
             stroke: None,
             radius: 0.0,
@@ -417,6 +421,10 @@ impl<M> El<M> {
     }
     pub fn pressed_bg(mut self, color: ColorF) -> Self {
         self.pressed_fill = Some(color);
+        self
+    }
+    pub fn hover_overlay(mut self, color: ColorF) -> Self {
+        self.hover_overlay = Some(color);
         self
     }
     pub fn stroke(mut self, color: ColorF, width: f32) -> Self {

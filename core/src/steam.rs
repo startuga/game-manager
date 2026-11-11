@@ -3,8 +3,11 @@
 //! Games come from each library's `appmanifest_<appid>.acf`. Play goes through Steam
 //! (`steam://rungameid/<appid>`), so the game's own program is read from Steam's binary app info
 //! cache, `appcache\appinfo.vdf`: the launch entry Steam would use on 64-bit Windows.
+//!
+//! Cover art (for `covers.rs`): the client's own copy in `appcache\librarycache`, the store's
+//! address of the 600 × 900 one, and the store's search by name for other stores' games.
 
-use crate::text::percent_encode;
+use crate::text::{letters, percent_encode, search_name};
 use crate::vdf::BinaryKeys;
 use crate::{Error, Game, IconRef, Launch, Result, Store, UNINSTALL_KEYS, on_disk_case, vdf};
 use std::collections::{HashMap, HashSet};
@@ -266,6 +269,107 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
         .eq_ignore_ascii_case(b.to_string_lossy().trim_end_matches('\\'))
 }
 
+// ---------------------------------------------------------------------------------------------
+// Cover art (`covers.rs`)
+// ---------------------------------------------------------------------------------------------
+
+/// The library cover's file names in Steam's cache, sharpest first: 600 × 900 (`_2x`), then the
+/// 300 × 450 one, which older apps call `library_600x900` all the same.
+const COVER_FILES: [&str; 4] = [
+    "library_600x900_2x.jpg",
+    "library_capsule_2x.jpg",
+    "library_600x900.jpg",
+    "library_capsule.jpg",
+];
+/// Where Steam's store serves an app's art from; `asset_url_format` goes after it.
+const ASSET_ROOT: &str = "https://shared.fastly.steamstatic.com/store_item_assets/";
+
+/// The portrait cover Steam's client keeps for an app, if it has one: in
+/// `<steam>\appcache\librarycache\<appid>`, or in a folder named after the file's hash in it.
+pub(crate) fn cached_cover(steam: &Path, app_id: u32) -> Option<PathBuf> {
+    let dir = steam
+        .join("appcache")
+        .join("librarycache")
+        .join(app_id.to_string());
+    let mut folders = vec![dir.clone()];
+    folders.extend(
+        fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir()),
+    );
+    COVER_FILES.iter().find_map(|name| {
+        folders
+            .iter()
+            .map(|folder| folder.join(name))
+            .find(|file| file.is_file())
+    })
+}
+
+/// The address of an app's 600 × 900 library cover (else its 300 × 450 one), asked of the store's
+/// `IStoreBrowseService/GetItems`; `None` when the store lists none. Blocking.
+pub(crate) fn cover_url(app_id: u32) -> Result<Option<String>> {
+    let input = format!(
+        r#"{{"ids":[{{"appid":{app_id}}}],"context":{{"language":"english","country_code":"US"}},"data_request":{{"include_assets":true}}}}"#
+    );
+    let url = format!(
+        "https://api.steampowered.com/IStoreBrowseService/GetItems/v1?input_json={}",
+        percent_encode(&input)
+    );
+    let answer = crate::http::get(&url)?;
+    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+        url: url.clone(),
+        source,
+    })?;
+    Ok(parse_cover_url(&answer))
+}
+
+/// `response.store_items[0].assets`: `asset_url_format` is the address with `${FILENAME}` where
+/// the file's name goes ("steam/apps/220/${FILENAME}?t=1745368545").
+fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
+    let assets = &answer["response"]["store_items"][0]["assets"];
+    let format = assets["asset_url_format"].as_str()?;
+    let file = ["library_capsule_2x", "library_capsule"]
+        .iter()
+        .find_map(|key| assets[*key].as_str().filter(|file| !file.is_empty()))?;
+    format
+        .contains("${FILENAME}")
+        .then(|| format!("{ASSET_ROOT}{}", format.replace("${FILENAME}", file)))
+}
+
+/// The app the Steam store lists under exactly this name (case, accents, ™ ® © and punctuation
+/// aside), for the cover of a game of another store. Blocking.
+pub(crate) fn find_app(name: &str) -> Result<Option<u32>> {
+    let term = search_name(name);
+    if letters(&term).len() < 2 {
+        return Ok(None);
+    }
+    let url = format!(
+        "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
+        percent_encode(&term)
+    );
+    let answer = crate::http::get(&url)?;
+    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+        url: url.clone(),
+        source,
+    })?;
+    Ok(parse_search(&answer, name))
+}
+
+/// The first app in a store search's `items` whose name has the same letters as `name`. The search
+/// is loose ("Alan Wake 2" finds a Beat Saber song), so nothing else is taken.
+fn parse_search(answer: &serde_json::Value, name: &str) -> Option<u32> {
+    let wanted = letters(name);
+    answer["items"].as_array()?.iter().find_map(|item| {
+        let same = item["type"].as_str() == Some("app")
+            && item["name"].as_str().is_some_and(|n| letters(n) == wanted);
+        same.then(|| item["id"].as_u64())
+            .flatten()
+            .and_then(|id| u32::try_from(id).ok())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +526,101 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn finds_the_clients_cover_in_its_folder_or_a_hash_folder() {
+        let steam =
+            std::env::temp_dir().join(format!("gm-core-steam-covers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&steam);
+        let cache = steam.join("appcache").join("librarycache");
+        let put = |file: &str| {
+            let file = cache.join(file);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"jpg").unwrap();
+            file
+        };
+        // As Steam lays them out: in the app's folder, or in a folder named after a hash.
+        let plain = put(r"546560\library_600x900.jpg");
+        put(r"546560\library_hero.jpg");
+        let hashed = put(r"220\ac2f074d\library_600x900.jpg");
+        put(r"220\5925343a\library_hero.jpg");
+        let capsule = put(r"1659040\893b14fe\library_capsule.jpg");
+        put(r"1659040\logo.png");
+        assert_eq!(cached_cover(&steam, 546_560), Some(plain));
+        assert_eq!(cached_cover(&steam, 220), Some(hashed));
+        assert_eq!(cached_cover(&steam, 1_659_040), Some(capsule));
+        // The sharper one wins when Steam keeps both.
+        let sharp = put(r"220\ffff0000\library_600x900_2x.jpg");
+        assert_eq!(cached_cover(&steam, 220), Some(sharp));
+        // No portrait cover, or no folder at all.
+        put(r"7\header.jpg");
+        assert_eq!(cached_cover(&steam, 7), None);
+        assert_eq!(cached_cover(&steam, 8), None);
+        fs::remove_dir_all(&steam).unwrap();
+    }
+
+    #[test]
+    fn reads_the_stores_cover_address() {
+        // Trimmed from a real GetItems answer.
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{"response":{"store_items":[{"appid":1659040,"assets":{
+                "asset_url_format":"steam/apps/1659040/${FILENAME}?t=1794221782",
+                "header":"c62446d5/header.jpg",
+                "library_capsule":"893b14fe/library_capsule.jpg",
+                "library_capsule_2x":"893b14fe/library_capsule_2x.jpg"}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_cover_url(&answer).as_deref(),
+            Some(
+                "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1659040/893b14fe/library_capsule_2x.jpg?t=1794221782"
+            )
+        );
+        // Only the small one, then none: a tool or an app taken off the store.
+        let small: serde_json::Value = serde_json::from_str(
+            r#"{"response":{"store_items":[{"assets":{
+                "asset_url_format":"steam/apps/7/${FILENAME}","library_capsule":"library_600x900.jpg"}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_cover_url(&small).as_deref(),
+            Some(
+                "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/7/library_600x900.jpg"
+            )
+        );
+        for none in [
+            r#"{"response":{"store_items":[{"assets":{"asset_url_format":"steam/apps/7/${FILENAME}"}}]}}"#,
+            r#"{"response":{"store_items":[{"appid":7,"success":8}]}}"#,
+            r#"{"response":{}}"#,
+        ] {
+            assert_eq!(parse_cover_url(&serde_json::from_str(none).unwrap()), None);
+        }
+    }
+
+    #[test]
+    fn a_store_search_counts_only_for_the_same_name() {
+        // Trimmed from real storesearch answers.
+        let dead_space: serde_json::Value = serde_json::from_str(
+            r#"{"total":10,"items":[
+                {"type":"app","name":"Dead Space™ 3","id":1238060},
+                {"type":"app","name":"Dead Space","id":1693980},
+                {"type":"app","name":"Dead Space (2008)","id":17470}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_search(&dead_space, "Dead Space™"), Some(1_693_980));
+        assert_eq!(parse_search(&dead_space, "dead space 3"), Some(1_238_060));
+        let loose: serde_json::Value = serde_json::from_str(
+            r#"{"total":1,"items":[{"type":"app","id":3274290,
+                "name":"Beat Saber - Monstercat Mixtape 2 - Alan Walker - \"Wake Up\""}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_search(&loose, "Alan Wake 2"), None);
+        // Not an app, or nothing found.
+        let bundle: serde_json::Value =
+            serde_json::from_str(r#"{"items":[{"type":"sub","name":"Prey","id":5}]}"#).unwrap();
+        assert_eq!(parse_search(&bundle, "Prey"), None);
+        let nothing: serde_json::Value = serde_json::from_str(r#"{"total":0,"items":[]}"#).unwrap();
+        assert_eq!(parse_search(&nothing, "UltraPlus Manager"), None);
     }
 }

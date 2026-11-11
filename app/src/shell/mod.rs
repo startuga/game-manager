@@ -19,6 +19,9 @@
 //! - **Keys**: `WM_KEYDOWN` and the text boxes' `WM_EDIT_KEY` become toolkit keys; the Menu key
 //!   and Shift+F10 arrive as a keyboard `WM_CONTEXTMENU` (`Key::Menu`).
 //! - **Files dropped** on the window (`WM_DROPFILES`) go to `App::drop_files`.
+//! - **Display scaling**: `Ctx::scale` holds the window's (set before the first message, and at
+//!   `WM_DPICHANGED`, which also calls `App::scale_changed`), for pictures the app makes at the
+//!   window's pixel size (covers).
 //! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`).
 //! - **UI Automation**: `WM_GETOBJECT` and the actions it posts (`ui::uia`).
 //!
@@ -97,6 +100,11 @@ pub trait App: 'static {
     fn search_box(&self) -> Option<&'static str> {
         None
     }
+    /// The window's display scaling changed (another monitor, a new setting); `Ctx::scale` has
+    /// the new one already.
+    fn scale_changed(&self, _scale: f32) -> Option<Self::Message> {
+        None
+    }
 }
 
 pub struct Options {
@@ -148,6 +156,8 @@ pub fn run<A: App>(
         .create()?;
     let handle = window.hwnd() as isize;
     ctx.set_window(handle);
+    // Before any message reaches `update`: the app sizes its pictures with it.
+    ctx.set_scale(window::dpi(handle) as f32 / 96.0);
     window::setup(handle);
     // SAFETY: our window accepts files dropped from Explorer.
     unsafe { DragAcceptFiles(hwnd(handle), true) };
@@ -409,6 +419,10 @@ impl<A: App> Shell<A> {
                 self.dpi = (wparam & 0xFFFF) as u32;
                 window::dpi_changed(self.hwnd, lparam);
                 self.stale = true;
+                // Pictures made for the old pixel size are made again.
+                self.ctx.set_scale(self.scale());
+                let message = self.app.scale_changed(self.scale());
+                self.dispatch_some(message);
                 Some(0)
             }
             WM_ACTIVATEAPP => {

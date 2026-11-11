@@ -5,24 +5,29 @@
 //!   first under PINNED, in the order they were pinned; the others are grouped by store in the
 //!   sidebar's order. A store folded in the sidebar is folded here too: both headers send
 //!   `ToggleStore`. While searching every store shows open, and the headers can't fold.
-//! - **A tile**: the game's icon and its name, with a pin when it is pinned. A click opens the
-//!   game's page; a right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`).
-//!   Store artwork (covers) comes later, as its own change.
-//! - **The grid**: as many tiles a row as the page's width holds (`library::columns`); each row's
-//!   tiles are as tall as the row, so a long name doesn't make a ragged row.
+//! - **A tile**: the game's 200 × 300 cover with rounded corners (`covers.rs`), or its icon on a
+//!   card while it has none, a pin on a dark chip when it is pinned, and its name on one line
+//!   under it (whole in the tooltip). Under the pointer a light tint goes over all of it
+//!   (`hover_overlay`: the picture would hide a fill). A click opens the game's page; a
+//!   right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`).
+//! - **The grid**: as many tiles a row as the page's width holds (`library::columns`): 4 at the
+//!   window's first size, more when it is wider.
 
+use crate::covers::{COVER_HEIGHT, COVER_WIDTH};
 use crate::game_menu::MenuMessage;
 use crate::library;
 use crate::shell::WindowInfo;
-use crate::ui::el::{Align, El, TextAlign, col, glyph, layers, row, text};
+use crate::ui::el::{Align, Edges, El, col, glyph, image, layers, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{heading, hint, working};
 use crate::{GameManager, Message};
 use gm_core::{Game, Store};
 
-/// A tile's width, and the space between tiles.
-const TILE_WIDTH: f32 = 140.0;
-const TILE_GAP: f32 = 12.0;
+/// The space between tiles: 4 fit across at the window's first size.
+const TILE_GAP: f32 = 16.0;
+/// The tint over a tile under the pointer, and the chip behind a pinned tile's pin.
+const TILE_HOVER: windows_canvas::ColorF = theme::argb(0x1FFF_FFFF);
+const PIN_CHIP: windows_canvas::ColorF = theme::argb(0xC717_181C);
 
 impl GameManager {
     pub(crate) fn library_page(&self, window: &WindowInfo) -> El<Message> {
@@ -55,7 +60,7 @@ impl GameManager {
         if visible.is_empty() {
             return col([header, hint(self.filter.empty_hint(&self.query))]).gap(16.0);
         }
-        let columns = library::columns(self.page_width(window), TILE_WIDTH, TILE_GAP);
+        let columns = library::columns(self.page_width(window), COVER_WIDTH, TILE_GAP);
         let mut rows = vec![header];
         let grid = |rows: &mut Vec<El<Message>>, games: &[&Game]| {
             for line in games.chunks(columns) {
@@ -102,40 +107,40 @@ impl GameManager {
         col(rows).gap(12.0)
     }
 
-    /// A game's tile: its icon and name, and a pin when it is pinned; a click opens its page.
+    /// A game's tile: its cover (or its icon on a card until it has one), a pin on a dark chip
+    /// when it is pinned, and its name on one line under it. A click opens its page.
     fn tile(&self, game: &Game) -> El<Message> {
         let id = game.id.clone();
-        let body = col([
-            row([self.icon(game, 64.0)]).justify(Align::Center),
-            text(game.name.clone())
-                .wrap()
-                .text_align(TextAlign::Center)
-                .fill_width(),
-        ])
-        .gap(10.0)
-        .padding(crate::ui::el::Edges::new(10.0, 16.0, 10.0, 12.0));
-        let mut parts = vec![body];
+        let art = match self.covers.pictures.get(&game.id) {
+            Some(picture) => image(format!("cover:{}", game.id), picture.clone()),
+            None => row([self.icon(game, 64.0)])
+                .justify(Align::Center)
+                .bg(theme::CARD)
+                .stroke(theme::CARD_STROKE, 1.0)
+                .radius(theme::RADIUS_CARD),
+        };
+        let mut cover = vec![art.size(COVER_WIDTH, COVER_HEIGHT)];
         if game.pinned.is_some() {
-            parts.push(
-                glyph(g::PIN, 12.0)
-                    .color(theme::ACCENT)
-                    .padding(crate::ui::el::Edges::all(8.0))
-                    .halign(Align::End)
-                    .valign(Align::Start),
-            );
+            let chip = row([glyph(g::PIN, 11.0).color(theme::ACCENT)])
+                .pad(6.0)
+                .bg(PIN_CHIP)
+                .radius(6.0);
+            cover.push(col([chip]).pad(8.0).halign(Align::End).valign(Align::Start));
         }
-        layers(parts)
-            .width(TILE_WIDTH)
-            .fill_height()
-            .bg(theme::CARD)
-            .hover_bg(theme::CONTROL_HOVER)
-            .pressed_bg(theme::CONTROL_PRESSED)
-            .stroke(theme::CARD_STROKE, 1.0)
-            .radius(theme::RADIUS_CARD)
-            .role(crate::ui::el::Role::ListItem)
-            .key(format!("tile:{}", game.id))
-            .name(game.name.clone())
-            .on_click(Message::Select(Some(game.id.clone())))
-            .on_context(move |at| MenuMessage::Open(id.clone(), at).into())
+        col([
+            layers(cover).size(COVER_WIDTH, COVER_HEIGHT),
+            // One line, cut with "…"; the tooltip has it whole.
+            text(game.name.clone()).padding(Edges::new(4.0, 0.0, 4.0, 0.0)),
+        ])
+        .gap(8.0)
+        .width(COVER_WIDTH)
+        .radius(theme::RADIUS_CARD)
+        .hover_overlay(TILE_HOVER)
+        .role(crate::ui::el::Role::ListItem)
+        .key(format!("tile:{}", game.id))
+        .name(game.name.clone())
+        .tooltip(game.name.clone())
+        .on_click(Message::Select(Some(game.id.clone())))
+        .on_context(move |at| MenuMessage::Open(id.clone(), at).into())
     }
 }

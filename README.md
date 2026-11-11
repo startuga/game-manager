@@ -16,8 +16,17 @@ on the window (a shortcut brings its name, arguments and icon); those are saved 
   hidden), **My PC** and **Library**, then the pinned games under **Pinned**, then the others by
   store (click a store to fold it), and **Add a game** at the bottom. Drag its edge to make it
   wider or narrower.
-- **Library**, where the window opens: every game as a tile with its icon and name, the pinned
+- **Library**, where the window opens: every game as a tile with its cover and name, the pinned
   ones first, then by store, following the search and filter. Click a tile for the game's page.
+  - **Covers** come from what the stores already keep on your PC (Steam's library cache, GOG
+    Galaxy's), else from the store's own server by the game's id (Steam, the Epic Games
+    Launcher's catalog, GOG, Microsoft's store for Xbox games), else from the Steam store under
+    the same name (EA games and games added by hand). A game with none shows its icon.
+  - Covers are kept in `%LOCALAPPDATA%\Game Manager\cache\covers`, so the next start asks the
+    network for nothing. A game with no cover anywhere is asked about again a week later.
+  - **Choose cover…** in a game's menu takes any picture of yours (cropped to the tile's 2:3
+    around its middle), kept in `%APPDATA%\Game Manager\covers`; **Reset cover** goes back to
+    the store's.
 - **A game's menu**: right-click a game in the sidebar or on Library, or press the **Menu** key or
   **Shift+F10** on it. The page you are on stays put. **↑↓** move, **Enter** picks, **Escape**
   closes.
@@ -25,9 +34,9 @@ on the window (a shortcut brings its name, arguments and icon); those are saved 
     Library, in the order you pinned them. Favorites from earlier versions became pins.
   - **Play**, and the store's other ways to start it ("Skip launcher").
   - **Open folder**, **PCGamingWiki**.
-  - **Rename…** (leave it empty for the store's name), **Hide from the list** (the Hidden filter
-    shows it again, with **Show in the list**). These and the pins are saved in
-    `game-settings.json`.
+  - **Rename…** (leave it empty for the store's name), **Choose cover…** (and **Reset cover**),
+    **Hide from the list** (the Hidden filter shows it again, with **Show in the list**). The
+    names, pins and hidden games are saved in `game-settings.json`.
   - **Uninstall…** hands the game to Steam, to its own uninstaller (GOG, the EA app, others with
     a Windows Uninstall entry), or to the Epic Games Launcher, GOG Galaxy or Windows' Installed
     apps to uninstall it there. They ask before anything is removed. Game Manager deletes

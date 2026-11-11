@@ -9,6 +9,9 @@
 //!
 //! Both identify a game by the same app name (`artifactId` / `AppName`), so a game migrated
 //! from the legacy launcher is only listed once.
+//!
+//! Cover art (for `covers.rs`): both launchers cache the store's catalog, whose items list a tall
+//! cover's address (`cover_url`).
 
 use crate::{Error, Game, IconRef, Launch, Result, Store};
 use serde::Deserialize;
@@ -268,6 +271,97 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
     })
 }
 
+// ---------------------------------------------------------------------------------------------
+// Cover art (`covers.rs`)
+// ---------------------------------------------------------------------------------------------
+
+/// The address of the tall cover (`DieselGameBoxTall`, 1200 × 1600) the launcher's catalog cache
+/// lists for a game, asked for at 450 × 600. The launcher keeps the catalog on disk, not the
+/// pictures. Both launchers hold the same catalog items:
+/// - the current one in `cache\prod\catalog-cache.json`, by catalog item id;
+/// - the legacy one in `Data\Catalog\catcache.bin`, a base64-encoded JSON array.
+pub(crate) fn cover_url(game: &Game) -> Option<String> {
+    let app_name = game.id.strip_prefix("epic:")?;
+    let item_id = item_id(&game.launch);
+    let current = eglv2_dir()
+        .and_then(|dir| fs::read_to_string(dir.join(r"cache\prod\catalog-cache.json")).ok())
+        .and_then(|text| catalog_cover(&text, item_id, app_name));
+    let url = current.or_else(|| {
+        let catalog = legacy_manifests_dir()?
+            .parent()?
+            .join(r"Catalog\catcache.bin");
+        legacy_catalog_cover(&fs::read(catalog).ok()?, item_id, app_name)
+    })?;
+    // Spaces are part of some names; the size goes on as a query the image server honours.
+    let url = url.replace(' ', "%20");
+    Some(if url.contains('?') {
+        url
+    } else {
+        format!("{url}?h=600&w=450&resize=1")
+    })
+}
+
+/// The catalog item id in the game's own launch link (`…apps/<namespace>%3A<item>%3A<app>?…`).
+fn item_id(launch: &Launch) -> Option<&str> {
+    let Launch::Uri(uri) = launch else {
+        return None;
+    };
+    let ids = uri
+        .strip_prefix("com.epicgames.launcher://apps/")?
+        .split('?')
+        .next()?;
+    ids.split("%3A").nth(1).filter(|id| !id.is_empty())
+}
+
+/// `catalog-cache.json`: `items.<item id>.item` is a catalog item.
+fn catalog_cover(text: &str, item_id: Option<&str>, app_name: &str) -> Option<String> {
+    let catalog: serde_json::Value = serde_json::from_str(text).ok()?;
+    let items = catalog["items"].as_object()?;
+    item_id
+        .and_then(|id| items.get(id))
+        .and_then(|entry| tall_cover(&entry["item"]))
+        .or_else(|| {
+            items
+                .values()
+                .map(|entry| &entry["item"])
+                .find(|item| releases(item, app_name))
+                .and_then(tall_cover)
+        })
+}
+
+/// `catcache.bin`: a JSON array of catalog items, base64-encoded.
+fn legacy_catalog_cover(file: &[u8], item_id: Option<&str>, app_name: &str) -> Option<String> {
+    let json = crate::text::base64_decode(file.trim_ascii())?;
+    let items: serde_json::Value = serde_json::from_slice(&json).ok()?;
+    items
+        .as_array()?
+        .iter()
+        .filter(|item| {
+            item_id.is_some_and(|id| item["id"].as_str() == Some(id)) || releases(item, app_name)
+        })
+        .find_map(tall_cover)
+}
+
+/// Whether a catalog item is released as this app (`releaseInfo[].appId`).
+fn releases(item: &serde_json::Value, app_name: &str) -> bool {
+    item["releaseInfo"].as_array().is_some_and(|releases| {
+        releases
+            .iter()
+            .any(|release| release["appId"].as_str() == Some(app_name))
+    })
+}
+
+/// A catalog item's `DieselGameBoxTall` key image.
+fn tall_cover(item: &serde_json::Value) -> Option<String> {
+    item["keyImages"]
+        .as_array()?
+        .iter()
+        .find(|image| image["type"].as_str() == Some("DieselGameBoxTall"))
+        .and_then(|image| image["url"].as_str())
+        .filter(|url| url.starts_with("https://"))
+        .map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +476,64 @@ mod tests {
             );
         }
         assert!(parse_legacy_manifest("{ not json").is_none());
+    }
+
+    /// The legacy launcher's `catcache.bin`: two catalog items, base64-encoded. The second is
+    /// item `c80a`, released as app `d363`, with a wide and a tall key image.
+    const CATCACHE: &str = "\
+W3siaWQiOiJkbGMxIiwidGl0bGUiOiJTaWZ1IFNvdW5kdHJhY2siLCJrZXlJbWFnZXMiOlt7InR5\r\n\
+cGUiOiJEaWVzZWxHYW1lQm94VGFsbCIsInVybCI6Imh0dHBzOi8vY2RuMS5lcGljZ2FtZXMuY29t\r\n\
+L2l0ZW0veC9kbGNfdGFsbCJ9XSwicmVsZWFzZUluZm8iOlt7ImFwcElkIjoib3RoZXIifV19LHsi\r\n\
+aWQiOiJjODBhIiwidGl0bGUiOiJTaWZ1Iiwia2V5SW1hZ2VzIjpbeyJ0eXBlIjoiRGllc2VsR2Ft\r\n\
+ZUJveCIsInVybCI6Imh0dHBzOi8vY2RuMS5lcGljZ2FtZXMuY29tL2l0ZW0veC93aWRlIn0seyJ0\r\n\
+eXBlIjoiRGllc2VsR2FtZUJveFRhbGwiLCJ1cmwiOiJodHRwczovL2NkbjEuZXBpY2dhbWVzLmNv\r\n\
+bS9pdGVtL3gvU2lmdSBUYWxsXzEyMDB4MTYwMCJ9XSwicmVsZWFzZUluZm8iOlt7ImFwcElkIjoi\r\n\
+ZDM2MyIsInBsYXRmb3JtIjpbIldpbmRvd3MiXX1dfV0=\r\n";
+    const SIFU_TALL: &str = "https://cdn1.epicgames.com/item/x/Sifu Tall_1200x1600";
+
+    #[test]
+    fn finds_the_tall_cover_in_the_legacy_catalog() {
+        let cover = |item, app| legacy_catalog_cover(CATCACHE.as_bytes(), item, app);
+        // By the app it is released as, or by the item id of the game's launch link.
+        assert_eq!(cover(None, "d363").as_deref(), Some(SIFU_TALL));
+        assert_eq!(cover(Some("c80a"), "renamed").as_deref(), Some(SIFU_TALL));
+        assert_eq!(cover(Some("zzzz"), "unknown"), None);
+        assert_eq!(legacy_catalog_cover(b"not base64 !", None, "d363"), None);
+        assert_eq!(legacy_catalog_cover(b"e30=", None, "d363"), None);
+    }
+
+    #[test]
+    fn finds_the_tall_cover_in_the_current_catalog() {
+        let catalog = r#"{"items":{
+            "df38":{"item":{"title":"RollerCoaster Tycoon 3","keyImages":[
+                {"type":"DieselGameBox","url":"https://cdn1.epicgames.com/a/wide.jpg"},
+                {"type":"DieselGameBoxTall","url":"https://cdn1.epicgames.com/a/tall.jpg"}]}},
+            "77a5":{"item":{"title":"Brothers","releaseInfo":[{"appId":"Tamarind"}],"keyImages":[
+                {"type":"DieselGameBoxTall","url":"https://cdn1.epicgames.com/b/tall.jpg"}]}},
+            "0000":{"item":{"title":"No art","keyImages":null}}}}"#;
+        let tall = |item, app| catalog_cover(catalog, item, app);
+        assert_eq!(
+            tall(Some("df38"), "281a").as_deref(),
+            Some("https://cdn1.epicgames.com/a/tall.jpg")
+        );
+        assert_eq!(
+            tall(None, "Tamarind").as_deref(),
+            Some("https://cdn1.epicgames.com/b/tall.jpg")
+        );
+        assert_eq!(tall(Some("0000"), "none"), None);
+        assert_eq!(catalog_cover("{ not json", Some("df38"), "281a"), None);
+    }
+
+    #[test]
+    fn the_launch_link_names_the_catalog_item() {
+        assert_eq!(item_id(&launch_uri("fn", "4fe7", "Fortnite")), Some("4fe7"));
+        assert_eq!(item_id(&launch_uri("fn", "", "Fortnite")), None);
+        assert_eq!(item_id(&Launch::Uri("steam://rungameid/220".into())), None);
+        let exe = Launch::Exe {
+            path: PathBuf::from(r"C:\Games\game.exe"),
+            args: String::new(),
+            working_dir: None,
+        };
+        assert_eq!(item_id(&exe), None);
     }
 }

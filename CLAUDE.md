@@ -54,6 +54,7 @@ DLSS overrides in their driver profiles.
     with its Present Method, flags and DLSS overrides (read only).
   - `-- --pc` prints My PC instead of the games: hardware, displays with their modes, colour
     profiles and brightness, and Windows' game switches (read only).
+  - `-- --covers` prints where each game's cover comes from, or would be looked for (read only).
   - To verify bitness, compare a `program` with `GetBinaryTypeW` and `dumpbin /headers`. Parse
     scan lines from the right, as names can be wider than their column.
 - **Before finishing a change**: `cargo fmt`, `cargo clippy --all-targets` (no warnings),
@@ -63,15 +64,19 @@ DLSS overrides in their driver profiles.
 - **No screen capture**: inspect the running window with UI Automation
   (`System.Windows.Automation` in PowerShell), and see it as a PNG: start it with
   `GAME_MANAGER_CAPTURE=<path>` and post `WM_APP + 9` to its window (`app/CLAUDE.md`).
-  - The Open dialog (class `#32770`) shows its Win32 controls as plain panes. Use its
-    `NativeWindowHandle`, then `GetDlgItem(dlg, 1148)` → `ComboBox` → `Edit` with `WM_SETTEXT`,
-    then `PostMessage` `BM_CLICK` to `GetDlgItem(dlg, 1)`.
+  - The Open dialog (class `#32770`) is a child of the app's window in the UI Automation tree,
+    not a top-level window. It shows its Win32 controls as plain panes. Take the
+    `NativeWindowHandle` of the last element with AutomationId `1148` (the `Edit` inside the
+    combo boxes) for `WM_SETTEXT`, then `PostMessage` `BM_CLICK` to the AutomationId `1` element
+    that has a window handle (Open; an item of the file list has the same id).
 - **No input desktop**: drag and drop and the UAC prompt can't be done (the cursor reads 0,0 and
   there is no foreground window). Ask the user to try them on a build they run. Right-clicks and
   keys can be posted to the Direct2D window (`WM_RBUTTONDOWN`/`WM_RBUTTONUP`, `WM_KEYDOWN`).
   ReShade's Vulkan layer always needs the UAC prompt, so the user tests it.
 - **Packaged session**: programs started from the Claude desktop app run inside its package.
-  - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`.
+  - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`,
+    and so are `%APPDATA%` writes (seen in PowerShell and the app, not in Git Bash, which reads
+    the real files): compare the user's files from both before calling them untouched.
   - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
   - The user's own runs are not redirected.
 - **Live downloads**: `cargo test -p gm-core live_builds -- --ignored` fetches each ReShade

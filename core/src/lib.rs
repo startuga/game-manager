@@ -3,6 +3,7 @@
 pub mod clipboard;
 mod com;
 pub mod config;
+pub mod covers;
 pub mod custom;
 pub mod ea;
 mod elevate;

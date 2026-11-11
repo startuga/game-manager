@@ -15,10 +15,11 @@ in `crates/samples/`) instead of guessing.
   - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
     dialogs).
   - `game_menu.rs` (a game's menu from a right-click or the Menu key, which leaves the page as
-    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, and the Rename and Uninstall
-    dialogs).
+    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, Choose and Reset cover, and
+    the Rename and Uninstall dialogs).
   - `sidebar.rs` (search, filter, the pages, store groups, game rows, Add a game).
-  - `library_page.rs` (the Library grid: a tile per game, by store; the window opens on it).
+  - `library_page.rs` (the Library grid: a cover tile per game, by store; the window opens on it)
+    and `covers.rs` (loading the core's covers, decoded for the tiles; Choose and Reset cover).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
     scroll position).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
@@ -40,7 +41,8 @@ in `crates/samples/`) instead of guessing.
   - `el.rs` (the element tree views return; builders), `layout.rs` (a small flexbox, tested),
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
     `render.rs` (drawing; text and bitmap caches), `uia.rs` (UI Automation), `theme.rs` (design
-    tokens), `widgets.rs` (controls), `image.rs` (WIC decoding, PNG capture).
+    tokens), `widgets.rs` (controls), `image.rs` (WIC decoding, covers at their tile's pixel
+    size with rounded corners, PNG capture).
 - `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
   frame, DPI), `edit_box.rs` (text boxes), `ctx.rs` (background work, effects), `dialogs.rs`
   (Open dialog, start error), `efficiency.rs`.
@@ -76,9 +78,13 @@ in `crates/samples/`) instead of guessing.
   menu, and a right-click sends the `on_context` of what is under it (a new menu replaces the
   open one, as Windows' menus do), else closes it. The panel is `opaque`, so clicks on its header
   and lines leave it open. Items are `Role::MenuItem` (UI Automation MenuItems with Invoke); ↑↓
-  go round the top layer's items. `Key::Menu` (the Menu key and Shift+F10, a keyboard `WM_CONTEXTMENU`) sends
-  the focused element's `on_context` at its lower-left; the menu's first item then takes focus,
-  and focus goes back once it closes (`UiState::follow_menu`).
+  go round the top layer's items. `Key::Menu` (the Menu key and Shift+F10, a keyboard
+  `WM_CONTEXTMENU`) sends the focused element's `on_context` at its lower-left; the menu's first
+  item then takes focus, and focus goes back once it closes (`UiState::follow_menu`).
+- **Pictures**: `el::image` draws a decoded picture scaled to fit, uploaded once per `key`. Covers
+  are decoded at their tile's exact pixel size for `Ctx::scale` with their corners cut into the
+  alpha (`image::decode_covers`), so they need no clipping; `App::scale_changed` makes them again.
+  A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).
 - **Sliders** (`el::slider`): a press or drag moves the thumb in `UiState::sliding` (drawn only);
@@ -89,8 +95,9 @@ in `crates/samples/`) instead of guessing.
 - **Motion**: hover fills fade over `input::HOVER_FADE`; spinners turn. A frame that moves reports
   `Drawn::animating` and the loop draws again; otherwise nothing draws at idle.
 - **Background work** goes through `Ctx::spawn_background` (the thread pool; the message comes
-  back through `WM_WAKE`). Modal dialogs (the Open dialog) and window commands are `Effect`s, run
-  by the loop with no state borrowed.
+  back through `WM_WAKE`), or `Ctx::spawn_stream` for work that sends several messages as it goes
+  (covers). Modal dialogs (the Open dialog) and window commands are `Effect`s, run by the loop
+  with no state borrowed.
 - **Re-entrancy**: the shell's state is borrowed with `try_borrow_mut`; a message sent while it
   is busy gets default handling. Never send our own window a message from inside `update` and
   expect it handled; `WM_CTLCOLOREDIT`, `WM_NCCALCSIZE` and `WM_GETMINMAXINFO` need no state.
