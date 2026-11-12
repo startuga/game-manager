@@ -235,6 +235,7 @@ fn read_manifest(manifest: &Path, steamapps: &Path) -> Option<Game> {
         edits: None,
         pinned: None,
         hidden: false,
+        installed: None,
     })
 }
 

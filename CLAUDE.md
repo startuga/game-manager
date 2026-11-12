@@ -1,7 +1,7 @@
 # Game Manager
 
-Native Windows 11 game launcher and library in Rust. It finds Steam, Epic, GOG, EA and Xbox
-games plus games added by hand, starts them, installs mods (ReShade, DXVK, LAA), swaps their
+Native Windows 11 game launcher and library in Rust. It finds Steam, Epic, GOG, EA, Ubisoft and
+Xbox games plus games added by hand, starts them, installs mods (ReShade, DXVK, LAA), swaps their
 upscaler DLLs (DLSS, Streamline, FSR, XeSS) for other versions, and sets NVIDIA's driver-level
 DLSS overrides in their driver profiles.
 

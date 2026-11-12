@@ -125,6 +125,7 @@ impl CustomGame {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 }

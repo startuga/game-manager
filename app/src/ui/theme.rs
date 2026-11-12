@@ -171,5 +171,6 @@ pub mod glyph {
     pub const UNDO: &str = "\u{E7A7}";
     pub const HIDE: &str = "\u{ED1A}";
     pub const VIEW: &str = "\u{E890}";
+    pub const FILTER: &str = "\u{E71C}";
     pub const REMOVE: &str = "\u{E738}";
 }

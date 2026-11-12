@@ -1,5 +1,6 @@
-//! The library sidebar: search and the filter, the pages (My PC, then Library: the games grid),
-//! the games grouped by store, and Add a game. ReShade's Shaders and Add-ons and the upscaler
+//! The library sidebar: search with the Sort and filters button beside it (`filter_menu.rs`), the
+//! pages (My PC, then Library: the games grid), the games in the view's sections
+//! (`library::sections`: pinned, then by store or in one list), and Add a game. ReShade's Shaders and Add-ons and the upscaler
 //! versions are in the game page's tabs. The selected game's row is highlighted while its page
 //! shows.
 //!
@@ -18,8 +19,8 @@
 use gm_core::{Game, Store};
 
 use crate::game_menu::MenuMessage;
-use crate::library::{self, LibraryFilter};
-use crate::ui::el::{El, Role, TextAlign, col, dropdown, glyph, image, row, scroll, text};
+use crate::library::{self, Section, SectionKind};
+use crate::ui::el::{El, Role, TextAlign, col, glyph, image, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{divider, hint, nav_item, search_box, subtle_button, working};
 use crate::{GameManager, Message, Page};
@@ -37,15 +38,8 @@ impl GameManager {
             Message::SearchSubmit,
             Message::ClearSearch,
         );
+        let search = row([search.fill_width(), self.filter_button()]).gap(6.0);
         let searching = !self.query.trim().is_empty();
-        let options = library::filter_options(&self.games);
-        let filters: Vec<LibraryFilter> = options.iter().map(|(filter, _)| *filter).collect();
-        let index = filters.iter().position(|filter| *filter == self.filter);
-        let labels = options.into_iter().map(|(_, label)| label).collect();
-        let filter = dropdown("filter", labels, index, move |i| {
-            Message::Filter(filters.get(i).copied())
-        })
-        .name("Filter");
         let pages = col([
             nav_item(
                 g::PC,
@@ -67,9 +61,9 @@ impl GameManager {
             .on_click(Message::AddGame);
         let mut items = vec![search];
         if searching {
-            // How many the search and the filter leave, while searching.
-            let shown = library::filter(&self.games, &self.query, self.filter).len();
-            let total = library::total(&self.games, self.filter);
+            // How many the search and the filters leave, while searching.
+            let shown = self.shown_games().len();
+            let total = library::total(&self.games, &self.view);
             items.push(
                 text(match shown {
                     0 => "No game matches".to_owned(),
@@ -81,7 +75,6 @@ impl GameManager {
             );
         }
         items.extend([
-            filter,
             pages,
             divider(),
             self.game_list().fill_height(),
@@ -105,41 +98,41 @@ impl GameManager {
             }])
             .pad(8.0);
         }
-        let visible = library::filter(&self.games, &self.query, self.filter);
-        if visible.is_empty() {
-            return col([hint(self.filter.empty_hint(&self.query))]).pad(8.0);
+        let shown = self.shown_games();
+        if shown.is_empty() {
+            return col([hint(library::empty_hint(&self.view, &self.query))]).pad(8.0);
         }
         let mut rows = Vec::new();
-        let searching = !self.query.trim().is_empty();
-        // Quick access: the pinned games first, in the order they were pinned.
-        let (pinned, rest) = library::split_pinned(&self.games, &visible);
-        if !pinned.is_empty() {
-            rows.push(pinned_header("pinned", pinned.len()));
-            rows.extend(pinned.iter().map(|&i| self.game_row(&self.games[i])));
-        }
-        for store in Store::ALL {
-            let games: Vec<&Game> = rest
-                .iter()
-                .map(|&i| &self.games[i])
-                .filter(|game| game.store == store)
-                .collect();
-            if games.is_empty() {
-                continue;
-            }
-            // A search shows every store open.
-            let folded = !searching && self.folded.contains(&store);
-            rows.push(store_header(
-                "store",
-                store,
-                games.len(),
-                folded,
-                !searching,
-            ));
+        for section in library::sections(&self.games, &shown, &self.view) {
+            let (header, folded) = self.section_header("", &section);
+            rows.push(header);
             if !folded {
-                rows.extend(games.into_iter().map(|game| self.game_row(game)));
+                rows.extend(
+                    section
+                        .games
+                        .iter()
+                        .map(|&index| self.game_row(&self.games[index])),
+                );
             }
         }
         scroll("games", col(rows).gap(1.0))
+    }
+
+    /// A section's header, and whether the section is folded: PINNED, a store's (which folds,
+    /// except while searching: a search shows every store open), or GAMES for the one list of
+    /// Group by store off. `prefix` keeps the sidebar's and the Library page's headers apart.
+    pub(crate) fn section_header(&self, prefix: &str, section: &Section) -> (El<Message>, bool) {
+        let count = section.games.len();
+        match section.kind {
+            SectionKind::Pinned => (pinned_header(&format!("{prefix}pinned"), count), false),
+            SectionKind::Store(store) => {
+                let searching = !self.query.trim().is_empty();
+                let folded = !searching && self.folded.contains(&store);
+                let key = format!("{prefix}store");
+                (store_header(&key, store, count, folded, !searching), folded)
+            }
+            SectionKind::All => (games_header(&format!("{prefix}all"), count), false),
+        }
     }
 
     fn game_row(&self, game: &Game) -> El<Message> {
@@ -212,6 +205,15 @@ pub(crate) fn pinned_header(key: &str, count: usize) -> El<Message> {
         .key(format!("{key}:pinned"))
         .role(Role::Group)
         .name("Pinned games")
+}
+
+/// The header of the one list that Group by store off shows: GAMES and how many. It doesn't
+/// fold.
+pub(crate) fn games_header(key: &str, count: usize) -> El<Message> {
+    group_header(glyph("", 9.0), "Games", count)
+        .key(format!("{key}:games"))
+        .role(Role::Group)
+        .name("Games")
 }
 
 /// A group's header: a glyph in a narrow slot (a chevron, a pin), its label in capitals and a

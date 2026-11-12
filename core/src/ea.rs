@@ -105,6 +105,7 @@ pub fn scan() -> Result<Vec<Game>> {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         });
     }
     Ok(games)

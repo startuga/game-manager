@@ -7,42 +7,242 @@
 //! spaces taken out ("halflife"), when a one-word query starts its name's initials ("gta",
 //! "tw3"; a word of digits counts whole), or when a word is in its program's file name ("ffxv").
 //!
-//! **Hidden games** (the game menu's Hide from the list) show only under the Hidden filter, which
-//! is offered while there are some; every other filter, the search and the counts leave them out.
+//! **The view** (`LibraryView`, the sidebar's Sort and filters; saved by `gm_core::config`):
+//! - **Smart filters**: the stores ticked (none ticked is every store) and Hidden games.
+//!   **Hidden games** (the game menu's Hide from the list) show only with Hidden on, which is
+//!   offered while there are some; otherwise the lists, the search and the counts leave them out.
+//! - **Smart Collections** (`in_collection`): sets that fill themselves, one at most. Picking one
+//!   clears the filters, and a filter turns the collection off (`pick_collection`,
+//!   `toggle_store`, `set_hidden`).
+//! - **Sort**: by name either way, or the most recently installed first (`Game::installed`; a
+//!   game without a date comes last), with the games under their store or in one list.
 //!
-//! **Pinned games** (the game menu's Pin to quick access) come first,
-//! in a section of their own, in the order they were pinned (`split_pinned`); their store's group
-//! no longer lists them.
+//! **Sections** (`sections`): what the sidebar and the Library page list, in order. **Pinned
+//! games** (the game menu's Pin to quick access) come first, in a section of their own, in the
+//! order they were pinned whatever the sort; their store's group no longer lists them.
 
+use gm_core::mods::ModsFile;
 use gm_core::{Game, Store};
 
-/// Which games the list shows, before the search.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LibraryFilter {
-    #[default]
-    All,
-    Store(Store),
-    /// Only the games hidden from the list (the game menu's Hide from the list); every other
-    /// filter, and so the search, leaves them out.
-    Hidden,
+pub use gm_core::config::{Collection, LibraryView, Sort};
+
+/// How long a game counts as recently installed (the collection): 30 days.
+const RECENT: u64 = 30 * 24 * 60 * 60;
+
+/// What a view needs to know beyond the games: their mods, and the time.
+#[derive(Clone, Copy)]
+pub struct Facts<'a> {
+    pub mods: &'a ModsFile,
+    /// Now, in seconds since 1970.
+    pub now: u64,
 }
 
-impl LibraryFilter {
-    pub fn matches(self, game: &Game) -> bool {
-        match self {
-            LibraryFilter::Hidden => game.hidden,
-            _ if game.hidden => false,
-            LibraryFilter::All => true,
-            LibraryFilter::Store(store) => game.store == store,
-        }
-    }
+/// Now, in seconds since 1970, for `Facts`.
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
 
-    /// The hint where no game shows.
-    pub fn empty_hint(self, query: &str) -> &'static str {
-        match self {
-            _ if !query.trim().is_empty() => "No games match the search.",
-            LibraryFilter::Hidden => "No hidden games.",
-            _ => "No games to show.",
+/// Whether the view's filters and collection show the game, before the search.
+pub fn in_view(game: &Game, view: &LibraryView, facts: Facts) -> bool {
+    game.hidden == view.hidden
+        && (view.stores.is_empty() || view.stores.contains(&game.store))
+        && view
+            .collection
+            .is_none_or(|collection| in_collection(game, collection, facts))
+}
+
+/// Whether a game belongs to a Smart Collection.
+pub fn in_collection(game: &Game, collection: Collection, facts: Facts) -> bool {
+    let mods = facts.mods;
+    let reshade = || {
+        mods.reshade(&game.id)
+            .is_some_and(|state| state.installed.is_some() || state.layer.is_some())
+    };
+    let dxvk = || {
+        mods.dxvk(&game.id)
+            .is_some_and(|state| state.installed.is_some())
+    };
+    match collection {
+        Collection::Pinned => game.pinned.is_some(),
+        Collection::Modded => {
+            reshade()
+                || dxvk()
+                || mods.laa(&game.id).is_some()
+                || !mods.upscalers(&game.id).is_empty()
+                || mods.dlss_override(&game.id).is_some()
+        }
+        Collection::Reshade => reshade(),
+        Collection::Dxvk => dxvk(),
+        Collection::Bits32 => game.arch.is_some_and(|arch| arch.bits() == 32),
+        Collection::RecentlyInstalled => game
+            .installed
+            .is_some_and(|at| facts.now.saturating_sub(at) <= RECENT),
+    }
+}
+
+/// A collection's name in the flyout and on the Library page.
+pub fn collection_label(collection: Collection) -> &'static str {
+    match collection {
+        Collection::Pinned => "Pinned",
+        Collection::Modded => "Modded",
+        Collection::Reshade => "With ReShade",
+        Collection::Dxvk => "With DXVK",
+        Collection::Bits32 => "32-bit",
+        Collection::RecentlyInstalled => "Recently installed",
+    }
+}
+
+/// A sort's name in the flyout.
+pub fn sort_label(sort: Sort) -> &'static str {
+    match sort {
+        Sort::Name => "Name (A–Z)",
+        Sort::NameDescending => "Name (Z–A)",
+        Sort::RecentlyInstalled => "Recently installed",
+    }
+}
+
+/// Every sort, in the flyout's order.
+pub const SORTS: [Sort; 3] = [Sort::Name, Sort::NameDescending, Sort::RecentlyInstalled];
+
+/// Whether a filter or a collection narrows the lists (the sort doesn't).
+pub fn is_filtered(view: &LibraryView) -> bool {
+    !view.stores.is_empty() || view.hidden || view.collection.is_some()
+}
+
+/// Clear all: no filters and no collection; the sort stays.
+pub fn clear(view: &mut LibraryView) {
+    view.stores.clear();
+    view.hidden = false;
+    view.collection = None;
+}
+
+/// Ticks or unticks a store. A filter turns the collection off.
+pub fn toggle_store(view: &mut LibraryView, store: Store) {
+    match view.stores.iter().position(|ticked| *ticked == store) {
+        Some(at) => {
+            view.stores.remove(at);
+        }
+        None => view.stores.push(store),
+    }
+    view.collection = None;
+}
+
+/// Shows the hidden games, or the others again. A filter turns the collection off.
+pub fn set_hidden(view: &mut LibraryView, hidden: bool) {
+    view.hidden = hidden;
+    view.collection = None;
+}
+
+/// Picks a collection, which clears the filters; picking the one that is on turns it off.
+pub fn pick_collection(view: &mut LibraryView, collection: Collection) {
+    if view.collection == Some(collection) {
+        view.collection = None;
+    } else {
+        clear(view);
+        view.collection = Some(collection);
+    }
+}
+
+/// What narrows the lists, for the Library page's caption ("Steam, GOG", "Hidden", "Modded");
+/// `None` when nothing does.
+pub fn describe(view: &LibraryView) -> Option<String> {
+    let mut parts: Vec<&str> = Store::ALL
+        .into_iter()
+        .filter(|store| view.stores.contains(store))
+        .map(Store::name)
+        .collect();
+    let mut text = parts.join(", ");
+    parts.clear();
+    for part in [
+        view.hidden.then_some("Hidden"),
+        view.collection.map(collection_label),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !text.is_empty() {
+            text.push_str(" · ");
+        }
+        text.push_str(part);
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+/// The hint where no game shows.
+pub fn empty_hint(view: &LibraryView, query: &str) -> &'static str {
+    if !query.trim().is_empty() {
+        "No games match the search."
+    } else if view.hidden && view.stores.is_empty() {
+        "No hidden games."
+    } else if is_filtered(view) {
+        "No games match these filters."
+    } else {
+        "No games to show."
+    }
+}
+
+/// A run of games in the lists, under one header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Section {
+    pub kind: SectionKind,
+    /// Indices into the games, in the order shown.
+    pub games: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionKind {
+    /// Quick access: in the order they were pinned.
+    Pinned,
+    Store(Store),
+    /// Every game that isn't pinned, with Group by store off.
+    All,
+}
+
+/// The shown games (indices into `games`, as `shown` gives them) as the lists show them: the
+/// pinned ones, then the others under their store or in one list, each in the view's order.
+pub fn sections(games: &[Game], shown: &[usize], view: &LibraryView) -> Vec<Section> {
+    let (pinned, rest) = split_pinned(games, shown);
+    let mut sections = Vec::new();
+    if !pinned.is_empty() {
+        sections.push(Section {
+            kind: SectionKind::Pinned,
+            games: pinned,
+        });
+    }
+    let mut add = |kind, mut section: Vec<usize>| {
+        if !section.is_empty() {
+            sort(games, &mut section, view.sort);
+            sections.push(Section {
+                kind,
+                games: section,
+            });
+        }
+    };
+    if view.group_by_store {
+        for store in Store::ALL {
+            let of_store = rest
+                .iter()
+                .copied()
+                .filter(|&index| games[index].store == store);
+            add(SectionKind::Store(store), of_store.collect());
+        }
+    } else {
+        add(SectionKind::All, rest);
+    }
+    sections
+}
+
+/// Orders games (indices in the library's own order, which is by name).
+fn sort(games: &[Game], section: &mut [usize], order: Sort) {
+    match order {
+        Sort::Name => section.sort_unstable(),
+        Sort::NameDescending => section.sort_unstable_by(|a, b| b.cmp(a)),
+        // The newest first; a game without a date after those with one; then by name.
+        Sort::RecentlyInstalled => {
+            section
+                .sort_unstable_by_key(|&index| (std::cmp::Reverse(games[index].installed), index));
         }
     }
 }
@@ -84,31 +284,23 @@ pub fn set_pin(games: &mut [Game], id: &str, pin: bool) {
     }
 }
 
-/// Indices of the games matching the search text and filter, in list order.
-pub fn filter(games: &[Game], query: &str, filter: LibraryFilter) -> Vec<usize> {
+/// Indices of the games the view and the search text show, in the library's order.
+pub fn shown(games: &[Game], query: &str, view: &LibraryView, facts: Facts) -> Vec<usize> {
     let query = normalize(query);
     games
         .iter()
         .enumerate()
-        .filter(|(_, game)| filter.matches(game))
+        .filter(|(_, game)| in_view(game, view, facts))
         .filter(|(_, game)| matches(game, &query))
         .map(|(index, _)| index)
         .collect()
 }
 
-/// The first game shown for the search and filter, in the sidebar's order: the pinned games in
-/// pin order, then by store (`Store::ALL`), then the list's order.
-pub fn first_shown(games: &[Game], query: &str, filter: LibraryFilter) -> Option<usize> {
-    self::filter(games, query, filter)
-        .into_iter()
-        .min_by_key(|&index| {
-            let game = &games[index];
-            let store = Store::ALL
-                .iter()
-                .position(|store| *store == game.store)
-                .unwrap_or(usize::MAX);
-            (game.pinned.unwrap_or(usize::MAX), store, index)
-        })
+/// The first game shown for the search and view, in the lists' order (`sections`).
+pub fn first_shown(games: &[Game], query: &str, view: &LibraryView, facts: Facts) -> Option<usize> {
+    let shown = shown(games, query, view, facts);
+    let first = sections(games, &shown, view).into_iter().next()?;
+    first.games.first().copied()
 }
 
 /// Text as the search compares it: lower case, Latin accents taken off, apostrophes dropped,
@@ -199,26 +391,45 @@ pub fn matches(game: &Game, query: &str) -> bool {
     words.len() == 1 && query.chars().count() >= 2 && initials(&name).starts_with(query)
 }
 
-/// Filter entries with game counts: all games, each store that has games, then the hidden games
-/// while there are some. Hidden games count only there.
-pub fn filter_options(games: &[Game]) -> Vec<(LibraryFilter, String)> {
-    let count = |filter: LibraryFilter| games.iter().filter(|game| filter.matches(game)).count();
-    let mut options = vec![(
-        LibraryFilter::All,
-        format!("All games ({})", count(LibraryFilter::All)),
-    )];
-    for store in Store::ALL {
-        let filter = LibraryFilter::Store(store);
-        let count = count(filter);
-        if count > 0 {
-            options.push((filter, format!("{} ({count})", store.name())));
-        }
-    }
-    let hidden = count(LibraryFilter::Hidden);
-    if hidden > 0 {
-        options.push((LibraryFilter::Hidden, format!("Hidden ({hidden})")));
-    }
-    options
+/// The stores to offer as filters, with how many games each has: those with games (hidden games
+/// count only while Hidden is on), and any that is ticked.
+pub fn store_counts(games: &[Game], view: &LibraryView) -> Vec<(Store, usize)> {
+    Store::ALL
+        .into_iter()
+        .map(|store| {
+            let count = games
+                .iter()
+                .filter(|game| game.store == store && game.hidden == view.hidden)
+                .count();
+            (store, count)
+        })
+        .filter(|(store, count)| *count > 0 || view.stores.contains(store))
+        .collect()
+}
+
+/// How many games are hidden from the list.
+pub fn hidden_count(games: &[Game]) -> usize {
+    games.iter().filter(|game| game.hidden).count()
+}
+
+/// The collections to offer, with how many games each has (hidden games don't count): those
+/// with games, and the one that is on.
+pub fn collection_counts(
+    games: &[Game],
+    view: &LibraryView,
+    facts: Facts,
+) -> Vec<(Collection, usize)> {
+    Collection::ALL
+        .into_iter()
+        .map(|collection| {
+            let count = games
+                .iter()
+                .filter(|game| !game.hidden && in_collection(game, collection, facts))
+                .count();
+            (collection, count)
+        })
+        .filter(|(collection, count)| *count > 0 || view.collection == Some(*collection))
+        .collect()
 }
 
 /// "1 game", "35 games".
@@ -230,28 +441,39 @@ pub fn games_label(count: usize) -> String {
     }
 }
 
-/// How many games the filter's list counts against ("3 of 35 games"): the hidden ones under
-/// Hidden, else all the others.
-pub fn total(games: &[Game], filter: LibraryFilter) -> usize {
-    let hidden = games.iter().filter(|game| game.hidden).count();
-    if filter == LibraryFilter::Hidden {
+/// How many games the view's lists count against ("3 of 35 games"): the hidden ones with Hidden
+/// on, else all the others.
+pub fn total(games: &[Game], view: &LibraryView) -> usize {
+    let hidden = hidden_count(games);
+    if view.hidden {
         hidden
     } else {
         games.len() - hidden
     }
 }
 
-/// The filter to keep when games are gone or hidden: a store or Hidden filter with no games left
-/// goes back to all games.
-pub fn keep_filter(games: &[Game], filter: LibraryFilter) -> LibraryFilter {
-    match filter {
-        LibraryFilter::Store(_) | LibraryFilter::Hidden
-            if !games.iter().any(|game| filter.matches(game)) =>
-        {
-            LibraryFilter::All
-        }
-        _ => filter,
+/// The view to keep when games are gone, hidden or changed: Hidden with no hidden game left, a
+/// ticked store without games and a collection without games are dropped. The sort stays.
+pub fn keep_view(games: &[Game], view: &LibraryView, facts: Facts) -> LibraryView {
+    let mut kept = view.clone();
+    if kept.hidden && hidden_count(games) == 0 {
+        kept.hidden = false;
     }
+    let listed = |store: Store| {
+        games
+            .iter()
+            .any(|game| game.store == store && game.hidden == kept.hidden)
+    };
+    let stores: Vec<Store> = kept.stores.iter().copied().filter(|s| listed(*s)).collect();
+    kept.stores = stores;
+    if let Some(collection) = kept.collection
+        && !games
+            .iter()
+            .any(|game| !game.hidden && in_collection(game, collection, facts))
+    {
+        kept.collection = None;
+    }
+    kept
 }
 
 /// How many tiles `tile` wide, `gap` apart, fit in `width`: at least one.
@@ -286,6 +508,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 
@@ -298,16 +521,235 @@ mod tests {
         ]
     }
 
+    const NOW: u64 = 1_800_000_000;
+    const DAY: u64 = 24 * 60 * 60;
+
+    fn facts(mods: &ModsFile) -> Facts<'_> {
+        Facts { mods, now: NOW }
+    }
+
+    /// A view with these stores ticked.
+    fn stores(stores: &[Store]) -> LibraryView {
+        LibraryView {
+            stores: stores.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// The games a view and a search show, with no mods anywhere.
+    fn found(games: &[Game], query: &str, view: &LibraryView) -> Vec<usize> {
+        shown(games, query, view, facts(&ModsFile::default()))
+    }
+
     #[test]
     fn filters_by_name_and_store() {
         let games = library();
-        let steam = LibraryFilter::Store(Store::Steam);
-        assert_eq!(filter(&games, "", LibraryFilter::All), [0, 1, 2, 3]);
-        assert_eq!(filter(&games, "  tomb RAIDER ", LibraryFilter::All), [2, 3]);
-        assert_eq!(filter(&games, "theme hospital", LibraryFilter::All), [1]);
-        assert_eq!(filter(&games, "", steam), [0, 3]);
-        assert_eq!(filter(&games, "tomb", steam), [3]);
-        assert!(filter(&games, "tomb", LibraryFilter::Store(Store::Xbox)).is_empty());
+        let all = LibraryView::default();
+        let steam = stores(&[Store::Steam]);
+        assert_eq!(found(&games, "", &all), [0, 1, 2, 3]);
+        assert_eq!(found(&games, "  tomb RAIDER ", &all), [2, 3]);
+        assert_eq!(found(&games, "theme hospital", &all), [1]);
+        assert_eq!(found(&games, "", &steam), [0, 3]);
+        assert_eq!(found(&games, "tomb", &steam), [3]);
+        assert!(found(&games, "tomb", &stores(&[Store::Xbox])).is_empty());
+        // Several stores at once.
+        assert_eq!(found(&games, "", &stores(&[Store::Gog, Store::Ea])), [1, 2]);
+        assert_eq!(
+            found(&games, "tomb", &stores(&[Store::Gog, Store::Steam])),
+            [2, 3]
+        );
+    }
+
+    #[test]
+    fn collections_fill_themselves() {
+        let mut games = library();
+        games[0].pinned = Some(0);
+        games[1].arch = Some(gm_core::Arch::X86);
+        games[2].arch = Some(gm_core::Arch::X64);
+        games[2].installed = Some(NOW - 3 * DAY);
+        games[3].installed = Some(NOW - 31 * DAY);
+        let installed = || Some(gm_core::mods::Installed::default());
+        let mut mods = ModsFile::default();
+        let reshade = gm_core::mods::reshade::ReshadeState {
+            installed: installed(),
+            ..Default::default()
+        };
+        mods.games.entry(games[0].id.clone()).or_default().reshade = Some(reshade);
+        mods.games.entry(games[1].id.clone()).or_default().laa = installed();
+        // DXVK's settings alone are not an install.
+        let mut dxvk = gm_core::mods::dxvk::DxvkState::default();
+        mods.games.entry(games[2].id.clone()).or_default().dxvk = Some(dxvk.clone());
+        dxvk.installed = installed();
+        mods.games.entry(games[3].id.clone()).or_default().dxvk = Some(dxvk);
+
+        let members = |collection, mods: &ModsFile| -> Vec<usize> {
+            (0..games.len())
+                .filter(|&index| in_collection(&games[index], collection, facts(mods)))
+                .collect()
+        };
+        assert_eq!(members(Collection::Pinned, &mods), [0]);
+        assert_eq!(members(Collection::Modded, &mods), [0, 1, 3]);
+        assert_eq!(members(Collection::Reshade, &mods), [0]);
+        assert_eq!(members(Collection::Dxvk, &mods), [3]);
+        assert_eq!(members(Collection::Bits32, &mods), [1]);
+        assert_eq!(members(Collection::RecentlyInstalled, &mods), [2]);
+        let all = LibraryView::default();
+        assert_eq!(
+            collection_counts(&games, &all, facts(&mods)),
+            [
+                (Collection::Pinned, 1),
+                (Collection::Modded, 3),
+                (Collection::Reshade, 1),
+                (Collection::Dxvk, 1),
+                (Collection::Bits32, 1),
+                (Collection::RecentlyInstalled, 1),
+            ]
+        );
+        // NVIDIA's DLSS overrides count as a mod too.
+        let mut more = mods.clone();
+        more.games
+            .entry(games[2].id.clone())
+            .or_default()
+            .dlss_override = Some(Default::default());
+        assert_eq!(members(Collection::Modded, &more), [0, 1, 2, 3]);
+
+        // A collection shows its games, and the search looks inside it.
+        let modded = LibraryView {
+            collection: Some(Collection::Modded),
+            ..Default::default()
+        };
+        assert_eq!(shown(&games, "", &modded, facts(&mods)), [0, 1, 3]);
+        assert_eq!(shown(&games, "tomb", &modded, facts(&mods)), [3]);
+        // Hidden games are in none; one left empty is listed only while it is on, then dropped.
+        games[3].hidden = true;
+        assert_eq!(shown(&games, "", &modded, facts(&mods)), [0, 1]);
+        let with_dxvk = LibraryView {
+            collection: Some(Collection::Dxvk),
+            ..Default::default()
+        };
+        let listed = |view: &LibraryView| -> Vec<Collection> {
+            collection_counts(&games, view, facts(&mods))
+                .into_iter()
+                .map(|(collection, _)| collection)
+                .collect()
+        };
+        assert!(!listed(&all).contains(&Collection::Dxvk));
+        assert!(listed(&with_dxvk).contains(&Collection::Dxvk));
+        assert_eq!(keep_view(&games, &with_dxvk, facts(&mods)), all);
+        assert_eq!(keep_view(&games, &modded, facts(&mods)), modded);
+    }
+
+    #[test]
+    fn a_collection_and_the_filters_take_turns() {
+        let mut view = LibraryView {
+            sort: Sort::NameDescending,
+            ..Default::default()
+        };
+        assert!(!is_filtered(&view));
+        assert_eq!(describe(&view), None);
+        toggle_store(&mut view, Store::Gog);
+        toggle_store(&mut view, Store::Steam);
+        set_hidden(&mut view, true);
+        assert!(is_filtered(&view));
+        // Stores in the lists' order, whatever the order they were ticked in.
+        assert_eq!(describe(&view).as_deref(), Some("Steam, GOG · Hidden"));
+        toggle_store(&mut view, Store::Gog);
+        assert_eq!(view.stores, [Store::Steam]);
+        // A collection clears the filters; picking it again turns it off.
+        pick_collection(&mut view, Collection::Modded);
+        assert_eq!(
+            (view.stores.len(), view.hidden, view.collection),
+            (0, false, Some(Collection::Modded))
+        );
+        assert_eq!(describe(&view).as_deref(), Some("Modded"));
+        pick_collection(&mut view, Collection::Bits32);
+        assert_eq!(view.collection, Some(Collection::Bits32));
+        pick_collection(&mut view, Collection::Bits32);
+        assert_eq!(view.collection, None);
+        // A filter turns the collection off.
+        pick_collection(&mut view, Collection::Pinned);
+        toggle_store(&mut view, Store::Ea);
+        assert_eq!(
+            (view.collection, view.stores.as_slice()),
+            (None, &[Store::Ea][..])
+        );
+        pick_collection(&mut view, Collection::Pinned);
+        set_hidden(&mut view, true);
+        assert_eq!((view.collection, view.hidden), (None, true));
+        // Clear all keeps the sort.
+        toggle_store(&mut view, Store::Ea);
+        clear(&mut view);
+        assert!(!is_filtered(&view));
+        assert_eq!(view.sort, Sort::NameDescending);
+
+        let hidden = LibraryView {
+            hidden: true,
+            ..Default::default()
+        };
+        assert_eq!(empty_hint(&view, "x"), "No games match the search.");
+        assert_eq!(empty_hint(&view, " "), "No games to show.");
+        assert_eq!(empty_hint(&hidden, ""), "No hidden games.");
+        assert_eq!(
+            empty_hint(&stores(&[Store::Ea]), ""),
+            "No games match these filters."
+        );
+    }
+
+    #[test]
+    fn sections_follow_the_sort_and_the_grouping() {
+        let mut games = library();
+        games.push(game("steam:22200", "Zeno Clash", Store::Steam));
+        games[3].pinned = Some(0);
+        games[3].installed = Some(99);
+        games[0].installed = Some(10);
+        games[1].installed = Some(30);
+        games[4].installed = Some(50);
+        let all = [0, 1, 2, 3, 4];
+        let lists = |sort, group_by_store| -> Vec<(SectionKind, Vec<usize>)> {
+            let view = LibraryView {
+                sort,
+                group_by_store,
+                ..Default::default()
+            };
+            sections(&games, &all, &view)
+                .into_iter()
+                .map(|section| (section.kind, section.games))
+                .collect()
+        };
+        let pinned = (SectionKind::Pinned, vec![3]);
+        let steam = |games| (SectionKind::Store(Store::Steam), games);
+        let others = [
+            (SectionKind::Store(Store::Gog), vec![2]),
+            (SectionKind::Store(Store::Ea), vec![1]),
+        ];
+        // Pinned first whatever the sort, then the stores in their order.
+        for (sort, steam_games) in [
+            (Sort::Name, vec![0, 4]),
+            (Sort::NameDescending, vec![4, 0]),
+            (Sort::RecentlyInstalled, vec![4, 0]),
+        ] {
+            let mut expected = vec![pinned.clone(), steam(steam_games)];
+            expected.extend(others.clone());
+            assert_eq!(lists(sort, true), expected, "{sort:?}");
+        }
+        // One list: by name either way, or the newest first with the undated game last.
+        let flat = |games| vec![pinned.clone(), (SectionKind::All, games)];
+        assert_eq!(lists(Sort::Name, false), flat(vec![0, 1, 2, 4]));
+        assert_eq!(lists(Sort::NameDescending, false), flat(vec![4, 2, 1, 0]));
+        assert_eq!(
+            lists(Sort::RecentlyInstalled, false),
+            flat(vec![4, 1, 0, 2])
+        );
+        // Only what is shown, and no empty sections.
+        let view = LibraryView::default();
+        assert_eq!(
+            sections(&games, &[2], &view),
+            [Section {
+                kind: SectionKind::Store(Store::Gog),
+                games: vec![2]
+            }]
+        );
+        assert!(sections(&games, &[], &view).is_empty());
     }
 
     #[test]
@@ -318,13 +760,15 @@ mod tests {
         set_pin(&mut games, "steam:8000", true);
         let places: Vec<Option<usize>> = games.iter().map(|game| game.pinned).collect();
         assert_eq!(places, [None, Some(1), None, Some(0)]);
-        let all = filter(&games, "", LibraryFilter::All);
+        let view = LibraryView::default();
+        let mods = ModsFile::default();
+        let all = found(&games, "", &view);
         assert_eq!(split_pinned(&games, &all), (vec![3, 1], vec![0, 2]));
         // The search and filters still apply; a pinned game's store filter shows it pinned.
-        let tomb = filter(&games, "tomb", LibraryFilter::All);
+        let tomb = found(&games, "tomb", &view);
         assert_eq!(split_pinned(&games, &tomb), (vec![3], vec![2]));
-        assert_eq!(first_shown(&games, "tomb", LibraryFilter::All), Some(3));
-        let steam = filter(&games, "", LibraryFilter::Store(Store::Steam));
+        assert_eq!(first_shown(&games, "tomb", &view, facts(&mods)), Some(3));
+        let steam = found(&games, "", &stores(&[Store::Steam]));
         assert_eq!(split_pinned(&games, &steam), (vec![3], vec![0]));
         // Unpinning closes the gap; pinning again goes last.
         set_pin(&mut games, "steam:8000", false);
@@ -340,70 +784,86 @@ mod tests {
     }
 
     #[test]
-    fn filter_options_list_only_stores_with_games() {
+    fn the_filters_list_only_stores_with_games() {
         let games = library();
+        let all = LibraryView::default();
         assert_eq!(
-            filter_options(&games),
-            [
-                (LibraryFilter::All, "All games (4)".to_owned()),
-                (LibraryFilter::Store(Store::Steam), "Steam (2)".to_owned()),
-                (LibraryFilter::Store(Store::Gog), "GOG (1)".to_owned()),
-                (LibraryFilter::Store(Store::Ea), "EA (1)".to_owned()),
-            ]
+            store_counts(&games, &all),
+            [(Store::Steam, 2), (Store::Gog, 1), (Store::Ea, 1)]
         );
+        assert!(store_counts(&[], &all).is_empty());
+        // A ticked store stays listed, so it can be unticked.
         assert_eq!(
-            filter_options(&[]),
-            [(LibraryFilter::All, "All games (0)".to_owned())]
+            store_counts(&[], &stores(&[Store::Epic])),
+            [(Store::Epic, 0)]
         );
     }
 
     #[test]
-    fn hidden_games_show_only_under_their_own_filter() {
+    fn hidden_games_show_only_with_hidden_on() {
         let mut games = library();
         games[0].hidden = true;
         games[3].hidden = true;
         games[3].pinned = Some(0);
-        let steam = LibraryFilter::Store(Store::Steam);
-        assert_eq!(filter(&games, "", LibraryFilter::All), [1, 2]);
-        assert!(filter(&games, "", steam).is_empty());
+        let mods = ModsFile::default();
+        let facts = facts(&mods);
+        let all = LibraryView::default();
+        let steam = stores(&[Store::Steam]);
+        let hidden = LibraryView {
+            hidden: true,
+            ..Default::default()
+        };
+        let hidden_of = |store| LibraryView {
+            hidden: true,
+            ..stores(&[store])
+        };
+        assert_eq!(found(&games, "", &all), [1, 2]);
+        assert!(found(&games, "", &steam).is_empty());
         // The search leaves them out too, unless it searches the hidden ones.
-        assert_eq!(filter(&games, "tomb", LibraryFilter::All), [2]);
-        assert_eq!(filter(&games, "", LibraryFilter::Hidden), [0, 3]);
-        assert_eq!(filter(&games, "tomb", LibraryFilter::Hidden), [3]);
-        assert_eq!(first_shown(&games, "tomb", LibraryFilter::All), Some(2));
-        assert_eq!(total(&games, steam), 2);
-        assert_eq!(total(&games, LibraryFilter::Hidden), 2);
+        assert_eq!(found(&games, "tomb", &all), [2]);
+        assert_eq!(found(&games, "", &hidden), [0, 3]);
+        assert_eq!(found(&games, "tomb", &hidden), [3]);
+        // Hidden and a store: that store's hidden games.
+        assert_eq!(found(&games, "", &hidden_of(Store::Steam)), [0, 3]);
+        assert!(found(&games, "", &hidden_of(Store::Gog)).is_empty());
+        assert_eq!(first_shown(&games, "tomb", &all, facts), Some(2));
+        assert_eq!(total(&games, &steam), 2);
+        assert_eq!(total(&games, &hidden), 2);
         assert_eq!(games_label(1), "1 game");
         assert_eq!(games_label(2), "2 games");
-        // Hidden games count only under Hidden; a store with only hidden games isn't offered.
+        // Hidden games count only with Hidden on; a store with only hidden games isn't offered.
         assert_eq!(
-            filter_options(&games),
-            [
-                (LibraryFilter::All, "All games (2)".to_owned()),
-                (LibraryFilter::Store(Store::Gog), "GOG (1)".to_owned()),
-                (LibraryFilter::Store(Store::Ea), "EA (1)".to_owned()),
-                (LibraryFilter::Hidden, "Hidden (2)".to_owned()),
-            ]
+            store_counts(&games, &all),
+            [(Store::Gog, 1), (Store::Ea, 1)]
         );
-        // With none hidden, there is no Hidden filter, and it goes back to all games.
-        assert_eq!(keep_filter(&games, steam), LibraryFilter::All);
+        assert_eq!(store_counts(&games, &hidden), [(Store::Steam, 2)]);
+        assert_eq!(hidden_count(&games), 2);
+        // A store left without games to show is unticked; Hidden stays while some are hidden.
+        assert_eq!(keep_view(&games, &steam, facts), all);
+        assert_eq!(keep_view(&games, &hidden, facts), hidden);
         assert_eq!(
-            keep_filter(&games, LibraryFilter::Hidden),
-            LibraryFilter::Hidden
+            keep_view(&games, &hidden_of(Store::Steam), facts),
+            hidden_of(Store::Steam)
         );
+        assert_eq!(keep_view(&games, &hidden_of(Store::Gog), facts), hidden);
         for game in &mut games {
             game.hidden = false;
         }
-        assert!(
-            !filter_options(&games)
-                .iter()
-                .any(|(filter, _)| *filter == LibraryFilter::Hidden)
-        );
+        // With none hidden, Hidden goes; the sort and a store with games stay.
+        assert_eq!(hidden_count(&games), 0);
+        assert_eq!(keep_view(&games, &hidden, facts), all);
+        assert_eq!(keep_view(&games, &hidden_of(Store::Steam), facts), steam);
+        assert_eq!(keep_view(&games, &steam, facts), steam);
+        let sorted = LibraryView {
+            sort: Sort::RecentlyInstalled,
+            group_by_store: false,
+            ..hidden.clone()
+        };
+        let kept = keep_view(&games, &sorted, facts);
         assert_eq!(
-            keep_filter(&games, LibraryFilter::Hidden),
-            LibraryFilter::All
+            (kept.sort, kept.group_by_store, kept.hidden),
+            (Sort::RecentlyInstalled, false, false)
         );
-        assert_eq!(keep_filter(&games, steam), steam);
     }
 
     #[test]
@@ -434,7 +894,7 @@ mod tests {
             game("custom:1", "Final Fantasy XV", Store::Custom),
         ];
         games[4].program = Some(r"D:\Games\FFXV\ffxv_s.exe".into());
-        let found = |query: &str| -> Vec<usize> { filter(&games, query, LibraryFilter::All) };
+        let found = |query: &str| -> Vec<usize> { found(&games, query, &LibraryView::default()) };
         assert_eq!(found("cry far 3"), [0]);
         assert_eq!(found("FAR CRY 3"), [0]);
         assert_eq!(found("farcry"), [0]);
@@ -460,13 +920,23 @@ mod tests {
             game("steam:1", "Tomb Raider: Legend", Store::Steam),
             game("steam:2", "Tomb Raider: Underworld", Store::Steam),
         ];
+        let mods = ModsFile::default();
+        let first =
+            |query: &str, view: &LibraryView| first_shown(&games, query, view, facts(&mods));
+        let all = LibraryView::default();
         // Steam comes first in the sidebar, then its games in list order.
-        assert_eq!(first_shown(&games, "tomb", LibraryFilter::All), Some(2));
-        assert_eq!(
-            first_shown(&games, "tomb", LibraryFilter::Store(Store::Gog)),
-            Some(1)
-        );
-        assert_eq!(first_shown(&games, "nothing", LibraryFilter::All), None);
+        assert_eq!(first("tomb", &all), Some(2));
+        assert_eq!(first("tomb", &stores(&[Store::Gog])), Some(1));
+        assert_eq!(first("nothing", &all), None);
+        // The sort and the grouping decide which comes first.
+        let view = |sort, group_by_store| LibraryView {
+            sort,
+            group_by_store,
+            ..Default::default()
+        };
+        assert_eq!(first("tomb", &view(Sort::NameDescending, true)), Some(3));
+        assert_eq!(first("tomb", &view(Sort::Name, false)), Some(0));
+        assert_eq!(first("tomb", &view(Sort::NameDescending, false)), Some(3));
     }
 
     #[test]

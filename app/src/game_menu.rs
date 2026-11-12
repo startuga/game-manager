@@ -19,8 +19,8 @@
 //! - **Rename…**: a dialog with the name; Save stores it like Game settings does
 //!   (`config::save_edits` with only the name changed; empty is the store's name), then rescans.
 //! - **Hide from the list**: shown at once, saved in `game-settings.json` in the background
-//!   (`config::set_hidden`, set back on failure). Hidden games show only under the Hidden filter
-//!   (`library.rs`). Hiding the game whose page shows goes back to Library.
+//!   (`config::set_hidden`, set back on failure). Hidden games show only with Hidden games on in
+//!   Sort and filters (`library.rs`). Hiding the game whose page shows goes back to Library.
 //! - **Uninstall…**: the route (`gm_core::uninstall`, registry reads, in the background), then a
 //!   dialog saying who removes the game and that mods outside its folder stay; confirming hands
 //!   over to Steam, the game's uninstaller or the store's app, which asks before anything goes.
@@ -365,6 +365,10 @@ impl GameManager {
                 Route::StoreApp {
                     store: Store::Gog, ..
                 } => "Open GOG Galaxy",
+                Route::StoreApp {
+                    store: Store::Ubisoft,
+                    ..
+                } => "Open Ubisoft Connect",
                 Route::StoreApp { .. } => "Open Installed apps",
             };
             return Some(dialog(
@@ -474,7 +478,7 @@ impl GameManager {
                 if let Some(game) = self.games.iter_mut().find(|game| game.id == id) {
                     game.hidden = !hidden;
                 }
-                self.filter = library::keep_filter(&self.games, self.filter);
+                self.tidy_view();
                 self.error = Some(e);
             }
             MenuMessage::PinSaved(_, _, Ok(())) => {}
@@ -534,7 +538,7 @@ impl GameManager {
             self.go_to(Page::Library, context);
         }
         // The last hidden game shown again: the Hidden filter goes.
-        self.filter = library::keep_filter(&self.games, self.filter);
+        self.tidy_view();
         context.spawn_background(move |_cancel| {
             let saved = gm_core::config::set_hidden(&id, hidden).map_err(|e| e.to_string());
             MenuMessage::HiddenSaved(id, hidden, saved).into()

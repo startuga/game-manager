@@ -204,6 +204,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 

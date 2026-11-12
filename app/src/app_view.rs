@@ -1,5 +1,6 @@
 //! The window's view: the title bar, the sidebar beside the page, the error bar, and the layers
-//! over them: the game's menu (`game_menu.rs`) and the dialogs.
+//! over them: the Sort and filters flyout (`filter_menu.rs`, over the sidebar and the page), the
+//! game's menu (`game_menu.rs`) and the dialogs.
 //!
 //! The title bar is drawn by the app. Its keys (`shell::CAPTION_*`) tell the window where it can
 //! be dragged and where its minimize, maximize and close buttons are, so Windows 11 offers Snap
@@ -33,11 +34,13 @@ impl GameManager {
             );
         }
         let grip = resize_grip("Resize the library", Message::SidebarWidth);
-        page.push(
-            row([self.sidebar(), grip, self.page_view(window)])
-                .grow()
-                .valign(Align::Stretch),
-        );
+        let body = row([self.sidebar(), grip, self.page_view(window)])
+            .grow()
+            .valign(Align::Stretch);
+        // The Sort and filters flyout lies over the sidebar and the page only, so it opens right
+        // under its button whatever is above them. Always a layer, so the elements under it keep
+        // their place in the tree when it opens.
+        page.push(layers([body].into_iter().chain(self.filter_layer(window))).grow());
         let mut stack = vec![col(page).grow()];
         stack.extend(self.game_menu_layer(window));
         stack.extend(self.dialog_layer(window));

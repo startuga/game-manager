@@ -4,24 +4,39 @@ A native Windows 11 game launcher written in Rust. Its window is plain Win32 dra
 DirectWrite ([windows-rs](https://github.com/microsoft/windows-rs)'s `windows-window`,
 `windows-canvas` and `windows-text`): no WinUI, no XAML and no Windows App Runtime.
 
-It finds installed games from Steam, Epic Games, GOG, EA and the Xbox app, shows their icons, and
-starts them. Any other game can be added by hand with **Add a game** (choose its program, then a
-name and optional command-line arguments), or by dropping the game's `.exe` or its desktop shortcut
-on the window (a shortcut brings its name, arguments and icon); those are saved in
-`%APPDATA%\Game Manager\custom-games.json`.
+It finds installed games from Steam, Epic Games, GOG, EA, Ubisoft Connect and the Xbox app, shows
+their icons, and starts them. Any other game can be added by hand with **Add a game** (choose its
+program, then a name and optional command-line arguments), or by dropping the game's `.exe` or its
+desktop shortcut on the window (a shortcut brings its name, arguments and icon); those are saved
+in `%APPDATA%\Game Manager\custom-games.json`.
 
 ## The window
 
-- **The sidebar**: search, a filter (all games, one store, or Hidden while some games are
-  hidden), **My PC** and **Library**, then the pinned games under **Pinned**, then the others by
-  store (click a store to fold it), and **Add a game** at the bottom. Drag its edge to make it
-  wider or narrower.
+- **The sidebar**: search with the **Sort and filters** button beside it, **My PC** and
+  **Library**, then the pinned games under **Pinned**, then the others by store (click a store
+  to fold it), and **Add a game** at the bottom. Drag its edge to make it wider or narrower.
+- **Sort and filters** (the button beside the search) opens a flyout that the sidebar and
+  Library both follow. It stays open while you pick; a click outside or **Escape** closes it.
+  - **Sort**: by name A–Z or Z–A, or the most recently installed first (the date of the
+    game's folder). **Group by store** off shows one list; pinned games stay on top.
+  - **Smart filters**: tick one store or several, and **Hidden games** to see the games you
+    hid from the list.
+  - **Smart Collections** fill themselves: **Pinned**, **Modded** (anything Game Manager set
+    up: ReShade, DXVK, Large Address Aware, a swapped upscaler, NVIDIA DLSS overrides), **With
+    ReShade**, **With DXVK**, **32-bit** and **Recently installed** (the last 30 days). One is
+    on at most: picking one clears the filters, and ticking a filter turns it off.
+  - **Clear all** takes the filters and the collection off. The button shows a dot while one
+    is on, and Library's caption names it. Your choices are kept in `game-settings.json` for
+    the next start.
 - **Library**, where the window opens: every game as a tile with its cover and name, the pinned
-  ones first, then by store, following the search and filter. Click a tile for the game's page.
+  ones first, then by store, following the search and Sort and filters. Click a tile for the
+  game's page.
   - **Covers** come from what the stores already keep on your PC (Steam's library cache, GOG
     Galaxy's), else from the store's own server by the game's id (Steam, the Epic Games
     Launcher's catalog, GOG, Microsoft's store for Xbox games), else from the Steam store under
-    the same name (EA games and games added by hand). A game with none shows its icon.
+    the same name (EA and Ubisoft games and games added by hand). A Ubisoft game the Steam
+    store doesn't have under its name keeps the small picture an older Ubisoft Connect saved,
+    when there is one. A game with none shows its icon.
   - Covers are kept in `%LOCALAPPDATA%\Game Manager\cache\covers`, so the next start asks the
     network for nothing. A game with no cover anywhere is asked about again a week later.
   - **Choose cover…** in a game's menu takes any picture of yours (cropped to the tile's 2:3
@@ -32,16 +47,18 @@ on the window (a shortcut brings its name, arguments and icon); those are saved 
   closes.
   - **Pin to quick access** (or **Unpin**): pinned games sit on top of the sidebar and of
     Library, in the order you pinned them. Favorites from earlier versions became pins.
-  - **Play**, and the store's other ways to start it ("Skip launcher").
+  - **Play**, and the store's other ways to start it ("Skip launcher", a Ubisoft game's
+    "Settings").
   - **Open folder**, **PCGamingWiki**.
   - **Rename…** (leave it empty for the store's name), **Choose cover…** (and **Reset cover**),
-    **Hide from the list** (the Hidden filter shows it again, with **Show in the list**). The
+    **Hide from the list** (Hidden games in Sort and filters shows it again, with **Show in the
+    list**). The
     names, pins and hidden games are saved in `game-settings.json`.
-  - **Uninstall…** hands the game to Steam, to its own uninstaller (GOG, the EA app, others with
-    a Windows Uninstall entry), or to the Epic Games Launcher, GOG Galaxy or Windows' Installed
-    apps to uninstall it there. They ask before anything is removed. Game Manager deletes
-    nothing itself. Mods it set up outside the game's folder (ReShade's Vulkan layer entry,
-    NVIDIA profile settings) stay. **Rescan** afterwards takes the game off the list.
+  - **Uninstall…** hands the game to Steam or Ubisoft Connect, to its own uninstaller (GOG, the
+    EA app, others with a Windows Uninstall entry), or to the Epic Games Launcher, GOG Galaxy or
+    Windows' Installed apps to uninstall it there. They ask before anything is removed. Game
+    Manager deletes nothing itself. Mods it set up outside the game's folder (ReShade's Vulkan
+    layer entry, NVIDIA profile settings) stay. **Rescan** afterwards takes the game off the list.
   - **Remove from Game Manager**, for games added by hand (their files stay).
 - **Search** (**Ctrl+F** from anywhere): case, accents, ™ and ® and punctuation don't matter, and
   the words can come in any order ("cry far 3"). It also finds a name typed without spaces

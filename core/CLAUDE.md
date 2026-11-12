@@ -6,12 +6,14 @@ holds the rules and facts that span them.
 
 ## Modules
 - **Stores**: `steam.rs` (+ `vdf.rs`, Valve KeyValues text and binary), `epic.rs`, `gog.rs`,
-  `ea.rs`, `xbox.rs`; `custom.rs` (games added by hand, `NewGame` from a picked or dropped file),
-  `shortcut.rs` (`.lnk` via `ShellLink`).
+  `ea.rs`, `ubisoft.rs` (Ubisoft Connect; its own small protobuf and YAML readers), `xbox.rs`;
+  `custom.rs` (games added by hand, `NewGame` from a picked or dropped file), `shortcut.rs`
+  (`.lnk` via `ShellLink`).
 - **Game data**:
   - `lib.rs` (`Game`, `Launch`, `Arch`, `scan_all`, `complete_game`).
-  - `config.rs` (shipped `games.json`, the user's `game-settings.json`: edits, hidden games, and
-    the `pinned` list in pin order, into which older favorites are moved; `apply`).
+  - `config.rs` (shipped `games.json`, the user's `game-settings.json`: edits, hidden games,
+    the `pinned` list in pin order, into which older favorites are moved, and `library`, how the
+    lists are sorted and filtered (`LibraryView`); `apply`).
   - `snapshot.rs` (last scan, for a fast start).
   - `pe.rs` (architecture and imports from PE headers).
 - **Around games**:
@@ -74,7 +76,8 @@ holds the rules and facts that span them.
   3. `default_program`.
   4. `dedupe_install_dirs` (a dropped duplicate gives its program to the kept game).
   5. Custom games, with `apply` too.
-  6. `complete_game` (icon fallback, then `arch` from the PE header unless already set).
+  6. `complete_game` (icon fallback, then `arch` from the PE header unless already set, and
+     `installed`, the day the game's folder was created).
 - A store that fails adds a `ScanError` to `ScanReport::errors`; it never hides other stores'
   games.
 - **New store**: a module with `pub fn scan() -> Result<Vec<Game>>`, a `Store` variant, and an
@@ -142,8 +145,25 @@ holds the rules and facts that span them.
   - The EA app's data is encrypted: there is no EA-app launch link.
   - Xbox packaged games start only through `shell:AppsFolder\<family>!<app>`.
   - A GOG primary task can be a launcher (Witcher 3's `REDprelauncher.exe`).
+  - **Ubisoft Connect** (`ubisoft.rs`):
+    - The registry has only each game's folder (`Ubisoft\Launcher\Installs\<install id>`,
+      forward slashes) and an Uninstall entry `Uplay Install <id>` with its name and icon.
+      Entries outlive their folders (games bought on Epic and removed there).
+    - Current launchers encrypt their game list
+      (`%LOCALAPPDATA%\Ubisoft Game Launcher\cache\configuration\configurations.vdat`). The
+      plain one an older launcher left in `<launcher>\cache\configuration\configurations` is
+      no longer updated: it is read when present (programs, extra launch actions, the
+      240 × 280 picture in `cache\assets`), never required.
+    - That cache is keyed by the install id (field 2), not the Ubisoft id (field 1): Far Cry 3
+      is 46 and 101. Entries with install id 0 can't be installed on their own.
+    - Without it the game's program is the largest `.exe` outside `installer_resources`
+      (which holds a 66 MB `UplayInstaller.exe`). It agreed with the cache on all 4 games.
+    - `scan -v` on 4 games: every name, icon, program and bitness was right; the 2 stale
+      entries were skipped.
 - **Uninstalling** (`uninstall.rs`):
   - Steam: `steam://uninstall/<appid>` shows Steam's own confirmation.
+  - Ubisoft Connect: `uplay://uninstall/<install id>`, the link its Uninstall entries pass to
+    `upc.exe`. Not run in a check; the user tries it.
   - GOG and the EA app write a Windows Uninstall entry whose `InstallLocation` is the game's
     folder. GOG's is the game's `unins000.exe`; the EA app's is
     `Common Files\EAInstaller\<game>\Cleanup.exe uninstall_game -autologging`, unquoted, so the
@@ -168,6 +188,10 @@ holds the rules and facts that span them.
     not used.
   - **Xbox**: `displaycatalog.mp.microsoft.com/v7.0/products?bigIds=<StoreId>` lists a 2:3
     `Poster`; `?w=400&h=600` resizes it.
+  - **Ubisoft Connect** has no cover by id. Its old cache's picture is 240 × 280, so the Steam
+    store is asked by name first and the picture stays only when that finds nothing. On 4
+    games the store had 2 under the same name (not "Beyond Good & Evil - 20th Anniversary
+    Edition", nor "Tom Clancy's Splinter Cell Chaos Theory" for the entry's shorter name).
   - **By name**: the Steam store's `storesearch` is loose ("Alan Wake 2" finds a Beat Saber
     song), so only a result with the same letters counts. It found all 3 EA games and Shadow of
     War on 37; Alan Wake 2 isn't on Steam.

@@ -27,6 +27,7 @@ mod signature;
 pub mod snapshot;
 pub mod steam;
 mod text;
+pub mod ubisoft;
 pub mod uninstall;
 pub mod vdf;
 mod version_info;
@@ -45,6 +46,7 @@ pub enum Store {
     Epic,
     Gog,
     Ea,
+    Ubisoft,
     Xbox,
     /// Added by hand in the app (see [`custom`]).
     Custom,
@@ -52,11 +54,12 @@ pub enum Store {
 
 impl Store {
     /// Every store, in display order.
-    pub const ALL: [Store; 6] = [
+    pub const ALL: [Store; 7] = [
         Store::Steam,
         Store::Epic,
         Store::Gog,
         Store::Ea,
+        Store::Ubisoft,
         Store::Xbox,
         Store::Custom,
     ];
@@ -67,6 +70,7 @@ impl Store {
             Store::Epic => "Epic Games",
             Store::Gog => "GOG",
             Store::Ea => "EA",
+            Store::Ubisoft => "Ubisoft",
             Store::Xbox => "Xbox",
             Store::Custom => "Custom",
         }
@@ -160,6 +164,10 @@ pub struct Game {
     /// shows it.
     #[serde(default)]
     pub hidden: bool,
+    /// When the game was installed, in seconds since 1970: the day its folder was created
+    /// (`complete_game`). `None` when the folder can't be read.
+    #[serde(default)]
+    pub installed: Option<u64>,
 }
 
 /// `launch` with these command-line arguments, when it can take them: a program gets them as its
@@ -224,12 +232,14 @@ pub struct ScanReport {
 type Scanner = fn() -> Result<Vec<Game>>;
 
 /// Scanners in priority order: when two stores report the same install folder, the earlier one
-/// keeps the game (e.g. an EA game bought on Steam also ships EA's `__Installer` folder).
-const SCANNERS: [(Store, Scanner); 5] = [
+/// keeps the game (e.g. an EA game bought on Steam also ships EA's `__Installer` folder, and a
+/// Ubisoft game bought on Steam or Epic is registered with Ubisoft Connect too).
+const SCANNERS: [(Store, Scanner); 6] = [
     (Store::Steam, steam::scan),
     (Store::Epic, epic::scan),
     (Store::Gog, gog::scan),
     (Store::Ea, ea::scan),
+    (Store::Ubisoft, ubisoft::scan),
     (Store::Xbox, xbox::scan),
 ];
 
@@ -273,14 +283,30 @@ pub fn scan_all() -> ScanReport {
     report
 }
 
-/// Fills what a scanner left out: the game's program, its icon and its architecture. Reads the
-/// program's header, so it is blocking. `scan_all` calls it for every game.
+/// Fills what a scanner left out: the game's program, its icon, its architecture and when it was
+/// installed. Reads the program's header and the folder's dates, so it is blocking. `scan_all`
+/// calls it for every game.
 pub fn complete_game(game: &mut Game) {
     default_program(game);
     default_icon_to_program(game);
     if game.arch.is_none() {
         game.arch = game.program.as_deref().and_then(pe::architecture);
     }
+    if game.installed.is_none() {
+        game.installed = game
+            .install_dir
+            .as_deref()
+            .or_else(|| game.program.as_deref().and_then(Path::parent))
+            .and_then(folder_created);
+    }
+}
+
+/// When a folder was created, in seconds since 1970: a game's install date. Stores keep no
+/// better one in common; a game moved to another drive counts from the move.
+fn folder_created(dir: &Path) -> Option<u64> {
+    let created = std::fs::metadata(dir).ok()?.created().ok()?;
+    let since = created.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since.as_secs())
 }
 
 /// When the scanner named no program: the icon's `.exe` if it is in the install folder (an EA
@@ -396,6 +422,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 
@@ -411,6 +438,37 @@ mod tests {
 
         let missing = PathBuf::from(r"c:\does\not\exist");
         assert_eq!(on_disk_case(&missing), missing);
+    }
+
+    #[test]
+    fn a_game_is_installed_when_its_folder_was_created() {
+        let dir = std::env::temp_dir().join(format!("GM-Installed-Test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut here = game("gog:1", Store::Gog, Some(&dir.to_string_lossy()));
+        complete_game(&mut here);
+        let installed = here.installed.unwrap();
+        assert!(
+            installed <= now + 5 && installed + 60 >= now,
+            "{installed} {now}"
+        );
+        // No folder of its own: the program's.
+        let mut by_program = game("custom:1", Store::Custom, None);
+        by_program.program = Some(dir.join("game.exe"));
+        complete_game(&mut by_program);
+        assert_eq!(by_program.installed, Some(installed));
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A folder that is gone gives no date; a date a snapshot kept stays.
+        let mut gone = game("gog:2", Store::Gog, Some(&dir.to_string_lossy()));
+        complete_game(&mut gone);
+        assert_eq!(gone.installed, None);
+        gone.installed = Some(7);
+        complete_game(&mut gone);
+        assert_eq!(gone.installed, Some(7));
     }
 
     #[test]

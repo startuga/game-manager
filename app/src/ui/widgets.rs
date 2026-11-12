@@ -10,8 +10,8 @@
 use windows_canvas::ColorF;
 
 use super::el::{
-    Align, El, Font, Interaction, Rect, Role, TextAlign, TextSpec, col, glyph, paint, row, spinner,
-    text,
+    Align, El, Font, Interaction, Rect, Role, TextAlign, TextSpec, col, glyph, layers, paint, row,
+    spinner, text,
 };
 use super::render::{Painter, glyph_spec};
 use super::theme;
@@ -74,6 +74,43 @@ pub fn icon_button<M>(icon: &str, name: impl Into<String>) -> El<M> {
     .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
     .hover_bg(theme::SUBTLE_HOVER)
     .pressed_bg(theme::SUBTLE_PRESSED)
+    .radius(theme::RADIUS_CONTROL)
+    .role(Role::Button)
+    .tooltip(name.clone())
+    .name(name)
+}
+
+/// A button that opens a flyout: its glyph and a small chevron, with a dot at the glyph's corner
+/// while what it opens is in effect (`active`). `name` is its tooltip and its UI Automation name.
+pub fn dropdown_button<M>(icon: &str, name: impl Into<String>, active: bool) -> El<M> {
+    let name = name.into();
+    let mut face = vec![
+        glyph(icon, theme::ICON_SIZE)
+            .text_align(TextAlign::Center)
+            .size(18.0, 18.0)
+            .center(),
+    ];
+    if active {
+        face.push(
+            col([])
+                .size(6.0, 6.0)
+                .radius(3.0)
+                .bg(theme::ACCENT)
+                .halign(Align::End)
+                .valign(Align::Start),
+        );
+    }
+    row([
+        layers(face).size(20.0, 20.0),
+        glyph(theme::glyph::CHEVRON_DOWN, 8.0).color(theme::TEXT_SECONDARY),
+    ])
+    .gap(5.0)
+    .pad_xy(8.0, 0.0)
+    .height(theme::CONTROL_HEIGHT)
+    .bg(theme::CONTROL)
+    .stroke(theme::INPUT_STROKE, 1.0)
+    .hover_bg(theme::CONTROL_HOVER)
+    .pressed_bg(theme::CONTROL_PRESSED)
     .radius(theme::RADIUS_CONTROL)
     .role(Role::Button)
     .tooltip(name.clone())

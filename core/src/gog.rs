@@ -169,6 +169,7 @@ fn build_game(entry: &RegistryEntry, info: Option<&Info>, galaxy: Option<&Path>)
         edits: None,
         pinned: None,
         hidden: false,
+        installed: None,
     })
 }
 

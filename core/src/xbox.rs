@@ -218,6 +218,7 @@ fn build_game(
         edits: None,
         pinned: None,
         hidden: false,
+        installed: None,
     })
 }
 

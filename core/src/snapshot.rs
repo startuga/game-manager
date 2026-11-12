@@ -94,6 +94,7 @@ mod tests {
             }),
             pinned: Some(0),
             hidden: false,
+            installed: None,
         }]
     }
 

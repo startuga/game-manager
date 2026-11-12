@@ -4,11 +4,14 @@
 //! 1. The user's own image, `%APPDATA%\Game Manager\covers\<game id>.jpg` (`set_own`).
 //! 2. The cover cache, `%LOCALAPPDATA%\Game Manager\cache\covers`.
 //! 3. The store's own files on this PC, with no network: Steam's library cache and GOG Galaxy's
-//!    web cache (`steam::cached_cover`, `gog::cached_cover`).
+//!    web cache (`steam::cached_cover`, `gog::cached_cover`), and the small picture an older
+//!    Ubisoft Connect cached (`ubisoft::Launcher::cached_cover`). That one is 240 × 280, less
+//!    than a tile: it shows until step 5 has answered, and a cover found there replaces it.
 //! 4. The store's server, by the game's own id: Steam's store API, the address in the Epic
 //!    launcher's catalog cache, GOG's API, Microsoft's store catalog for Xbox games.
-//! 5. The Steam store by name, for a game of another store that still has none (EA games and
-//!    games added by hand have no other source). Only a result with the same name counts.
+//! 5. The Steam store by name, for a game of another store that still has none (EA and Ubisoft
+//!    games and games added by hand have no other source). Only a result with the same name
+//!    counts.
 //!
 //! `load_local` does 1 to 3 for a whole library and says which games the network may still
 //! help; `fetch` does 4 and 5 for one game. Both block: call them off the UI thread.
@@ -29,7 +32,8 @@
 
 use crate::com::ComGuard;
 use crate::text::{fnv1a, letters};
-use crate::{Error, Game, Result, Store, epic, gog, http, json_file, steam, xbox};
+use crate::{Error, Game, Result, Store, epic, gog, http, json_file, steam, ubisoft, xbox};
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -168,10 +172,21 @@ pub fn describe(game: &Game) -> String {
     if cached(&net) {
         return format!("downloaded from {}", game.store.name());
     }
+    if has_small_local(game.store) && cached(&name) {
+        return "found in the Steam store by name".to_owned();
+    }
     if let Some(file) = Stores::find().local_file(game) {
         // Only Steam's server has a sharper one than its client keeps.
         let (keeper, sharper) = match game.store {
             Store::Gog => ("GOG Galaxy", ""),
+            Store::Ubisoft if missed(&name) => (
+                "Ubisoft Connect",
+                " (the Steam store has no game of this name)",
+            ),
+            Store::Ubisoft => (
+                "Ubisoft Connect",
+                " (a cover is looked up in the Steam store by name)",
+            ),
             _ if missed(&net) => ("Steam", ""),
             _ => (
                 "Steam",
@@ -204,10 +219,12 @@ pub fn describe(game: &Game) -> String {
     steps.join("; ")
 }
 
-/// The folders two stores keep covers in, looked up once for a batch of games.
+/// Where the stores keep covers on this PC, looked up once for a batch of games.
 struct Stores {
     steam: Option<PathBuf>,
     galaxy: Option<PathBuf>,
+    /// Ubisoft Connect's folder and old configuration cache, read when a Ubisoft game asks.
+    ubisoft: OnceCell<Option<ubisoft::Launcher>>,
 }
 
 impl Stores {
@@ -215,6 +232,7 @@ impl Stores {
         Self {
             steam: steam::install_dir(),
             galaxy: gog::galaxy_webcache(),
+            ubisoft: OnceCell::new(),
         }
     }
 
@@ -225,9 +243,20 @@ impl Stores {
                 steam::cached_cover(self.steam.as_deref()?, store_number(game)?.parse().ok()?)
             }
             Store::Gog => gog::cached_cover(self.galaxy.as_deref()?, store_number(game)?),
+            Store::Ubisoft => self
+                .ubisoft
+                .get_or_init(ubisoft::Launcher::find)
+                .as_ref()?
+                .cached_cover(store_number(game)?),
             Store::Epic | Store::Ea | Store::Xbox | Store::Custom => None,
         }
     }
+}
+
+/// Stores whose own picture is smaller than a tile and not a cover's shape (Ubisoft Connect's
+/// 240 × 280): a cover found in the Steam store by name wins over it.
+fn has_small_local(store: Store) -> bool {
+    store == Store::Ubisoft
 }
 
 /// The store's own id in a `<store>:<id>` game id.
@@ -238,8 +267,8 @@ fn store_number(game: &Game) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// Stores whose server has a game's cover by its id; EA games and games added by hand have only
-/// the lookup by name.
+/// Stores whose server has a game's cover by its id; EA and Ubisoft games and games added by hand
+/// have only the lookup by name.
 fn has_id_source(store: Store) -> bool {
     matches!(store, Store::Steam | Store::Epic | Store::Gog | Store::Xbox)
 }
@@ -288,6 +317,13 @@ fn local_cover(
     if let Some(jpeg) = cache.read(&net) {
         return (Some(Cover::new(jpeg, false)), false);
     }
+    let name = name_identity(game);
+    let by_name = || cache.read(&name).map(|jpeg| Cover::new(jpeg, false));
+    // A store's small picture gives way to the cover a lookup by name found.
+    let small = has_small_local(game.store);
+    if small && let Some(cover) = by_name() {
+        return (Some(cover), false);
+    }
     if let Some(file) = stores.local_file(game)
         && let Some(identity) = local_identity(&file)
     {
@@ -298,16 +334,17 @@ fn local_cover(
         });
         if let Some(jpeg) = jpeg {
             let cover = Cover::new(jpeg, false);
-            // Steam's server has a sharper one than its client keeps.
-            let sharper = game.store == Store::Steam
-                && cover.width < want_width.min(THUMB_WIDTH)
-                && !cache.missed(&net);
-            return (Some(cover), sharper);
+            let better = match game.store {
+                // Steam's server has a sharper one than its client keeps.
+                Store::Steam => cover.width < want_width.min(THUMB_WIDTH) && !cache.missed(&net),
+                // The Steam store may have a real cover under this name.
+                _ => small && !cache.missed(&name),
+            };
+            return (Some(cover), better);
         }
     }
-    let name = name_identity(game);
-    if let Some(jpeg) = cache.read(&name) {
-        return (Some(Cover::new(jpeg, false)), false);
+    if let Some(cover) = by_name() {
+        return (Some(cover), false);
     }
     let by_id = has_id_source(game.store) && !cache.missed(&net);
     let by_name = game.store != Store::Steam && !cache.missed(&name);
@@ -376,7 +413,7 @@ fn store_cover_url(game: &Game) -> Result<Option<String>> {
             Some(id) => xbox::cover_url(&id),
             None => Ok(None),
         },
-        Store::Ea | Store::Custom => Ok(None),
+        Store::Ea | Store::Ubisoft | Store::Custom => Ok(None),
     }
 }
 
@@ -742,6 +779,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 
@@ -916,9 +954,18 @@ mod tests {
         fs::create_dir_all(cover_file.parent().unwrap()).unwrap();
         // What Steam's client keeps: 300 × 450 under the 600 × 900 name.
         fs::write(&cover_file, bmp(300, 450)).unwrap();
+        // What an older Ubisoft Connect cached: a 240 × 280 picture, named by the configuration.
+        let launcher = dir.join("ubisoft");
+        let thumb = launcher.join(r"cache\assets\thumb.jpg");
+        fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+        fs::write(&thumb, bmp(240, 280)).unwrap();
         let stores = Stores {
             steam: Some(steam),
             galaxy: None,
+            ubisoft: OnceCell::from(Some(ubisoft::Launcher {
+                dir: launcher,
+                configurations: [(609, "root:\n  thumb_image: thumb.jpg\n".to_owned())].into(),
+            })),
         };
         let thumbnailer = Thumbnailer::new().unwrap();
         let made = std::cell::Cell::new(0);
@@ -980,6 +1027,23 @@ mod tests {
         );
         let (by_name, ask) = find(&sifu, 200);
         assert_eq!((by_name.unwrap().width, ask), (300, false));
+        // A Ubisoft game shows the launcher's small picture (cut to 2:3) while the Steam store
+        // is asked by name; what that finds wins, and a miss keeps the small one.
+        let child_of_light = game("ubisoft:609", "Child of Light", Store::Ubisoft);
+        let (small, ask) = find(&child_of_light, 200);
+        assert_eq!((small.unwrap().width, ask), (186, true));
+        cache.mark_miss(&name_identity(&child_of_light));
+        let (small, ask) = find(&child_of_light, 200);
+        assert_eq!((small.unwrap().width, ask), (186, false));
+        cache.write(
+            &name_identity(&child_of_light),
+            &thumbnailer.of_bytes(&bmp(600, 900)).unwrap(),
+        );
+        let (by_name, ask) = find(&child_of_light, 200);
+        assert_eq!((by_name.unwrap().width, ask), (400, false));
+        // One the launcher has no picture of: the lookup by name alone.
+        let anno = game("ubisoft:4553", "Anno 1800", Store::Ubisoft);
+        assert_eq!(find(&anno, 200), (None, true));
 
         // Not a picture: an error that names the file, and nothing saved.
         let text = dir.join("notes.txt");

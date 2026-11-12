@@ -240,6 +240,17 @@ fn named_api(path: &Path) -> Option<GraphicsApi> {
     })
 }
 
+/// The `.exe` files under a game's folder (skipping `SKIPPED_FOLDERS`), the largest first: for a
+/// store whose records don't name the game's program.
+pub(crate) fn programs_by_size(dir: &Path) -> Vec<PathBuf> {
+    let mut programs: Vec<Binary> = binaries(dir)
+        .into_iter()
+        .filter(|file| has_extension(&file.path, "exe"))
+        .collect();
+    programs.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+    programs.into_iter().map(|file| file.path).collect()
+}
+
 fn has_extension(path: &Path, extension: &str) -> bool {
     path.extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
@@ -380,6 +391,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 

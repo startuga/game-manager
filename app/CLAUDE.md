@@ -17,7 +17,9 @@ in `crates/samples/`) instead of guessing.
   - `game_menu.rs` (a game's menu from a right-click or the Menu key, which leaves the page as
     it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, Choose and Reset cover, and
     the Rename and Uninstall dialogs).
-  - `sidebar.rs` (search, filter, the pages, store groups, game rows, Add a game).
+  - `sidebar.rs` (search, the Sort and filters button, the pages, the view's sections, game
+    rows, Add a game) and `filter_menu.rs` (that button's flyout: Sort, Smart filters, Smart
+    Collections; `FilterMessage`; the view saved when it closes).
   - `library_page.rs` (the Library grid: a cover tile per game, by store; the window opens on it)
     and `covers.rs` (loading the core's covers, decoded for the tiles; Choose and Reset cover).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
@@ -34,9 +36,11 @@ in `crates/samples/`) instead of guessing.
     Apply does), Shaders drops its draft (as Discard changes does).
   - `open_reshade_view` (from `update`) opens the view's panel when it shows without one, after a
     Deploy has finished; a list that fails to load sends the view back to ReShade.
-  - Escape closes the menu, then a dialog, then leaves My PC, or Shaders and Add-ons for ReShade.
+  - Escape closes the menu, then the Sort and filters flyout, then a dialog, then leaves My PC,
+    or Shaders and Add-ons for ReShade.
 - **UI-free logic**, unit-tested: `edit.rs` (the Game settings draft), `library.rs` (search,
-  filter, pinned games first, selection). Put logic there, not in views.
+  the view's filters, collections and sort, the lists' sections, selection). Put logic there,
+  not in views: the sidebar and the Library page both list `library::sections`.
 - `ui/` – the toolkit:
   - `el.rs` (the element tree views return; builders), `layout.rs` (a small flexbox, tested),
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
@@ -81,6 +85,11 @@ in `crates/samples/`) instead of guessing.
   go round the top layer's items. `Key::Menu` (the Menu key and Shift+F10, a keyboard
   `WM_CONTEXTMENU`) sends the focused element's `on_context` at its lower-left; the menu's first
   item then takes focus, and focus goes back once it closes (`UiState::follow_menu`).
+- **Flyouts under a button** (`filter_menu.rs`): the layer sits in a `layers` over just the part
+  of the window the button is in (the sidebar and the page), so the panel is placed by constant
+  padding whatever is above it. That `layers` is always there, with or without the flyout, so
+  the elements under it keep their ids. Its lines are check boxes and list items (Toggle and
+  SelectionItem in UI Automation); Tab moves through them.
 - **Pictures**: `el::image` draws a decoded picture scaled to fit, uploaded once per `key`. Covers
   are decoded at their tile's exact pixel size for `Ctx::scale` with their corners cut into the
   alpha (`image::decode_covers`), so they need no clipping; `App::scale_changed` makes them again.

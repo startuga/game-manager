@@ -8,13 +8,14 @@
 //! - `%APPDATA%\Game Manager\game-settings.json`: the user's own settings per game, such as the
 //!   program chosen with "Choose game .exe" or being hidden from the list, and the games pinned
 //!   to quick access in the order they were pinned. Favorites of older versions are read as pins
-//!   (`GameSettings::migrate`) and saved as pins by the next write.
+//!   (`GameSettings::migrate`) and saved as pins by the next write. It also keeps how the
+//!   library's lists are sorted and filtered (`LibraryView`, under `library`).
 //!
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
 
 use crate::graphics::GraphicsApi;
-use crate::{Arch, Game, Launch, Result, json_file, with_args};
+use crate::{Arch, Game, Launch, Result, Store, json_file, with_args};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,8 +73,86 @@ pub struct GameSettings {
     /// edits: Reset to detected does not unpin a game).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pinned: Vec<String>,
+    /// How the library's lists are sorted and filtered (`LibraryView`); absent while it is the
+    /// default. Kept as it was read, so a value a newer version wrote never makes the whole file
+    /// unreadable: `load_library_view` falls back to the default instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    library: Option<serde_json::Value>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
+}
+
+/// How the library's lists are sorted and filtered: the choices of the sidebar's Sort and
+/// filters, kept under `library` in `game-settings.json`. What each choice shows is the app's
+/// business (`app/src/library.rs`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LibraryView {
+    pub sort: Sort,
+    /// Games under their store's header; off is one list.
+    pub group_by_store: bool,
+    /// The stores ticked; none ticked shows every store.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stores: Vec<Store>,
+    /// Only the games hidden from the list.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// The Smart Collection picked, if one is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection: Option<Collection>,
+}
+
+impl Default for LibraryView {
+    fn default() -> Self {
+        Self {
+            sort: Sort::Name,
+            group_by_store: true,
+            stores: Vec::new(),
+            hidden: false,
+            collection: None,
+        }
+    }
+}
+
+/// The order of the games in a list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Sort {
+    /// By name, A to Z.
+    #[default]
+    Name,
+    /// By name, Z to A.
+    NameDescending,
+    /// By `Game::installed`, newest first.
+    RecentlyInstalled,
+}
+
+/// A Smart Collection: a set of games that fills itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Collection {
+    /// Pinned to quick access.
+    Pinned,
+    /// With anything Game Manager set up for them (`mods.json`).
+    Modded,
+    Reshade,
+    Dxvk,
+    /// 32-bit games.
+    Bits32,
+    /// Installed in the last 30 days.
+    RecentlyInstalled,
+}
+
+impl Collection {
+    /// Every collection, in display order.
+    pub const ALL: [Collection; 6] = [
+        Collection::Pinned,
+        Collection::Modded,
+        Collection::Reshade,
+        Collection::Dxvk,
+        Collection::Bits32,
+        Collection::RecentlyInstalled,
+    ];
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -265,6 +344,32 @@ pub fn set_hidden(id: &str, hidden: bool) -> Result<()> {
     set_hidden_in(&json_file::user_file(SETTINGS_FILE)?, id, hidden)
 }
 
+/// How the library's lists were last sorted and filtered; the default when nothing was saved, or
+/// what was saved can't be read as one (a newer version's choices).
+pub fn load_library_view() -> Result<LibraryView> {
+    load_library_view_from(&json_file::user_file(SETTINGS_FILE)?)
+}
+
+/// Saves how the library's lists are sorted and filtered.
+pub fn save_library_view(view: &LibraryView) -> Result<()> {
+    save_library_view_in(&json_file::user_file(SETTINGS_FILE)?, view)
+}
+
+fn load_library_view_from(file: &Path) -> Result<LibraryView> {
+    let saved = load_settings_from(file)?.library;
+    Ok(saved
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default())
+}
+
+fn save_library_view_in(file: &Path, view: &LibraryView) -> Result<()> {
+    // The default leaves no entry, like a game with nothing changed.
+    let value = (*view != LibraryView::default())
+        .then(|| serde_json::to_value(view).ok())
+        .flatten();
+    update_settings(file, |settings| settings.library = value)
+}
+
 fn set_hidden_in(file: &Path, id: &str, hidden: bool) -> Result<()> {
     update_setting(file, id, |setting| setting.hidden = hidden)
 }
@@ -374,6 +479,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 
@@ -711,6 +817,79 @@ mod tests {
         assert!(saved()["games"].get("epic:Ginger").is_none());
         assert!(saved()["games"]["gog:1"].get("hidden").is_none());
         assert_eq!(saved()["games"]["gog:1"]["later"], 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_library_view_is_saved_with_the_other_choices() {
+        let dir = temp_dir("view");
+        let file = dir.join(SETTINGS_FILE);
+        // No file yet: the default, and saving the default writes no entry.
+        assert_eq!(
+            load_library_view_from(&file).unwrap(),
+            LibraryView::default()
+        );
+        fs::write(
+            &file,
+            r#"{ "games": { "gog:1": { "hidden": true } }, "pinned": ["gog:1"], "later": 1 }"#,
+        )
+        .unwrap();
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        save_library_view_in(&file, &LibraryView::default()).unwrap();
+        assert!(saved().get("library").is_none());
+
+        let view = LibraryView {
+            sort: Sort::RecentlyInstalled,
+            group_by_store: false,
+            stores: vec![Store::Steam, Store::Gog],
+            hidden: true,
+            collection: Some(Collection::Bits32),
+        };
+        save_library_view_in(&file, &view).unwrap();
+        assert_eq!(
+            saved()["library"],
+            serde_json::json!({
+                "sort": "recentlyInstalled",
+                "groupByStore": false,
+                "stores": ["Steam", "Gog"],
+                "hidden": true,
+                "collection": "bits32"
+            })
+        );
+        assert_eq!(load_library_view_from(&file).unwrap(), view);
+        // The rest of the file stays, and a game's change keeps the view.
+        assert_eq!(saved()["later"], 1);
+        assert_eq!(saved()["pinned"][0], "gog:1");
+        set_hidden_in(&file, "gog:1", false).unwrap();
+        assert_eq!(load_library_view_from(&file).unwrap(), view);
+
+        // Only what differs from the default is written; the rest reads as the default.
+        let sorted = LibraryView {
+            sort: Sort::NameDescending,
+            ..Default::default()
+        };
+        save_library_view_in(&file, &sorted).unwrap();
+        assert_eq!(
+            saved()["library"],
+            serde_json::json!({ "sort": "nameDescending", "groupByStore": true })
+        );
+        assert_eq!(load_library_view_from(&file).unwrap(), sorted);
+        // A newer version's choice: the default, and the games' settings still load.
+        fs::write(
+            &file,
+            r#"{ "library": { "sort": "byPlaytime" }, "pinned": ["gog:1"] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_library_view_from(&file).unwrap(),
+            LibraryView::default()
+        );
+        assert_eq!(load_settings_from(&file).unwrap().pinned, ["gog:1"]);
+        // Back to the default: the entry goes.
+        save_library_view_in(&file, &LibraryView::default()).unwrap();
+        assert!(saved().get("library").is_none());
         fs::remove_dir_all(&dir).unwrap();
     }
 

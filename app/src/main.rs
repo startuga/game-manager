@@ -22,6 +22,7 @@ mod app_view;
 mod covers;
 mod dlss_override_view;
 mod edit;
+mod filter_menu;
 mod game_menu;
 mod game_page;
 mod library;
@@ -38,6 +39,7 @@ mod upscalers_view;
 
 use covers::{CoverMessage, CoverState};
 use edit::{EditChoice, EditDraft, EditField};
+use filter_menu::{FilterMessage, FilterState};
 use game_menu::{MenuMessage, MenuState};
 use gm_core::custom::NewGame;
 use gm_core::graphics::{GraphicsApi, GraphicsInfo};
@@ -46,7 +48,7 @@ use gm_core::mods::reshade::{self, ReshadeStatus, ReshadeVariant};
 use gm_core::mods::{ModsFile, dxvk};
 use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
-use library::LibraryFilter;
+use library::LibraryView;
 use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
 use my_pc::{MyPcMessage, MyPcState};
 use reshade_panel::{AddonLibrary, ReshadePanel, ShaderLibrary};
@@ -124,8 +126,8 @@ enum Message {
     SearchSubmit,
     /// The search's ✕: empties it.
     ClearSearch,
-    /// The list filter picked; `None` keeps the current one.
-    Filter(Option<LibraryFilter>),
+    /// The sidebar's Sort and filters button and its flyout (`filter_menu.rs`).
+    Filter(FilterMessage),
     /// A store's group in the sidebar was folded or unfolded.
     ToggleStore(Store),
     /// The game menu and its Rename and Uninstall dialogs (`game_menu.rs`).
@@ -289,7 +291,9 @@ struct GameManager {
     games: Vec<Game>,
     icons: HashMap<String, Arc<Picture>>,
     query: String,
-    filter: LibraryFilter,
+    /// How the lists are sorted and filtered (Sort and filters), and its flyout.
+    view: LibraryView,
+    filters: FilterState,
     /// Store groups folded in the sidebar.
     folded: HashSet<Store>,
     selected: Option<String>,
@@ -407,10 +411,10 @@ impl App for GameManager {
         self.root_view(window)
     }
 
-    /// Escape closes the topmost of the game menu, a dialog, then leaves My PC, or Shaders and
-    /// Add-ons for the ReShade view.
+    /// Escape closes the topmost of the game menu, the Sort and filters flyout, a dialog, then
+    /// leaves My PC, or Shaders and Add-ons for the ReShade view.
     fn escape(&self) -> Option<Message> {
-        if let Some(message) = self.menu.escape() {
+        if let Some(message) = self.menu.escape().or_else(|| self.filters.escape()) {
             Some(message)
         } else if self.my_pc.trial.is_some() {
             Some(MyPcMessage::RevertMode.into())
@@ -457,7 +461,8 @@ impl GameManager {
             games: Vec::new(),
             icons: HashMap::new(),
             query: String::new(),
-            filter: LibraryFilter::All,
+            view: LibraryView::default(),
+            filters: FilterState::default(),
             folded: HashSet::new(),
             selected: None,
             page: Page::Library,
@@ -501,6 +506,7 @@ impl GameManager {
         ctx.spawn_background(|_cancel| {
             Message::ModsLoaded(gm_core::mods::load().map_err(|e| format!("Mods: {e}")))
         });
+        Self::load_view(ctx);
         // The NVIDIA overrides tab shows only with an NVIDIA driver: read it now.
         this.request_driver(ctx);
         this.start_scan(ctx);
@@ -625,12 +631,6 @@ impl GameManager {
         }
     }
 
-    /// After games are removed: a store or Hidden filter with no games left goes back to all
-    /// games (`library::keep_filter`).
-    fn drop_empty_store_filter(&mut self) {
-        self.filter = library::keep_filter(&self.games, self.filter);
-    }
-
     /// Looks up the selected game's graphics APIs in the background, once per game.
     fn request_graphics(&mut self, context: &Ctx<Message>) {
         let Some(game) = self.selected_game() else {
@@ -673,7 +673,7 @@ impl GameManager {
                 self.upscalers.found.clear();
                 self.error = (!errors.is_empty()).then(|| errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
-                self.drop_empty_store_filter();
+                self.tidy_view();
                 Self::load_icons(self.games.clone(), true, context);
                 self.drop_covers_of_missing_games();
                 self.load_covers(true, true, context);
@@ -692,13 +692,14 @@ impl GameManager {
             Message::Search(query) => self.query = query,
             Message::ClearSearch => self.query.clear(),
             Message::SearchSubmit => {
-                if let Some(index) = library::first_shown(&self.games, &self.query, self.filter) {
+                let first =
+                    library::first_shown(&self.games, &self.query, &self.view, self.facts());
+                if let Some(index) = first {
                     let id = self.games[index].id.clone();
                     self.select(id, context);
                 }
             }
-            Message::Filter(Some(filter)) => self.filter = filter,
-            Message::Filter(None) => {}
+            Message::Filter(message) => self.handle_filter(message, context),
             Message::ToggleStore(store) => {
                 if !self.folded.remove(&store) {
                     self.folded.insert(store);
@@ -764,13 +765,17 @@ impl GameManager {
             }
             Message::ModsLoaded(Ok(mods)) => {
                 self.mods = mods;
+                self.filters.mods_ready = true;
                 // The LAA status depends on what mods.json says was patched, ReShade's on
                 // whether it lists DXVK, the upscalers' on what was swapped.
                 self.laa.clear();
                 self.reshade.clear();
                 self.upscalers.found.clear();
             }
-            Message::ModsLoaded(Err(e)) => self.error = Some(e),
+            Message::ModsLoaded(Err(e)) => {
+                self.filters.mods_ready = true;
+                self.error = Some(e);
+            }
             Message::InstallDxvk => {
                 let Some(game) = self.selected_game() else {
                     return;
@@ -1151,11 +1156,11 @@ impl GameManager {
             }
             Message::CustomGameAdded(Ok(game)) => {
                 let game = *game;
-                // Show the new game even when the current search or filter would hide it.
-                if library::filter(std::slice::from_ref(&game), &self.query, self.filter).is_empty()
-                {
+                // Show the new game even when the current search or filters would hide it.
+                let one = std::slice::from_ref(&game);
+                if library::shown(one, &self.query, &self.view, self.facts()).is_empty() {
                     self.query.clear();
-                    self.filter = LibraryFilter::All;
+                    library::clear(&mut self.view);
                 }
                 self.selected = Some(game.id.clone());
                 Self::load_icons(vec![game.clone()], false, context);
@@ -1191,7 +1196,7 @@ impl GameManager {
                 self.icons.remove(&id);
                 self.drop_covers_of_missing_games();
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
-                self.drop_empty_store_filter();
+                self.tidy_view();
             }
             Message::CustomGameAdded(Err(e)) | Message::CustomGameRemoved(Err(e)) => {
                 self.error = Some(e);

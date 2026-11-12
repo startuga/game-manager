@@ -1,10 +1,12 @@
 //! The Library page (the sidebar's Library, and the page the window opens on): every game as a
 //! tile.
 //!
-//! - **Which games**: the sidebar's search and filter (`library::filter`). The pinned games come
-//!   first under PINNED, in the order they were pinned; the others are grouped by store in the
-//!   sidebar's order. A store folded in the sidebar is folded here too: both headers send
-//!   `ToggleStore`. While searching every store shows open, and the headers can't fold.
+//! - **Which games**: the sidebar's search and its Sort and filters (`library::shown`), in the
+//!   sidebar's sections (`library::sections`): the pinned games first under PINNED, in the order
+//!   they were pinned; the others by store, or in one list, in the view's order. A store folded
+//!   in the sidebar is folded here too: both headers send `ToggleStore`. While searching every
+//!   store shows open, and the headers can't fold. The caption over the count names the filters
+//!   or the collection that is on ("LIBRARY · STEAM, GOG").
 //! - **A tile**: the game's 200 × 300 cover with rounded corners (`covers.rs`), or its icon on a
 //!   card while it has none, a pin on a dark chip when it is pinned, and its name on one line
 //!   under it (whole in the tooltip). Under the pointer a light tint goes over all of it
@@ -21,7 +23,7 @@ use crate::ui::el::{Align, Edges, El, col, glyph, image, layers, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{heading, hint, working};
 use crate::{GameManager, Message};
-use gm_core::{Game, Store};
+use gm_core::Game;
 
 /// The space between tiles: 4 fit across at the window's first size.
 const TILE_GAP: f32 = 16.0;
@@ -31,18 +33,21 @@ const PIN_CHIP: windows_canvas::ColorF = theme::argb(0xC717_181C);
 
 impl GameManager {
     pub(crate) fn library_page(&self, window: &WindowInfo) -> El<Message> {
-        let visible = library::filter(&self.games, &self.query, self.filter);
-        let total = library::total(&self.games, self.filter);
+        let visible = self.shown_games();
+        let total = library::total(&self.games, &self.view);
         let shown = if visible.len() == total {
             library::games_label(total)
         } else {
             format!("{} of {}", visible.len(), library::games_label(total))
         };
         let header = col([
-            text("LIBRARY")
-                .text_size(theme::TEXT_CAPTION)
-                .weight(700)
-                .color(theme::TEXT_TERTIARY),
+            text(match library::describe(&self.view) {
+                Some(what) => format!("LIBRARY · {}", what.to_uppercase()),
+                None => "LIBRARY".to_owned(),
+            })
+            .text_size(theme::TEXT_CAPTION)
+            .weight(700)
+            .color(theme::TEXT_TERTIARY),
             heading(shown),
         ])
         .gap(4.0);
@@ -58,7 +63,8 @@ impl GameManager {
             .gap(16.0);
         }
         if visible.is_empty() {
-            return col([header, hint(self.filter.empty_hint(&self.query))]).gap(16.0);
+            let nothing = library::empty_hint(&self.view, &self.query);
+            return col([header, hint(nothing)]).gap(16.0);
         }
         let columns = library::columns(self.page_width(window), COVER_WIDTH, TILE_GAP);
         let mut rows = vec![header];
@@ -71,36 +77,12 @@ impl GameManager {
                 );
             }
         };
-        // Quick access: the pinned games first, in the order they were pinned.
-        let (pinned, rest) = library::split_pinned(&self.games, &visible);
-        if !pinned.is_empty() {
-            rows.push(crate::sidebar::pinned_header(
-                "library-pinned",
-                pinned.len(),
-            ));
-            let games: Vec<&Game> = pinned.iter().map(|&i| &self.games[i]).collect();
-            grid(&mut rows, &games);
-        }
-        for store in Store::ALL {
-            let games: Vec<&Game> = rest
-                .iter()
-                .map(|&i| &self.games[i])
-                .filter(|game| game.store == store)
-                .collect();
-            if games.is_empty() {
-                continue;
-            }
-            // A search shows every store open, as in the sidebar.
-            let searching = !self.query.trim().is_empty();
-            let folded = !searching && self.folded.contains(&store);
-            rows.push(crate::sidebar::store_header(
-                "library-store",
-                store,
-                games.len(),
-                folded,
-                !searching,
-            ));
+        // The sidebar's sections, folded as there.
+        for section in library::sections(&self.games, &visible, &self.view) {
+            let (header, folded) = self.section_header("library-", &section);
+            rows.push(header);
             if !folded {
+                let games: Vec<&Game> = section.games.iter().map(|&i| &self.games[i]).collect();
                 grid(&mut rows, &games);
             }
         }

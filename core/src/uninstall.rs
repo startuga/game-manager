@@ -3,6 +3,8 @@
 //!
 //! `route` picks how (reading the registry only):
 //! 1. **Steam**: `steam://uninstall/<appid>`. Steam asks, then removes the game.
+//!    **Ubisoft Connect**: `uplay://uninstall/<install id>`, the link its own Uninstall entries
+//!    hand to the launcher (`upc.exe uplay://uninstall/<id>`).
 //! 2. **An Uninstall entry** (HKLM 64 and 32-bit, HKCU) whose `InstallLocation` is the game's
 //!    folder: its `UninstallString`, the game's own uninstaller (GOG's `unins000.exe`, the EA
 //!    app's cleanup, an MSI). Started through the shell, so one that needs administrator rights
@@ -52,6 +54,10 @@ impl Route {
             Route::StoreApp {
                 store: Store::Gog, ..
             } => "GOG Galaxy opens on the game: uninstall it there.".to_owned(),
+            Route::StoreApp {
+                store: Store::Ubisoft,
+                ..
+            } => "Ubisoft Connect opens and asks before it uninstalls it.".to_owned(),
             Route::StoreApp { .. } => {
                 "Windows' Installed apps opens: find the game there and uninstall it.".to_owned()
             }
@@ -91,6 +97,14 @@ pub(crate) fn route_in(game: &Game, entries: &[Entry]) -> Option<Route> {
         Store::Steam => {
             if let Some(app_id) = game.id.strip_prefix("steam:") {
                 return Some(Route::Steam(app_id.to_owned()));
+            }
+        }
+        Store::Ubisoft => {
+            if let Some(id) = game.id.strip_prefix("ubisoft:") {
+                return Some(Route::StoreApp {
+                    store: Store::Ubisoft,
+                    uri: format!("uplay://uninstall/{id}"),
+                });
             }
         }
         _ => {}
@@ -197,6 +211,7 @@ mod tests {
             edits: None,
             pinned: None,
             hidden: false,
+            installed: None,
         }
     }
 
@@ -249,6 +264,26 @@ mod tests {
             route_in(&game("steam:220", Store::Steam, Some(r"C:\HL2")), &entries),
             Some(Route::Steam("220".into()))
         );
+        // Ubisoft Connect's own link, not the entry that hands the same link to its launcher.
+        let ubisoft = vec![Entry {
+            name: "Child of Light".into(),
+            folder: PathBuf::from("C:/Ubisoft/games/Child of Light/"),
+            command: r#""C:\Ubisoft\upc.exe" uplay://uninstall/609"#.into(),
+        }];
+        let child_of_light = game(
+            "ubisoft:609",
+            Store::Ubisoft,
+            Some(r"C:\Ubisoft\games\Child of Light"),
+        );
+        let route = route_in(&child_of_light, &ubisoft);
+        assert_eq!(
+            route,
+            Some(Route::StoreApp {
+                store: Store::Ubisoft,
+                uri: "uplay://uninstall/609".into()
+            })
+        );
+        assert!(route.is_some_and(|route| route.describe().starts_with("Ubisoft Connect")));
         // The entry whose folder is the game's (case and a trailing slash don't matter).
         assert_eq!(
             route_in(

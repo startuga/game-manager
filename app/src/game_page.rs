@@ -447,6 +447,7 @@ fn store_tint(store: Store) -> ColorF {
         Store::Epic => theme::SLATE,
         Store::Gog => theme::VIOLET,
         Store::Ea => theme::ORANGE,
+        Store::Ubisoft => theme::CYAN,
         Store::Xbox => theme::GREEN,
         Store::Custom => theme::AMBER,
     }
