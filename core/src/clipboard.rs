@@ -1,14 +1,19 @@
-//! The clipboard, for Export in ReShade ▸ Shaders: a file put on it as a dropped file (`CF_HDROP`),
-//! which File Explorer and Discord paste. Setting clipboard data needs a window to own it, so a
-//! message-only window is made for the call and destroyed afterwards; the data stays on the
-//! clipboard, which owns its memory once `SetClipboardData` succeeds.
+//! The clipboard:
+//! - a file put on it as a dropped file (`CF_HDROP`), which File Explorer and Discord paste
+//!   (Export in ReShade ▸ Shaders);
+//! - text, for the window's text boxes' Cut, Copy and Paste (`CF_UNICODETEXT`).
+//!
+//! Opening the clipboard takes a window, so a message-only window is made for the call and
+//! destroyed afterwards; data put on the clipboard stays there, which owns its memory once
+//! `SetClipboardData` succeeds. Text is read up to its first null, within the block's size.
 
 use crate::{Error, Result};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::Win32::{
-    CF_HDROP, CloseClipboard, CreateWindowExW, DROPFILES, DestroyWindow, EmptyClipboard,
-    GMEM_MOVEABLE, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, HGLOBAL, HWND, HWND_MESSAGE,
+    CF_HDROP, CF_UNICODETEXT, CloseClipboard, CreateWindowExW, DROPFILES, DestroyWindow,
+    EmptyClipboard, GMEM_MOVEABLE, GetClipboardData, GlobalAlloc, GlobalFree, GlobalLock,
+    GlobalSize, GlobalUnlock, HGLOBAL, HWND, HWND_MESSAGE, IsClipboardFormatAvailable,
     OpenClipboard, SetClipboardData,
 };
 use windows::core::{PCWSTR, w};
@@ -20,20 +25,78 @@ pub fn put_file(file: &Path) -> Result<()> {
     // The DROPFILES header, then the path and two terminating nulls, as UTF-16.
     let mut wide: Vec<u16> = file.as_os_str().encode_wide().collect();
     wide.extend([0, 0]);
-    let header = size_of::<DROPFILES>();
-    let size = header + wide.len() * 2;
+    let dropfiles = DROPFILES {
+        pFiles: size_of::<DROPFILES>() as u32,
+        fWide: true.into(),
+        ..Default::default()
+    };
+    // SAFETY: DROPFILES is plain data; its bytes are what the format expects at the start.
+    let header = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&dropfiles).cast::<u8>(),
+            size_of::<DROPFILES>(),
+        )
+    };
+    let mut bytes = header.to_vec();
+    bytes.extend(wide.iter().flat_map(|unit| unit.to_le_bytes()));
+    put(CF_HDROP as u32, &bytes)
+}
 
+/// Puts `text` on the clipboard, replacing what was there. Blocking, briefly.
+pub fn put_text(text: &str) -> Result<()> {
+    let bytes: Vec<u8> = text
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    put(CF_UNICODETEXT as u32, &bytes)
+}
+
+/// Whether the clipboard holds text to paste.
+pub fn has_text() -> bool {
+    // SAFETY: a plain query.
+    unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT as u32) }.as_bool()
+}
+
+/// The clipboard's text; `None` when it holds none. Blocking, briefly.
+pub fn text() -> Result<Option<String>> {
     let window = MessageWindow::new()?;
-    // SAFETY: a window this thread made, alive for the call.
-    let opened = unsafe { OpenClipboard(Some(window.0)) };
-    opened.ok().map_err(Error::windows(WHAT))?;
-    let _open = OpenClipboardGuard;
+    let _open = OpenClipboardGuard::open(&window)?;
+    // SAFETY: the clipboard is open on this thread; the handle stays the clipboard's.
+    let data = unsafe { GetClipboardData(CF_UNICODETEXT as u32) };
+    if data.is_null() {
+        return Ok(None);
+    }
+    let memory: HGLOBAL = data.cast();
+    // SAFETY: a plain query of the clipboard's block.
+    let size = unsafe { GlobalSize(memory) };
+    // SAFETY: locks the clipboard's block for reading, unlocked below.
+    let pointer = unsafe { GlobalLock(memory) }.cast::<u16>();
+    if pointer.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: the locked block holds `size` bytes, so `size / 2` UTF-16 units.
+    let units = unsafe { std::slice::from_raw_parts(pointer, size / 2) };
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
+    let text = String::from_utf16_lossy(&units[..end]);
+    // SAFETY: the block was locked above, once.
+    let _ = unsafe { GlobalUnlock(memory) };
+    Ok(Some(text))
+}
+
+/// Puts `bytes` on the clipboard as `format`, replacing what was there.
+fn put(format: u32, bytes: &[u8]) -> Result<()> {
+    let window = MessageWindow::new()?;
+    let _open = OpenClipboardGuard::open(&window)?;
     // SAFETY: the clipboard is open on this thread.
     let emptied = unsafe { EmptyClipboard() };
     emptied.ok().map_err(Error::windows(WHAT))?;
 
-    // SAFETY: a plain allocation of `size` bytes, owned by `block` until the clipboard takes it.
-    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE as u32, size) };
+    // SAFETY: a plain allocation, owned by `block` until the clipboard takes it.
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE as u32, bytes.len().max(1)) };
     if memory.is_null() {
         return Err(Error::windows(WHAT)(windows::core::Error::from_thread()));
     }
@@ -43,23 +106,13 @@ pub fn put_file(file: &Path) -> Result<()> {
     if pointer.is_null() {
         return Err(Error::windows(WHAT)(windows::core::Error::from_thread()));
     }
-    let dropfiles = DROPFILES {
-        pFiles: header as u32,
-        fWide: true.into(),
-        ..Default::default()
-    };
-    // SAFETY: the block holds `size` bytes: the header fits at its start (written unaligned, as
-    // DROPFILES is packed).
-    unsafe { std::ptr::write_unaligned(pointer.cast::<DROPFILES>(), dropfiles) };
-    // SAFETY: the path's bytes fit after the header, in the same block; the two do not overlap.
-    let path_at = unsafe { pointer.add(header) };
-    // SAFETY: `wide` holds `wide.len() * 2` bytes and `path_at` as many free ones.
-    unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr().cast::<u8>(), path_at, wide.len() * 2) };
+    // SAFETY: the block holds at least `bytes.len()` bytes; the two do not overlap.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
     // SAFETY: the block was locked above, once.
     let _ = unsafe { GlobalUnlock(memory) };
     // SAFETY: the clipboard is open and emptied by this thread; it owns the block once this
     // succeeds.
-    let set = unsafe { SetClipboardData(CF_HDROP as u32, Some(memory)) };
+    let set = unsafe { SetClipboardData(format, Some(memory)) };
     if set.is_null() {
         return Err(Error::windows(WHAT)(windows::core::Error::from_thread()));
     }
@@ -104,8 +157,17 @@ impl Drop for MessageWindow {
     }
 }
 
-/// Closes the clipboard when dropped.
+/// The clipboard, open on this thread; closed when dropped.
 struct OpenClipboardGuard;
+
+impl OpenClipboardGuard {
+    fn open(window: &MessageWindow) -> Result<Self> {
+        // SAFETY: a window this thread made, alive for the call.
+        let opened = unsafe { OpenClipboard(Some(window.0)) };
+        opened.ok().map_err(Error::windows(WHAT))?;
+        Ok(Self)
+    }
+}
 
 impl Drop for OpenClipboardGuard {
     fn drop(&mut self) {

@@ -10,10 +10,9 @@
 //! Patterns: Invoke (buttons), SelectionItem (rows, nav items, tabs), Toggle (check boxes,
 //! switches), ExpandCollapse and Value (drop-downs), Value (text boxes), RangeValue (sliders).
 //! Acting on one posts `WM_UIA_ACTION` to the window, which handles it on the UI thread as a click
-//! would be (a slider's new value rides in `wparam` above the action). A text
-//! box's Value reads and writes its EDIT control: setting it is like typing, since the EDIT's
-//! `EN_CHANGE` reaches the app. (Hosting the EDIT's own provider under a node doesn't merge: hosts
-//! apply only to fragment roots.)
+//! would be (a slider's new value rides in `wparam` above the action). A text box's Value is
+//! its text; setting it keeps the new text in the shared state (`Uia::take_text`) and posts
+//! `Action::SetText`, which the window types over the box's text.
 //!
 //! Providers use COM threading: UI Automation calls them on the UI thread.
 
@@ -35,18 +34,18 @@ use windows::Win32::{
     NavigateDirection_Parent, NavigateDirection_PreviousSibling, PATTERNID, PROPERTYID,
     PostMessageW, ProviderOptions, ProviderOptions_ServerSideProvider,
     ProviderOptions_UseComThreading, SAFEARRAY, SafeArrayCreateVector, SafeArrayPutElement,
-    SetWindowTextW, ToggleState, ToggleState_Off, ToggleState_On,
-    UIA_AutomationFocusChangedEventId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-    UIA_ComboBoxControlTypeId, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
-    UIA_ExpandCollapsePatternId, UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId,
-    UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_IsContentElementPropertyId,
-    UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
-    UIA_IsOffscreenPropertyId, UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId,
-    UIA_NamePropertyId, UIA_RangeValuePatternId, UIA_SelectionItemPatternId,
-    UIA_SliderControlTypeId, UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TogglePatternId,
-    UIA_ValuePatternId, UiaAppendRuntimeId, UiaHostProviderFromHwnd, UiaRaiseAutomationEvent,
-    UiaRect, UiaReturnRawElementProvider, UiaRootObjectId, VARENUM, VARIANT, VT_BOOL, VT_BSTR,
-    VT_I4, WM_APP, tagVARIANT_0, tagVARIANT_0_0, tagVARIANT_0_0_0,
+    ToggleState, ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId,
+    UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId,
+    UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_ExpandCollapsePatternId,
+    UIA_GroupControlTypeId, UIA_HasKeyboardFocusPropertyId, UIA_HelpTextPropertyId,
+    UIA_InvokePatternId, UIA_IsContentElementPropertyId, UIA_IsControlElementPropertyId,
+    UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
+    UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId, UIA_NamePropertyId,
+    UIA_RangeValuePatternId, UIA_SelectionItemPatternId, UIA_SliderControlTypeId,
+    UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TogglePatternId, UIA_ValuePatternId,
+    UiaAppendRuntimeId, UiaHostProviderFromHwnd, UiaRaiseAutomationEvent, UiaRect,
+    UiaReturnRawElementProvider, UiaRootObjectId, VARENUM, VARIANT, VT_BOOL, VT_BSTR, VT_I4,
+    WM_APP, tagVARIANT_0, tagVARIANT_0_0, tagVARIANT_0_0_0,
 };
 use windows::core::{
     BOOL, BSTR, ComObjectInterface, Error, HRESULT, IUnknown, Interface, PCWSTR, Result, implement,
@@ -108,6 +107,8 @@ pub enum Action {
     Collapse = 3,
     /// A slider's new value, in `wparam` above the action's byte.
     SetValue = 4,
+    /// A text box's new text, kept in the shared state (`Uia::take_text`).
+    SetText = 5,
 }
 
 impl Action {
@@ -119,6 +120,7 @@ impl Action {
             Self::Expand,
             Self::Collapse,
             Self::SetValue,
+            Self::SetText,
         ]
         .into_iter()
         .find(|action| *action as usize == value & 0xFF)
@@ -142,7 +144,7 @@ pub struct AccessNode {
     pub enabled: bool,
     pub focusable: bool,
     pub selected: bool,
-    /// A drop-down's picked item.
+    /// A drop-down's picked item, or a text box's text.
     pub value: Option<String>,
     pub expanded: bool,
     /// A slider's value, minimum and maximum.
@@ -157,8 +159,6 @@ pub struct AccessTree {
     /// Pixels per DIP, and the client area's origin on the screen, in pixels.
     pub scale: f32,
     pub origin: (f32, f32),
-    /// The EDIT controls' windows, by element id.
-    pub edits: Vec<(u64, isize)>,
 }
 
 impl AccessTree {
@@ -191,7 +191,6 @@ pub fn snapshot<M: Clone>(
         focus,
         scale: 1.0,
         origin: (0.0, 0.0),
-        edits: Vec::new(),
     };
     walk(
         &frame.root,
@@ -227,6 +226,7 @@ fn walk<M>(
                 items, selected, ..
             } => selected.and_then(|i| items.get(i)).cloned(),
             Kind::Slider { value, unit, .. } => Some(format!("{value}{unit}")),
+            Kind::Edit { text, .. } => Some(text.clone()),
             _ => None,
         };
         let range = match &el.kind {
@@ -275,6 +275,8 @@ fn walk<M>(
 struct Shared {
     hwnd: isize,
     tree: Mutex<AccessTree>,
+    /// Text boxes' new text from SetValue, by element id, until the window takes it.
+    texts: Mutex<Vec<(u64, String)>>,
 }
 
 impl Shared {
@@ -331,12 +333,25 @@ impl Uia {
         let shared = Arc::new(Shared {
             hwnd,
             tree: Mutex::new(AccessTree::default()),
+            texts: Mutex::new(Vec::new()),
         });
         let root = Root {
             shared: Arc::clone(&shared),
         }
         .into();
         Self { shared, root }
+    }
+
+    /// The text SetValue gave text box `id` (`Action::SetText`), taken once.
+    pub fn take_text(&self, id: u64) -> Option<String> {
+        let mut texts = match self.shared.texts.lock() {
+            Ok(texts) => texts,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let at = texts.iter().rposition(|(of, _)| *of == id)?;
+        let (_, text) = texts.remove(at);
+        texts.retain(|(of, _)| *of != id);
+        Some(text)
     }
 
     /// Replaces the snapshot; raises a focus event when the keyboard focus moved.
@@ -571,18 +586,6 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
     }
 }
 
-impl Node_Impl {
-    /// The EDIT control of a text box node.
-    fn edit_window(&self) -> Option<isize> {
-        self.shared.with(|tree| {
-            tree.edits
-                .iter()
-                .find(|(id, _)| *id == self.id)
-                .map(|(_, hwnd)| *hwnd)
-        })
-    }
-}
-
 impl IRawElementProviderFragment_Impl for Node_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> Result<IRawElementProviderFragment> {
         let target = self.shared.with(|tree| {
@@ -711,32 +714,29 @@ impl IExpandCollapseProvider_Impl for Node_Impl {
 const INVALID_OPERATION: HRESULT = HRESULT(0x8013_1509_u32 as i32);
 
 impl IValueProvider_Impl for Node_Impl {
-    /// A text box takes the text as if typed (its `EN_CHANGE` reaches the app); a drop-down's
+    /// A text box takes the text as if typed over its own (`Action::SetText`); a drop-down's
     /// item is picked through ExpandCollapse instead.
     fn SetValue(&self, value: &PCWSTR) -> HRESULT {
         let editable = self
             .node()
             .is_ok_and(|node| node.role == Role::Edit && node.enabled);
-        match self.edit_window() {
-            Some(hwnd) if editable => {
-                // SAFETY: UI Automation passes a valid wide string; the EDIT copies it.
-                let set = unsafe { SetWindowTextW(hwnd as HWND, *value) };
-                if set.as_bool() {
-                    HRESULT(0)
-                } else {
-                    INVALID_OPERATION
-                }
-            }
-            _ => INVALID_OPERATION,
+        if !editable {
+            return INVALID_OPERATION;
         }
+        // SAFETY: UI Automation passes a valid, null-terminated wide string for the call.
+        let Ok(text) = (unsafe { value.to_string() }) else {
+            return INVALID_OPERATION;
+        };
+        match self.shared.texts.lock() {
+            Ok(mut texts) => texts.push((self.id, text)),
+            Err(poisoned) => poisoned.into_inner().push((self.id, text)),
+        }
+        self.shared.post(Action::SetText, self.id);
+        HRESULT(0)
     }
     fn Value(&self) -> Result<BSTR> {
         let node = self.node()?;
-        let value = match self.edit_window() {
-            Some(hwnd) if node.role == Role::Edit => crate::shell::edit_box::text_of(hwnd),
-            _ => node.value.unwrap_or_default(),
-        };
-        Ok(BSTR::from(value.as_str()))
+        Ok(BSTR::from(node.value.unwrap_or_default().as_str()))
     }
     fn IsReadOnly(&self) -> Result<BOOL> {
         let node = self.node()?;

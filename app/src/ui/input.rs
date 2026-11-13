@@ -23,13 +23,174 @@
 //! menu is open, its items (`Role::MenuItem`, going round). `Key::Menu` sends the focused
 //! element's `on_context` at its lower-left corner; after the next layout, `follow_menu` gives the
 //! menu's first item focus, and gives it back to that element once the menu has closed.
+//!
+//! **Text boxes** are drawn too. `UiState::edits` keeps each one's editing state (`TextEdit`: the
+//! caret, the selection, undo) and how far its text is scrolled, kept in step with the view by
+//! `sync_edits` after every layout. The shell feeds them keys, characters and clicks (it has the
+//! text layouts that turn a point into an offset); the caret's blink phase, an IME composition
+//! and the text box menu (`EditMenu`: Cut, Copy, Paste, Select all) live here as well.
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 use super::el::{El, Kind, Rect, Role};
 use super::layout::{Placed, ScrollInfo};
+use super::text_edit::TextEdit;
 use super::theme;
+
+/// The space between a text box's frame and its text, left and right.
+pub const EDIT_PADDING: f32 = 8.0;
+
+/// Where a text box's text goes: its frame without the padding at the sides.
+pub fn edit_inner(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x + EDIT_PADDING,
+        rect.y,
+        (rect.w - 2.0 * EDIT_PADDING).max(0.0),
+        rect.h,
+    )
+}
+
+/// A text box's state beyond what its element says.
+#[derive(Clone, Debug)]
+pub struct EditState {
+    pub edit: TextEdit,
+    /// How far its text is scrolled to the left, in DIPs, so the caret shows.
+    pub scroll: f32,
+}
+
+/// An IME composition being typed into the focused text box: drawn at the caret until the IME
+/// gives its result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Composition {
+    pub id: u64,
+    pub text: String,
+    /// The IME's cursor in `text`, a byte offset.
+    pub cursor: usize,
+}
+
+/// The text box menu's commands, in its order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCommand {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditCommand {
+    pub const ALL: [EditCommand; 4] = [
+        EditCommand::Cut,
+        EditCommand::Copy,
+        EditCommand::Paste,
+        EditCommand::SelectAll,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EditCommand::Cut => "Cut",
+            EditCommand::Copy => "Copy",
+            EditCommand::Paste => "Paste",
+            EditCommand::SelectAll => "Select all",
+        }
+    }
+
+    pub fn shortcut(self) -> &'static str {
+        match self {
+            EditCommand::Cut => "Ctrl+X",
+            EditCommand::Copy => "Ctrl+C",
+            EditCommand::Paste => "Ctrl+V",
+            EditCommand::SelectAll => "Ctrl+A",
+        }
+    }
+}
+
+/// The text box menu's width, and its rows' height.
+pub const EDIT_MENU_WIDTH: f32 = 200.0;
+const EDIT_MENU_ROW: f32 = 32.0;
+const EDIT_MENU_PADDING: f32 = 4.0;
+
+/// The open text box menu: whose, where, which commands can act now, and the row under the
+/// pointer or picked with the arrows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditMenu {
+    pub id: u64,
+    pub rect: Rect,
+    pub enabled: [bool; 4],
+    pub hover: Option<usize>,
+}
+
+impl EditMenu {
+    /// The menu of text box `id` at a point: there, else flipped left or up to stay inside the
+    /// window, as the game menu is placed.
+    pub fn new(id: u64, at: (f32, f32), enabled: [bool; 4], window: Rect) -> Self {
+        let size = (
+            EDIT_MENU_WIDTH,
+            EDIT_MENU_ROW * EditCommand::ALL.len() as f32 + 2.0 * EDIT_MENU_PADDING,
+        );
+        let place = |at: f32, size: f32, start: f32, end: f32| {
+            if at + size <= end - 8.0 {
+                at
+            } else if at - size >= start + 8.0 {
+                at - size
+            } else {
+                (end - 8.0 - size).max(start)
+            }
+        };
+        let rect = Rect::new(
+            place(at.0, size.0, window.x, window.right()),
+            place(at.1, size.1, window.y, window.bottom()),
+            size.0,
+            size.1,
+        );
+        Self {
+            id,
+            rect,
+            enabled,
+            hover: None,
+        }
+    }
+
+    /// Row `index`'s rectangle.
+    pub fn row(&self, index: usize) -> Rect {
+        Rect::new(
+            self.rect.x + EDIT_MENU_PADDING,
+            self.rect.y + EDIT_MENU_PADDING + index as f32 * EDIT_MENU_ROW,
+            self.rect.w - 2.0 * EDIT_MENU_PADDING,
+            EDIT_MENU_ROW,
+        )
+    }
+
+    /// The row under a point.
+    pub fn item_at(&self, x: f32, y: f32) -> Option<usize> {
+        (0..EditCommand::ALL.len()).find(|index| self.row(*index).contains(x, y))
+    }
+
+    /// The command of row `index`, when it can act.
+    pub fn command(&self, index: usize) -> Option<EditCommand> {
+        EditCommand::ALL
+            .get(index)
+            .copied()
+            .filter(|_| self.enabled.get(index).copied().unwrap_or(false))
+    }
+
+    /// The next row that can act, down (or up) from the one picked, going round.
+    pub fn step(&mut self, down: bool) {
+        let count = EditCommand::ALL.len();
+        let mut at = self.hover.unwrap_or(if down { count - 1 } else { 0 });
+        for _ in 0..count {
+            at = if down {
+                (at + 1) % count
+            } else {
+                (at + count - 1) % count
+            };
+            if self.enabled[at] {
+                self.hover = Some(at);
+                return;
+            }
+        }
+    }
+}
 
 /// A drop-down list's item height.
 pub const ITEM_HEIGHT: f32 = 30.0;
@@ -129,6 +290,16 @@ pub struct UiState {
     /// shows, and focus comes back here when it closes.
     menu_owner: Option<u64>,
     menu_shown: bool,
+    /// Each text box's editing state and scroll, by element id (`sync_edits`).
+    pub edits: HashMap<u64, EditState>,
+    /// An IME composition in the focused text box.
+    pub composition: Option<Composition>,
+    /// The caret's blink phase: drawn or not.
+    pub caret_on: bool,
+    /// The open text box menu.
+    pub edit_menu: Option<EditMenu>,
+    /// The text box the held left button selects in (a drag after a press in it).
+    pub selecting: Option<u64>,
 }
 
 /// How long a hover fill takes to fade in or out, in seconds.
@@ -893,6 +1064,56 @@ impl UiState {
         }
     }
 
+    /// After a layout: every text box gets its editing state, kept while the view's text is the
+    /// one it knows (`TextEdit::sync`); boxes that are gone lose theirs, and their menu,
+    /// composition and selection drag.
+    pub fn sync_edits<M: Clone>(&mut self, frame: &Frame<M>) {
+        fn walk<M>(el: &El<M>, placed: &Placed, out: &mut Vec<(u64, String)>) {
+            if let Kind::Edit { text, .. } = &el.kind {
+                out.push((placed.id, text.clone()));
+            }
+            for (child, child_placed) in el.children.iter().zip(&placed.children) {
+                walk(child, child_placed, out);
+            }
+        }
+        let mut boxes = Vec::new();
+        walk(&frame.root, &frame.placed, &mut boxes);
+        for (id, text) in &boxes {
+            match self.edits.get_mut(id) {
+                Some(state) => {
+                    state.edit.sync(text);
+                }
+                None => {
+                    self.edits.insert(
+                        *id,
+                        EditState {
+                            edit: TextEdit::new(text),
+                            scroll: 0.0,
+                        },
+                    );
+                }
+            }
+        }
+        self.edits
+            .retain(|id, _| boxes.iter().any(|(kept, _)| kept == id));
+        let gone = |id: &u64| !self.edits.contains_key(id);
+        if self.edit_menu.as_ref().is_some_and(|menu| gone(&menu.id)) {
+            self.edit_menu = None;
+        }
+        if self.composition.as_ref().is_some_and(|c| gone(&c.id)) {
+            self.composition = None;
+        }
+        if self.selecting.as_ref().is_some_and(gone) {
+            self.selecting = None;
+        }
+    }
+
+    /// The text box with the keyboard: focused, enabled, and not under a dialog or a menu.
+    pub fn focused_edit<M: Clone>(&self, frame: &Frame<M>) -> Option<u64> {
+        let hit = self.reachable_focus(frame)?;
+        matches!(hit.el.kind, Kind::Edit { .. }).then_some(hit.placed.id)
+    }
+
     /// Drops what refers to elements that are gone (after the view changed).
     pub fn forget_missing<M: Clone>(&mut self, frame: &Frame<M>) {
         let exists = |id: &u64| frame.find(*id).is_some();
@@ -1358,5 +1579,119 @@ mod tests {
         assert_eq!(below.y, 52.0);
         let above = popup_rect(Rect::new(10.0, 150.0, 100.0, 30.0), 3, window);
         assert!(above.bottom() <= 150.0);
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+    use crate::ui::el::{El, TextSpec, col, edit, layers};
+    use crate::ui::layout::{Layout, Measure};
+
+    struct Fixed;
+    impl Measure for Fixed {
+        fn text(&self, spec: &TextSpec, _max_width: f32) -> (f32, f32) {
+            (spec.text.chars().count() as f32 * 7.0, 16.0)
+        }
+    }
+
+    fn frame(root: El<&'static str>, ui: &UiState) -> Frame<&'static str> {
+        let placed = Layout::new(&Fixed, &ui.scroll).place(&root, ui.window);
+        Frame { root, placed }
+    }
+
+    fn ui() -> UiState {
+        UiState {
+            window: Rect::new(0.0, 0.0, 300.0, 200.0),
+            ..UiState::default()
+        }
+    }
+
+    fn boxes(name: &'static str, other: &'static str) -> El<&'static str> {
+        col([
+            edit("name", name, "Name", |_| "changed"),
+            edit("other", other, "", |_| "changed"),
+        ])
+    }
+
+    #[test]
+    fn text_boxes_keep_their_state_while_the_view_shows_their_text() {
+        let mut ui = ui();
+        let first = frame(boxes("Crysis", ""), &ui);
+        ui.sync_edits(&first);
+        let name = crate::ui::layout::key_id("name");
+        assert_eq!(ui.edits.len(), 2);
+        assert_eq!(ui.edits[&name].edit.caret(), 6);
+        // Typed in: the app gets the text, and the next view gives it back.
+        let typed = ui.edits.get_mut(&name).unwrap().edit.insert(" 2");
+        assert_eq!(typed.as_deref(), Some("Crysis 2"));
+        ui.sync_edits(&frame(boxes("Crysis 2", ""), &ui));
+        assert!(ui.edits[&name].edit.can_undo());
+        // Reset gave another name: the box starts over.
+        ui.sync_edits(&frame(boxes("Crysis Remastered", ""), &ui));
+        let state = &ui.edits[&name].edit;
+        assert_eq!((state.caret(), state.can_undo()), (17, false));
+        // A box gone loses its state, menu and composition.
+        ui.edit_menu = Some(EditMenu::new(name, (0.0, 0.0), [true; 4], ui.window));
+        ui.composition = Some(Composition {
+            id: name,
+            text: "か".into(),
+            cursor: 3,
+        });
+        ui.selecting = Some(name);
+        ui.sync_edits(&frame(col([edit("other", "", "", |_| "x")]), &ui));
+        assert_eq!(ui.edits.len(), 1);
+        assert!(ui.edit_menu.is_none() && ui.composition.is_none() && ui.selecting.is_none());
+    }
+
+    #[test]
+    fn only_a_reachable_enabled_box_has_the_keyboard() {
+        let mut ui = ui();
+        let name = crate::ui::layout::key_id("name");
+        let shown = frame(boxes("", ""), &ui);
+        ui.focus = Some(name);
+        assert_eq!(ui.focused_edit(&shown), Some(name));
+        // Disabled.
+        let disabled = frame(col([edit("name", "", "", |_| "x").enabled(false)]), &ui);
+        assert_eq!(ui.focused_edit(&disabled), None);
+        // Under a dialog (its own layer, as `app_view` makes one).
+        let covered = frame(
+            layers([boxes("", ""), layers([col([]).grow().modal()])]),
+            &ui,
+        );
+        assert_eq!(ui.focused_edit(&covered), None);
+        // Focus on no element.
+        ui.focus = Some(1);
+        assert_eq!(ui.focused_edit(&shown), None);
+    }
+
+    #[test]
+    fn the_menu_stays_in_the_window_and_skips_what_cannot_act() {
+        let window = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let menu = EditMenu::new(1, (40.0, 30.0), [false, true, true, true], window);
+        assert_eq!((menu.rect.x, menu.rect.y), (40.0, 30.0));
+        assert_eq!(menu.item_at(50.0, 40.0), Some(0));
+        assert_eq!(menu.item_at(50.0, 30.0 + 4.0 + 32.0 * 3.0 + 1.0), Some(3));
+        assert_eq!(menu.item_at(10.0, 40.0), None);
+        // Nothing to cut without a selection.
+        assert_eq!(menu.command(0), None);
+        assert_eq!(menu.command(2), Some(EditCommand::Paste));
+        // Near the right and bottom edges it opens left and up.
+        let flipped = EditMenu::new(1, (280.0, 190.0), [true; 4], window);
+        assert_eq!(flipped.rect.right(), 280.0);
+        assert_eq!(flipped.rect.bottom(), 190.0);
+        // The arrows go round the rows that can act.
+        let mut menu = menu;
+        menu.step(true);
+        assert_eq!(menu.hover, Some(1));
+        menu.step(false);
+        assert_eq!(menu.hover, Some(3));
+        menu.hover = Some(3);
+        menu.step(true);
+        assert_eq!(menu.hover, Some(1));
+        assert_eq!(
+            edit_inner(Rect::new(10.0, 0.0, 100.0, 30.0)),
+            Rect::new(18.0, 0.0, 84.0, 30.0)
+        );
     }
 }

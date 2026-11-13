@@ -7,17 +7,21 @@
 //!   Drawing happens when something changed (no CPU at rest), or every frame while something
 //!   animates (`render::Drawn::animating`), never while minimized.
 //! - **Messages** reach `Shell` through windows-window's handler. The state is borrowed with
-//!   `try_borrow_mut`: a message sent to the window while it is busy (an EDIT's `EN_CHANGE` for text
-//!   we set ourselves) gets Windows' default handling. Messages that must always be answered
-//!   (`WM_CTLCOLOREDIT`, `WM_NCCALCSIZE`, `WM_GETMINMAXINFO`) need no state.
+//!   `try_borrow_mut`: a message sent to the window while it is busy gets Windows' default
+//!   handling. Messages that must always be answered (`WM_NCCALCSIZE`, `WM_GETMINMAXINFO`) need
+//!   no state. After each message the caret and the IME follow the text box with the keyboard
+//!   (`text_input::follow_focus`).
 //! - **Live resizing** happens inside Windows' modal size loop, so `WM_SIZE` lays out and draws
 //!   at once.
 //! - **The title bar** is part of the view. Elements keyed `CAPTION_DRAG`, `CAPTION_MIN`,
 //!   `CAPTION_MAX` and `CAPTION_CLOSE` tell `WM_NCHITTEST` where the draggable bar and the caption
 //!   buttons are (`window.rs`). Over the buttons the pointer arrives as non-client messages, which
 //!   are fed to the toolkit like client ones.
-//! - **Keys**: `WM_KEYDOWN` and the text boxes' `WM_EDIT_KEY` become toolkit keys; the Menu key
-//!   and Shift+F10 arrive as a keyboard `WM_CONTEXTMENU` (`Key::Menu`).
+//! - **Keys**: `WM_KEYDOWN` goes to the text box with the keyboard first (`text_input.rs`), then
+//!   becomes a toolkit key; `WM_CHAR` and the IME's messages type into the box. The Menu key and
+//!   Shift+F10 arrive as a keyboard `WM_CONTEXTMENU` (`Key::Menu`, or a text box's menu).
+//! - **No child windows**: text boxes are drawn like everything else, so nothing but Direct2D
+//!   paints the client area.
 //! - **Files dropped** on the window (`WM_DROPFILES`) go to `App::drop_files`.
 //! - **Display scaling**: `Ctx::scale` holds the window's (set before the first message, and at
 //!   `WM_DPICHANGED`, which also calls `App::scale_changed`), for pictures the app makes at the
@@ -26,12 +30,12 @@
 //! - **UI Automation**: `WM_GETOBJECT` and the actions it posts (`ui::uia`).
 //!
 //! Windows' message and style constants are `i32` in these bindings, so messages are matched as
-//! `i32` and the app's own (`WM_WAKE`, `WM_EDIT_KEY`, `WM_UIA_ACTION`) are `i32` too.
+//! `i32` and the app's own (`WM_WAKE`, `WM_UIA_ACTION`) are `i32` too.
 
 pub mod ctx;
 pub mod dialogs;
-pub mod edit_box;
 pub mod efficiency;
+mod text_input;
 pub mod window;
 
 use std::cell::RefCell;
@@ -41,16 +45,17 @@ use std::sync::mpsc::{self, Receiver};
 use windows::Win32::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DragAcceptFiles, DragFinish, DragQueryFileW,
-    EN_CHANGE, GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON,
-    HTMINBUTTON, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED, SW_SHOWNORMAL,
+    GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
+    IDC_IBEAM, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED, SW_SHOWNORMAL,
     SetCapture, SetCursor, SetFocus, SetProcessDpiAwarenessContext, SetTimer, ShowWindow,
     TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END,
     VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
-    VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_COMMAND, WM_CONTEXTMENU, WM_CTLCOLOREDIT, WM_DPICHANGED,
-    WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN,
+    VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_CHAR, WM_CONTEXTMENU, WM_DPICHANGED, WM_DROPFILES,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+    WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
     WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_TIMER, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -62,7 +67,7 @@ use crate::ui::render::{Renderer, Text};
 use crate::ui::theme;
 use crate::ui::uia::{self, Action, Uia, WM_UIA_ACTION};
 use ctx::{Ctx, Effect, WM_WAKE};
-use edit_box::{EditBoxes, FIND_KEY, WM_EDIT_KEY};
+use text_input::{CARET_TIMER, Clicks};
 use window::hwnd;
 
 /// Keys of the title bar's elements, which the window's hit-testing looks for.
@@ -73,6 +78,9 @@ pub const CAPTION_CLOSE: &str = "caption:close";
 
 /// The tooltip's timer.
 const TOOLTIP_TIMER: usize = 1;
+
+/// The F of Ctrl+F (its virtual-key code is its letter's).
+const FIND_KEY: i32 = b'F' as i32;
 
 /// Posted by a check script: draws the current frame into the PNG named by the
 /// `GAME_MANAGER_CAPTURE` environment variable (one pixel per DIP), so a session without screen
@@ -148,7 +156,7 @@ pub fn run<A: App>(
             (options.size.0 * scale) as i32,
             (options.size.1 * scale) as i32,
         )
-        .style((WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN) as u32)
+        .style(WS_OVERLAPPEDWINDOW as u32)
         .visible(false)
         .on_message(move |hwnd, message, wparam, lparam| {
             route(&handler, hwnd as isize, message, wparam, lparam, min)
@@ -185,7 +193,7 @@ pub fn run<A: App>(
         shell.drain();
         shell.render()
     });
-    // The renderer's swap chain and the EDITs go before the window.
+    // The renderer's swap chain goes before the window.
     state.borrow_mut().take();
     drop(window);
     result
@@ -201,7 +209,6 @@ fn route<A: App>(
     min: (f32, f32),
 ) -> Option<isize> {
     match message as i32 {
-        WM_CTLCOLOREDIT => return Some(edit_box::ctl_color(wparam)),
         WM_NCCALCSIZE => return window::nc_calc_size(handle, wparam, lparam),
         WM_GETMINMAXINFO => {
             window::min_size(handle, lparam, min);
@@ -213,7 +220,10 @@ fn route<A: App>(
     let Ok(mut guard) = state.try_borrow_mut() else {
         return None;
     };
-    guard.as_mut()?.message(message as i32, wparam, lparam)
+    let shell = guard.as_mut()?;
+    let result = shell.message(message as i32, wparam, lparam);
+    shell.follow_focus();
+    result
 }
 
 struct Shell<A: App> {
@@ -225,7 +235,6 @@ struct Shell<A: App> {
     text: Text,
     frame: Option<Frame<A::Message>>,
     renderer: Option<Renderer>,
-    edits: EditBoxes,
     uia: Uia,
     dpi: u32,
     /// The client area in pixels.
@@ -238,6 +247,14 @@ struct Shell<A: App> {
     tracking: bool,
     /// The text box a dialog opened with (its first control), given the keyboard once.
     dialog_edit: Option<u64>,
+    /// The window has the keyboard focus (the caret blinks only then).
+    window_focused: bool,
+    /// The text box whose caret blinks and for which the IME is on.
+    caret_box: Option<u64>,
+    /// A high surrogate from `WM_CHAR`, waiting for its pair.
+    high_surrogate: Option<u16>,
+    /// The last press, for double- and triple-clicks in text boxes.
+    last_click: Option<Clicks>,
 }
 
 fn low(value: isize) -> i32 {
@@ -264,7 +281,6 @@ impl<A: App> Shell<A> {
             text: Text::new(),
             frame: None,
             renderer: None,
-            edits: EditBoxes::new(handle),
             uia: Uia::new(handle),
             dpi: window::dpi(handle),
             size: (0, 0),
@@ -273,6 +289,10 @@ impl<A: App> Shell<A> {
             minimized: false,
             tracking: false,
             dialog_edit: None,
+            window_focused: false,
+            caret_box: None,
+            high_surrogate: None,
+            last_click: None,
         }
     }
 
@@ -303,7 +323,7 @@ impl<A: App> Shell<A> {
         }
     }
 
-    /// Builds the view and lays it out; places the EDITs and refreshes UI Automation.
+    /// Builds the view and lays it out; keeps the text boxes in step and refreshes UI Automation.
     fn layout(&mut self) {
         self.text.next_frame();
         let size = self.dips(self.size.0 as i32, self.size.1 as i32);
@@ -318,36 +338,25 @@ impl<A: App> Shell<A> {
         let frame = Frame { root, placed };
         self.ui.forget_missing(&frame);
         self.ui.follow_menu(&frame);
-        let mut specs = Vec::new();
-        edit_box::collect(&frame.root, &frame.placed, &mut specs);
-        // Text boxes are child windows, drawn over everything: under a dialog or a menu, only
-        // its own show.
-        let mut dialog_edit = None;
-        if let Some((layer, placed)) = frame.modal_layer() {
-            let mut inside = Vec::new();
-            edit_box::collect(layer, placed, &mut inside);
-            for spec in &mut specs {
-                spec.visible &= inside.iter().any(|kept| kept.id == spec.id);
-            }
-            dialog_edit = frame
-                .focusables()
-                .first()
-                .copied()
-                .filter(|id| inside.iter().any(|spec| spec.id == *id && spec.visible));
-        }
-        self.edits.sync(&specs, self.dpi);
+        self.ui.sync_edits(&frame);
         // A dialog whose first control is a text box (Rename, Add a game) gives it the keyboard
         // as it opens, its text selected.
+        let dialog_edit = frame
+            .modal_layer()
+            .and_then(|_| frame.focusables().first().copied())
+            .filter(|id| {
+                frame
+                    .find(*id)
+                    .is_some_and(|hit| matches!(hit.el.kind, Kind::Edit { .. }))
+            });
         if dialog_edit != self.dialog_edit {
             self.dialog_edit = dialog_edit;
-            if let Some(id) = dialog_edit
-                && self.edits.focus_select_all(id)
-            {
-                self.ui.focus = Some(id);
-                self.ui.focus_visible = false;
+            if let Some(id) = dialog_edit {
+                self.select_all_in(id);
             }
         }
         self.frame = Some(frame);
+        self.fit_edits();
         self.stale = false;
         self.redraw = true;
         self.refresh_uia();
@@ -361,7 +370,6 @@ impl<A: App> Shell<A> {
         tree.scale = self.scale();
         let origin = window::client_origin(self.hwnd);
         tree.origin = (origin.0 as f32, origin.1 as f32);
-        tree.edits = self.edits.windows();
         self.uia.update(tree);
     }
 
@@ -429,10 +437,20 @@ impl<A: App> Shell<A> {
                 efficiency::set(wparam == 0);
                 None
             }
+            WM_SETFOCUS | WM_KILLFOCUS => {
+                self.window_focused = message == WM_SETFOCUS;
+                if !self.window_focused && self.ui.edit_menu.take().is_some() {
+                    self.redraw = true;
+                }
+                None
+            }
             WM_MOUSEMOVE => {
                 self.track_leave(false);
                 let (x, y) = self.dips(low(lparam), high(lparam));
-                self.pointer_move(x, y);
+                if !self.edit_menu_move(x, y) {
+                    self.pointer_move(x, y);
+                    self.edit_drag(x);
+                }
                 Some(0)
             }
             WM_MOUSELEAVE | WM_NCMOUSELEAVE => {
@@ -441,29 +459,48 @@ impl<A: App> Shell<A> {
                 None
             }
             WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
-                // Drawn controls take the keyboard from a text box.
-                // SAFETY: focusing our own window.
+                // SAFETY: the keyboard comes to our own window.
                 let _ = unsafe { SetFocus(Some(hwnd(self.hwnd))) };
                 // SAFETY: capturing the pointer for our own window until the button is released.
                 let _ = unsafe { SetCapture(hwnd(self.hwnd)) };
                 let (x, y) = self.dips(low(lparam), high(lparam));
+                if self.edit_menu_press(x, y) {
+                    return Some(0);
+                }
                 let button = if message == WM_LBUTTONDOWN {
                     Button::Left
                 } else {
                     Button::Right
                 };
                 self.pointer_down(x, y, button);
+                if button == Button::Left {
+                    self.edit_press(x, y);
+                }
                 Some(0)
             }
             WM_LBUTTONUP | WM_RBUTTONUP => {
                 // SAFETY: releases the capture taken on the button's press.
                 let _ = unsafe { ReleaseCapture() };
                 let (x, y) = self.dips(low(lparam), high(lparam));
+                self.ui.selecting = None;
+                if self.edit_menu_release(x, y) {
+                    return Some(0);
+                }
                 let button = if message == WM_LBUTTONUP {
                     Button::Left
                 } else {
                     Button::Right
                 };
+                // A right-click on a text box opens its menu, and gives it the keyboard.
+                if button == Button::Right
+                    && let Some(id) = self.edit_at(x, y)
+                {
+                    self.ui.pressed = None;
+                    self.ui.focus = Some(id);
+                    self.ui.focus_visible = false;
+                    self.open_edit_menu(id, (x, y));
+                    return Some(0);
+                }
                 self.pointer_up(x, y, button);
                 Some(0)
             }
@@ -477,81 +514,47 @@ impl<A: App> Shell<A> {
                 }
                 Some(0)
             }
+            WM_TIMER if wparam == CARET_TIMER => {
+                self.blink();
+                Some(0)
+            }
             WM_TIMER if wparam == TOOLTIP_TIMER => {
                 // SAFETY: stops our own timer.
                 let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), TOOLTIP_TIMER) };
                 self.redraw |= self.ui.show_tooltip();
                 Some(0)
             }
+            WM_KEYDOWN if self.edit_menu_key_down(wparam as i32) => Some(0),
             WM_KEYDOWN if wparam as i32 == FIND_KEY && self.control() => {
                 self.focus_search();
                 Some(0)
             }
+            WM_KEYDOWN if self.edit_key(wparam as i32) => Some(0),
             WM_KEYDOWN => {
                 let key = key_of(wparam as i32, self.shift())?;
                 self.key(key);
                 Some(0)
             }
+            WM_CHAR if self.edit_char(wparam as u16) => Some(0),
             // The Menu key and Shift+F10 reach us from Windows' default handling as a
             // `WM_CONTEXTMENU` at (-1, -1); a right-click is handled at `WM_RBUTTONUP`.
             WM_CONTEXTMENU if lparam as i32 == -1 => {
-                self.key(Key::Menu);
-                Some(0)
-            }
-            // The subclass sends Ctrl+F only with Control down.
-            WM_EDIT_KEY if wparam as i32 == FIND_KEY => {
-                self.focus_search();
-                Some(0)
-            }
-            WM_EDIT_KEY => {
-                let id = self.edits.id_of(lparam);
-                let key = key_of(wparam as i32, self.shift())?;
-                match key {
-                    Key::Tab { .. } => {
-                        // From the text box on: focus moves on through the drawn controls.
-                        // SAFETY: focusing our own window.
-                        let _ = unsafe { SetFocus(Some(hwnd(self.hwnd))) };
-                        self.ui.focus = id;
-                        self.key(key);
-                    }
-                    Key::Escape => {
-                        // A search with text is emptied; otherwise Escape closes what is open.
-                        let message = match id.and_then(|id| self.empty_edit(id, lparam)) {
-                            Some(message) => Some(message),
-                            None => self.app.escape(),
-                        };
-                        self.dispatch_some(message);
-                    }
-                    Key::Enter => {
-                        let message = id.and_then(|id| {
-                            let frame = self.frame.as_ref()?;
-                            match &frame.find(id)?.el.kind {
-                                Kind::Edit { on_enter, .. } => on_enter.clone(),
-                                _ => None,
-                            }
-                        });
-                        self.dispatch_some(message);
-                    }
-                    _ => {}
+                if !self.edit_menu_key() {
+                    self.key(Key::Menu);
                 }
                 Some(0)
             }
-            WM_COMMAND if (wparam >> 16) as i32 == EN_CHANGE => {
-                let id = self.edits.id_of(lparam)?;
-                let text = edit_box::text_of(lparam);
-                let message = self
-                    .frame
-                    .as_ref()?
-                    .find(id)
-                    .and_then(|hit| match &hit.el.kind {
-                        Kind::Edit {
-                            on_change,
-                            text: shown,
-                            ..
-                        } => (*shown != text).then(|| on_change(text)),
-                        _ => None,
-                    });
-                self.dispatch_some(message);
+            WM_IME_SETCONTEXT => Some(self.ime_set_context(wparam, lparam)),
+            WM_IME_STARTCOMPOSITION => {
+                self.ime_place();
+                Some(0)
+            }
+            WM_IME_COMPOSITION => {
+                self.ime_composition(lparam);
+                Some(0)
+            }
+            WM_IME_ENDCOMPOSITION => {
+                self.ime_end();
                 Some(0)
             }
             WM_DROPFILES => {
@@ -633,31 +636,20 @@ impl<A: App> Shell<A> {
         let Some(key) = self.app.search_box() else {
             return;
         };
-        let id = key_id(key);
-        if self.edits.focus_select_all(id) {
-            self.ui.focus = Some(id);
-            self.ui.focus_visible = false;
-        }
+        self.ui.edit_menu = None;
+        self.select_all_in(key_id(key));
     }
 
-    /// Escape in a text box made with `clear_on_escape` that has text: empties the EDIT and
-    /// returns its `on_change("")` (the EDIT's own change notice comes while the window is busy,
-    /// and is dropped). `None` for any other box.
-    fn empty_edit(&self, id: u64, edit: isize) -> Option<A::Message> {
-        let frame = self.frame.as_ref()?;
-        let Kind::Edit {
-            on_change,
-            clear_on_escape: true,
-            ..
-        } = &frame.find(id)?.el.kind
-        else {
-            return None;
+    /// Text box `id` takes the keyboard with its text selected, so typing replaces it.
+    fn select_all_in(&mut self, id: u64) {
+        let Some(state) = self.ui.edits.get_mut(&id) else {
+            return;
         };
-        if edit_box::text_of(edit).is_empty() {
-            return None;
-        }
-        self.edits.set_text(id, "");
-        Some(on_change(String::new()))
+        state.edit.select_all();
+        self.ui.focus = Some(id);
+        self.ui.focus_visible = false;
+        self.fit_edit(id);
+        self.restart_caret();
     }
 
     /// Asks for `WM_MOUSELEAVE` (or `WM_NCMOUSELEAVE` over the caption buttons).
@@ -708,14 +700,22 @@ impl<A: App> Shell<A> {
         self.dispatch_some(message);
     }
 
-    /// `WM_SETCURSOR` over the client area: the left-right arrows over a resize grip.
+    /// `WM_SETCURSOR` over the client area: the left-right arrows over a resize grip, the I-beam
+    /// over a text box.
     fn set_cursor(&self) -> Option<isize> {
         let frame = self.frame.as_ref()?;
-        if !self.ui.resize_cursor(frame) {
+        // IDC_SIZEWE and IDC_IBEAM are resource numbers, declared as narrow strings in these
+        // bindings.
+        let resource = if self.ui.resize_cursor(frame) {
+            IDC_SIZEWE
+        } else if self.ui.edit_menu.is_none()
+            && self.edit_at(self.ui.pointer.0, self.ui.pointer.1).is_some()
+        {
+            IDC_IBEAM
+        } else {
             return None;
-        }
-        // IDC_SIZEWE is a resource number, declared as a narrow string in these bindings.
-        let name = windows::core::PCWSTR(IDC_SIZEWE.0.cast());
+        };
+        let name = windows::core::PCWSTR(resource.0.cast());
         // SAFETY: a system cursor; no module.
         let cursor = unsafe { LoadCursorW(None, name) };
         // SAFETY: shows a system cursor, which needs no freeing.
@@ -756,11 +756,11 @@ impl<A: App> Shell<A> {
             }
             KeyResult::Unhandled => {}
         }
-        // Tabbing onto a text box gives it the keyboard.
-        if let Some(focus) = self.ui.focus
-            && self.edits.focus(focus)
+        // Tabbing onto a text box selects its text, as Windows' dialogs do.
+        if let Key::Tab { .. } = key
+            && let Some(id) = self.edit_target()
         {
-            self.ui.focus_visible = false;
+            self.select_all_in(id);
         }
     }
 
@@ -775,19 +775,13 @@ impl<A: App> Shell<A> {
         match action {
             Action::Invoke => {
                 let message = hit.el.enabled.then(|| hit.el.on_click.clone()).flatten();
-                // Like a click, an invoked control takes the keyboard from a text box, so the
-                // box's text follows the app again (the search's ✕).
-                // SAFETY: focusing our own window.
-                let _ = unsafe { SetFocus(Some(hwnd(self.hwnd))) };
                 self.dispatch_some(message);
             }
             // Like the keyboard, these scroll the element into view first.
             Action::Focus => {
                 self.ui.focus = Some(id);
                 self.ui.scroll_into_view(frame, id);
-                if !self.edits.focus(id) {
-                    self.stale = true;
-                }
+                self.stale = true;
             }
             Action::Expand => {
                 if let Kind::DropDown { selected, .. } = &hit.el.kind {
@@ -813,6 +807,15 @@ impl<A: App> Shell<A> {
                     _ => None,
                 };
                 self.dispatch_some(message);
+            }
+            // A text box's whole text, as if typed over it.
+            Action::SetText => {
+                let editable = hit.el.enabled && matches!(hit.el.kind, Kind::Edit { .. });
+                if let Some(text) = self.uia.take_text(id)
+                    && editable
+                {
+                    self.set_edit_text(id, &text);
+                }
             }
         }
     }

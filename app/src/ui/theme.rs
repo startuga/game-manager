@@ -44,6 +44,9 @@ pub const CONTROL_PRESSED: ColorF = argb(0x0CFF_FFFF);
 /// Subtle controls (list rows, nav items, icon buttons): no fill until hovered.
 pub const SUBTLE_HOVER: ColorF = argb(0x14FF_FFFF);
 pub const SUBTLE_PRESSED: ColorF = argb(0x0AFF_FFFF);
+/// How opaque a disabled control is drawn (its children too).
+pub const DISABLED_OPACITY: f32 = 0.42;
+
 /// Text boxes: darker than the layer they sit on.
 pub const INPUT: ColorF = argb(0xFF20_2127);
 pub const INPUT_STROKE: ColorF = argb(0x24FF_FFFF);
@@ -56,6 +59,8 @@ pub const TEXT_TERTIARY: ColorF = argb(0xADFF_FFFF);
 pub const ACCENT: ColorF = argb(0xFFD7_143A);
 /// The selected row, nav item or tab: the accent at 23%.
 pub const SELECTED: ColorF = with_alpha(ACCENT, 0x3A);
+/// Selected text in a text box.
+pub const TEXT_SELECTION: ColorF = with_alpha(ACCENT, 0x8C);
 /// The red ✕ and errors.
 pub const CRITICAL: ColorF = argb(0xFFFF_6B6B);
 pub const ERROR_FILL: ColorF = argb(0x33C4_2B1C);

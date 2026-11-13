@@ -133,8 +133,8 @@ pub fn remove_button<M>(name: impl Into<String>) -> El<M> {
     .name(name)
 }
 
-/// A text box: an EDIT control in a rounded frame. `key` keeps the same EDIT (and its caret)
-/// across frames; `name` is its UI Automation name.
+/// A text box in a rounded frame. `key` keeps its caret, selection and undo across frames;
+/// `name` is its UI Automation name.
 pub fn text_box<M>(
     key: impl Into<String>,
     value: impl Into<String>,
@@ -149,7 +149,7 @@ pub fn text_box<M>(
         .name(name)
 }
 
-/// The search box: a magnifier, the EDIT, and a ✕ that sends `on_clear` while there is text, in
+/// The search box: a magnifier, the text, and a ✕ that sends `on_clear` while there is text, in
 /// one input frame. Escape empties it (`clear_on_escape`); Enter sends `on_enter`.
 pub fn search_box<M>(
     key: impl Into<String>,

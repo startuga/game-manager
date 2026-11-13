@@ -198,8 +198,9 @@ pub enum Kind<M> {
     },
     /// A progress ring, turning while it is shown.
     Spinner,
-    /// A Win32 EDIT control placed over the element (`shell::edit_box`). Enter sends `on_enter`;
-    /// with `clear_on_escape`, Escape empties a box that has text (the search).
+    /// A text box, drawn by the renderer and edited through `UiState::edits` (`shell::text_input`
+    /// feeds it). Enter sends `on_enter`; with `clear_on_escape`, Escape empties a box that has
+    /// text (the search).
     Edit {
         text: String,
         placeholder: String,
@@ -616,7 +617,7 @@ pub fn spinner<M>(size: f32) -> El<M> {
     El::new(Kind::Spinner).size(size, size)
 }
 
-/// A text box. `key` keeps the same EDIT control (and its caret) across frames.
+/// A text box. `key` keeps its editing state (caret, selection, undo) across frames.
 pub fn edit<M>(
     key: impl Into<String>,
     text: impl Into<String>,

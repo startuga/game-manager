@@ -6,8 +6,14 @@
 //! - **`Renderer`** owns the GPU device and the window's swap chain, and keeps each picture's
 //!   bitmap by key. A frame clears to the base colour and draws the tree in order: fills and
 //!   outlines (hover and press states from `UiState`), text, pictures, spinners, drop-down faces,
-//!   custom painters, scroll views clipped to their viewport with their thin bars, and the
-//!   keyboard focus ring; then the open drop-down's list and the tooltip on top.
+//!   text boxes, custom painters, scroll views clipped to their viewport with their thin bars, and
+//!   the keyboard focus ring; then the open drop-down's list, the text box menu and the tooltip on
+//!   top.
+//! - **Text boxes** (`edit`): the text (or the placeholder) clipped to the box and scrolled by its
+//!   `EditState`, the selection behind it and the caret while the box has the keyboard, an IME
+//!   composition underlined at the caret (`with_marked_layout`), and an accent line along the
+//!   bottom of the focused box, as WinUI draws it. `edit_spec` is the text's format, which the
+//!   shell's hit-testing uses too.
 //! - **`Painter`** is what custom painters (the Play button) draw with.
 //!
 //! A frame with a spinner reports `animating`, so the loop keeps drawing while it turns; any other
@@ -145,6 +151,20 @@ impl Text {
         let result = f(&layout);
         self.layouts.borrow_mut().insert(key, (layout, frame));
         result
+    }
+
+    /// Runs `f` with a layout of `spec` on one unbounded line, `marked` underlined: an IME
+    /// composition in a text box. Made for the call, not kept.
+    pub fn with_marked_layout<R>(
+        &self,
+        spec: &TextSpec,
+        marked: std::ops::Range<usize>,
+        f: impl FnOnce(&TextLayout) -> R,
+    ) -> R {
+        let format = self.format(FormatKey::of(spec));
+        let mut layout = TextLayout::new(&spec.text, &format, UNBOUNDED, UNBOUNDED);
+        layout.set_underline(marked, true);
+        f(&layout)
     }
 
     /// Starts a new frame, dropping layouts no recent frame used.
@@ -494,7 +514,12 @@ impl Painter<'_> {
             return;
         }
         let saved = self.alpha;
-        self.alpha *= el.opacity * if el.enabled { 1.0 } else { 0.42 };
+        self.alpha *= el.opacity
+            * if el.enabled {
+                1.0
+            } else {
+                super::theme::DISABLED_OPACITY
+            };
         let rect = placed.rect;
         let hover = ui.hover == Some(placed.id);
         let pressed = hover && ui.pressed == Some(placed.id);
@@ -519,7 +544,10 @@ impl Painter<'_> {
             self.stroke_rounded(rect.inset(Edges::all(width / 2.0)), el.radius, color, width);
         }
         match &el.kind {
-            Kind::Box | Kind::Scroll | Kind::Edit { .. } => {}
+            Kind::Box | Kind::Scroll => {}
+            Kind::Edit {
+                text, placeholder, ..
+            } => self.edit(placed, text, placeholder, ui),
             Kind::Text(spec) => self.text(spec, rect.inset(el.padding)),
             Kind::Image { key, picture } => self.picture(key, picture, rect.inset(el.padding)),
             Kind::Spinner => self.spinner(rect),
@@ -586,11 +614,149 @@ impl Painter<'_> {
                 self.fill_rounded(rect, el.radius, tint);
             }
         }
-        if ui.focus_visible && ui.focus == Some(placed.id) {
+        // A text box shows its focus with the caret and its accent line instead.
+        if ui.focus_visible && ui.focus == Some(placed.id) && !matches!(el.kind, Kind::Edit { .. })
+        {
             let ring = rect.inset(Edges::all(-2.0));
             self.stroke_rounded(ring, el.radius + 2.0, theme::TEXT, 2.0);
         }
         self.alpha = saved;
+    }
+
+    /// A text box's inside: its text or placeholder, the selection, the caret and an IME
+    /// composition while it has the keyboard, and the focused box's accent line.
+    fn edit(&mut self, placed: &Placed, text: &str, placeholder: &str, ui: &UiState) {
+        let rect = placed.rect;
+        let inner = input::edit_inner(rect);
+        let focused = ui.focus == Some(placed.id);
+        let state = ui.edits.get(&placed.id);
+        let scroll = state.map_or(0.0, |state| state.scroll);
+        let composing = ui
+            .composition
+            .as_ref()
+            .filter(|composition| focused && composition.id == placed.id);
+        let x = inner.x - scroll;
+        self.push_clip(inner.intersect(&placed.clip));
+        if text.is_empty() && composing.is_none() {
+            if !placeholder.is_empty() {
+                let spec = edit_spec(placeholder, theme::TEXT_TERTIARY);
+                self.text.with_layout(&spec, f32::INFINITY, |layout| {
+                    let y = line_top(rect, layout);
+                    self.session.draw_text_layout(
+                        Vector2::new(inner.x, y),
+                        layout,
+                        self.paint(spec.color),
+                    );
+                });
+            }
+            if focused && ui.caret_on {
+                let spec = edit_spec("", theme::TEXT);
+                self.text.with_layout(&spec, f32::INFINITY, |layout| {
+                    let caret = layout.caret_bounds(0, false);
+                    let y = line_top(rect, layout);
+                    self.caret(inner.x + caret.left, y + caret.top, caret.height());
+                });
+            }
+        } else if let Some(composition) = composing {
+            // The composition stands in for the selection until the IME gives its result.
+            let selection = state.map_or(text.len()..text.len(), |s| s.edit.selection());
+            let shown = format!(
+                "{}{}{}",
+                &text[..selection.start],
+                composition.text,
+                &text[selection.end..]
+            );
+            let marked = selection.start..selection.start + composition.text.len();
+            let caret = selection.start + composition.cursor.min(composition.text.len());
+            let spec = edit_spec(&shown, theme::TEXT);
+            self.text.with_marked_layout(&spec, marked, |layout| {
+                let y = line_top(rect, layout);
+                self.session
+                    .draw_text_layout(Vector2::new(x, y), layout, self.paint(spec.color));
+                if ui.caret_on {
+                    let bounds = caret_at(layout, &shown, caret);
+                    self.caret(x + bounds.left, y + bounds.top, bounds.height());
+                }
+            });
+        } else {
+            let spec = edit_spec(text, theme::TEXT);
+            self.text.with_layout(&spec, f32::INFINITY, |layout| {
+                let y = line_top(rect, layout);
+                if let Some(state) = state.filter(|state| focused && state.edit.has_selection()) {
+                    for part in layout.range_bounds(state.edit.selection()) {
+                        let mark =
+                            Rect::new(x + part.left, y + part.top, part.width(), part.height());
+                        self.fill_rect(mark, theme::TEXT_SELECTION);
+                    }
+                }
+                self.session
+                    .draw_text_layout(Vector2::new(x, y), layout, self.paint(spec.color));
+                if focused
+                    && ui.caret_on
+                    && let Some(state) = state
+                {
+                    let bounds = caret_at(layout, text, state.edit.caret());
+                    self.caret(x + bounds.left, y + bounds.top, bounds.height());
+                }
+            });
+        }
+        self.pop_clip();
+        if focused {
+            let inset = theme::RADIUS_CONTROL / 2.0;
+            let line = Rect::new(
+                rect.x + inset,
+                rect.bottom() - 2.0,
+                rect.w - 2.0 * inset,
+                2.0,
+            );
+            self.fill_rounded(line, 1.0, theme::ACCENT);
+        }
+    }
+
+    /// The text caret: a line one DIP wide.
+    fn caret(&self, x: f32, y: f32, height: f32) {
+        let x = x.round() + 0.5;
+        self.line((x, y), (x, y + height), theme::TEXT, 1.0);
+    }
+
+    /// The text box menu: Cut, Copy, Paste and Select all with their shortcuts, greyed when they
+    /// can't act.
+    fn edit_menu(&self, menu: &input::EditMenu) {
+        let rect = menu.rect;
+        self.glow(
+            rect,
+            theme::RADIUS_FLYOUT,
+            theme::with_alpha(ColorF::BLACK, 0xFF),
+            10.0,
+        );
+        self.fill_rounded(rect, theme::RADIUS_FLYOUT, theme::FLYOUT);
+        self.stroke_rounded(
+            rect.inset(Edges::all(0.5)),
+            theme::RADIUS_FLYOUT,
+            theme::FLYOUT_STROKE,
+            1.0,
+        );
+        for (index, command) in input::EditCommand::ALL.iter().enumerate() {
+            let row = menu.row(index);
+            let enabled = menu.enabled[index];
+            if enabled && menu.hover == Some(index) {
+                self.fill_rounded(row, theme::RADIUS_CONTROL, theme::SUBTLE_HOVER);
+            }
+            let mut label = item_spec(command.label());
+            let mut keys = item_spec(command.shortcut());
+            keys.size = theme::TEXT_SMALL;
+            keys.color = theme::TEXT_TERTIARY;
+            if !enabled {
+                label.color = theme::with_alpha(theme::TEXT, 0x5C);
+                keys.color = theme::with_alpha(theme::TEXT, 0x40);
+            }
+            self.text(&label, Rect::new(row.x + 12.0, row.y, row.w - 24.0, row.h));
+            let width = self.measure(&keys, row.w).0;
+            self.text(
+                &keys,
+                Rect::new(row.right() - 12.0 - width, row.y, width + 1.0, row.h),
+            );
+        }
     }
 
     /// A slider: the track, its filled part, the thumb (a ring with an accent dot that grows
@@ -710,6 +876,9 @@ impl Painter<'_> {
             }
             self.pop_clip();
         }
+        if let Some(menu) = &ui.edit_menu {
+            self.edit_menu(menu);
+        }
         if let Some(tip) = ui.tooltip.as_ref().filter(|tip| tip.shown) {
             let mut spec = item_spec(&tip.text);
             spec.size = theme::TEXT_SMALL;
@@ -729,6 +898,34 @@ impl Painter<'_> {
             );
         }
     }
+}
+
+/// A text box's text: the body font on one line that never wraps or trims (the box scrolls it).
+pub fn edit_spec(text: &str, color: ColorF) -> TextSpec {
+    TextSpec {
+        text: text.to_owned(),
+        size: theme::TEXT_SIZE,
+        weight: 400,
+        font: Font::Text,
+        color,
+        wrap: false,
+        align: TextAlign::Start,
+    }
+}
+
+/// The caret's rectangle before byte `position` of `text` (a zero-width line): at the end, the
+/// trailing edge of the last character, which DirectWrite places reliably.
+pub fn caret_at(layout: &TextLayout, text: &str, position: usize) -> windows_text::Rect {
+    let position = position.min(text.len());
+    match text[..position].char_indices().next_back() {
+        Some((last, _)) if position == text.len() => layout.caret_bounds(last, true),
+        _ => layout.caret_bounds(position, false),
+    }
+}
+
+/// Where a text box's line starts, centred in its frame, on a whole DIP.
+fn line_top(rect: Rect, layout: &TextLayout) -> f32 {
+    (rect.y + ((rect.h - layout.metrics().height) / 2.0).max(0.0)).round()
 }
 
 /// A glyph's text spec.

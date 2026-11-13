@@ -2,7 +2,8 @@
 
 A native Win32 window drawn with Direct2D and DirectWrite: windows-rs's `windows-window` (the HWND
 and message loop), `windows-canvas` (Direct2D, `system` host) and `windows-text` (DirectWrite). No
-WinUI, no XAML, no Windows App Runtime. These crates are 0.101 previews that change often: when
+WinUI, no XAML, no Windows App Runtime, and no GDI: the window has no child windows, and nothing
+but Direct2D draws it (the app's `Cargo.toml` leaves out `wingdi`, so a GDI call doesn't build). These crates are 0.101 previews that change often: when
 unsure of an API, read the source of the commit in `Cargo.lock`
 (`~/.cargo/git/checkouts/windows-rs-*/<short rev>/crates/libs/{window,canvas,text,threading}`, samples
 in `crates/samples/`) instead of guessing.
@@ -46,10 +47,12 @@ in `crates/samples/`) instead of guessing.
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
     `render.rs` (drawing; text and bitmap caches), `uia.rs` (UI Automation), `theme.rs` (design
     tokens), `widgets.rs` (controls), `image.rs` (WIC decoding, covers at their tile's pixel
-    size with rounded corners, PNG capture).
+    size with rounded corners, PNG capture), `text_edit.rs` (a text box's editing: caret,
+    selection, words, undo; tested).
 - `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
-  frame, DPI), `edit_box.rs` (text boxes), `ctx.rs` (background work, effects), `dialogs.rs`
-  (Open dialog, start error), `efficiency.rs`.
+  frame, DPI), `text_input.rs` (text boxes' keys, characters, clicks, clipboard, caret blink,
+  menu and IME), `ctx.rs` (background work, effects), `dialogs.rs` (Open dialog, start error),
+  `efficiency.rs`.
 
 ## Toolkit rules
 - **Elm style**: every `Message` rebuilds the view and lays it out; hover and the like only
@@ -61,16 +64,23 @@ in `crates/samples/`) instead of guessing.
 - **Layout**: `Size::Px`, `Auto` or `Fill(weight)` along a row or column; `halign`/`valign`
   across (both among `layers`). `row` centres its children vertically unless they say otherwise,
   so a column that must fill a row's height needs `fill_height()`. A `scroll` clips its content.
-- **Text boxes** are real EDIT controls (`widgets::text_box`, `shell::edit_box`): IME, clipboard,
-  undo and screen readers are Windows'. Their text is written only while they have no focus; a
-  child window isn't clipped by a scroll view, so one shows only while its frame is fully visible.
-  - **Keys**: Enter sends a box's `on_enter`; Escape empties a box made with `.clear_on_escape()`
-    (the shell writes the EDIT with `set_text` and sends `on_change("")` itself, since the EDIT's
-    own change notice comes while the window is busy and is dropped).
+- **Text boxes** are drawn (`widgets::text_box`, `Kind::Edit`), like every other control.
+  - **The app owns the text**: a box's editing state (`text_edit::TextEdit` in `UiState::edits`:
+    caret, selection, undo) sends each change through `on_change`, and `sync_edits` takes the
+    view's text after every layout. A text the box didn't send (Escape emptied it, Reset) puts
+    the caret at the end and starts its history over.
+  - **Input** is the shell's (`text_input.rs`'s `//!` doc lists the keys): `WM_CHAR` types, the
+    point of a click becomes an offset through the text's own DirectWrite layout, the clipboard is
+    `gm_core::clipboard`'s text, and the IME composes inline (IMM32).
+  - **Drawing** (`render.rs`): the text scrolled so the caret shows, the selection, the blinking
+    caret, an IME composition underlined, an accent line under the focused box; disabled boxes
+    are dimmed like any control.
+  - **Keys**: Enter sends a box's `on_enter`; Escape empties a box made with `.clear_on_escape()`,
+    else goes on to the window; Tab moves on and selects the next box's text.
   - **Ctrl+F** focuses the box `App::search_box` names (the sidebar's `SEARCH_KEY`), its text
-    selected.
-  - **A click, or a UI Automation Invoke**, on a drawn control takes the keyboard from a text box,
-    so its text follows the app again (the search's ✕).
+    selected; a dialog whose first control is a text box opens with it focused and selected.
+  - **The text box menu** (right-click, or the Menu key at the caret): Cut, Copy, Paste and
+    Select all, a toolkit popup (`input::EditMenu`) like the drop-down's list.
 - **Search** (`widgets::search_box`, `library::matches`, tested): the matching rules are in
   `library.rs`'s `//!` doc.
 - **Layers** (menus, dialogs): a `modal` element stops hit-testing and scopes Tab to its layer;
@@ -109,7 +119,7 @@ in `crates/samples/`) instead of guessing.
   with no state borrowed.
 - **Re-entrancy**: the shell's state is borrowed with `try_borrow_mut`; a message sent while it
   is busy gets default handling. Never send our own window a message from inside `update` and
-  expect it handled; `WM_CTLCOLOREDIT`, `WM_NCCALCSIZE` and `WM_GETMINMAXINFO` need no state.
+  expect it handled; `WM_NCCALCSIZE` and `WM_GETMINMAXINFO` need no state.
 - **Bindings**: the `windows` crate at this commit uses C types: `HWND` and other handles are raw
   pointers (`is_null`), `WPARAM`/`LPARAM` are `usize`/`isize`, `WM_*`/`WS_*` constants are `i32`
   (the shell matches messages as `i32`), many methods return `HRESULT` (`.ok()?`), and `VARIANT` is
@@ -127,8 +137,14 @@ in `crates/samples/`) instead of guessing.
   colour profile, brightness and GPU scheduling (UAC) change the user's screen or need a restart:
   ask the user to try them.
 - **The window draws itself to a PNG**: start the app with `GAME_MANAGER_CAPTURE=<path>` in its
-  environment, then post `WM_APP + 9` to its window; the Read tool shows the PNG. Text boxes are
-  separate windows, so their text isn't in the capture (read it through UI Automation).
+  environment, then post `WM_APP + 9` to its window; the Read tool shows the PNG, text boxes
+  included.
+- **Typing**: post `WM_CHAR` for each character and `WM_KEYDOWN` for Backspace, Delete, the
+  arrows, Home, End, Enter and Escape. Ctrl and Shift can't be held by posted messages (the app
+  reads the real key state), so check Ctrl shortcuts through the text box menu and the unit
+  tests (`text_input::edit_action`). A text box's Value (UI Automation) reads and sets its text.
+- **The clipboard is the user's**: save its text before a Cut, Copy or Paste check and put it
+  back after.
 - **Right-clicks** can be posted (`WM_RBUTTONDOWN`/`WM_RBUTTONUP` at client coordinates), and
   so can a drag (`WM_LBUTTONDOWN`, `WM_MOUSEMOVE` with `MK_LBUTTON`, `WM_LBUTTONUP`). The Menu
   key is a posted `WM_CONTEXTMENU` with `lparam` −1; Shift+F10 reads the real keyboard, so the
