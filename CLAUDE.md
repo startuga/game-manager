@@ -17,6 +17,9 @@ DLSS overrides in their driver profiles.
 
 ## Toolchain
 - Rust 1.99.1 (`rust-toolchain.toml`), edition 2024, MSVC target.
+- **rust-analyzer** is a toolchain component, for Claude Code's `rust-analyzer-lsp` plugin. Its
+  hover and go-to-definition reach windows-rs's bindings at the locked commit, and its diagnostics
+  come after each edit (sometimes a step late, so still run clippy and the tests).
 - **windows-rs**: `windows`, `windows-registry`, `windows-core`, `windows-window`,
   `windows-canvas`, `windows-text` and `windows-threading` always come from
   https://github.com/microsoft/windows-rs master, never crates.io.

@@ -3,10 +3,11 @@
 A native Win32 window drawn with Direct2D and DirectWrite: windows-rs's `windows-window` (the HWND
 and message loop), `windows-canvas` (Direct2D, `system` host) and `windows-text` (DirectWrite). No
 WinUI, no XAML, no Windows App Runtime, and no GDI: the window has no child windows, and nothing
-but Direct2D draws it (the app's `Cargo.toml` leaves out `wingdi`, so a GDI call doesn't build). These crates are 0.101 previews that change often: when
-unsure of an API, read the source of the commit in `Cargo.lock`
-(`~/.cargo/git/checkouts/windows-rs-*/<short rev>/crates/libs/{window,canvas,text,threading}`, samples
-in `crates/samples/`) instead of guessing.
+but Direct2D draws it (the app's `Cargo.toml` leaves out `wingdi`, so a GDI call doesn't
+build). These crates are 0.101 previews that change often: when unsure of an API, hover it or go
+to its definition with the LSP tool, or read the source of the commit in `Cargo.lock`
+(`~/.cargo/git/checkouts/windows-rs-*/<short rev>/crates/libs/{window,canvas,text,threading}`,
+samples in `crates/samples/`) instead of guessing.
 
 ## Structure
 - `main.rs` – `Message`, the `GameManager` state, `update` (`handle`, then the `request_*`
