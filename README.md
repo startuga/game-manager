@@ -67,9 +67,9 @@ in `%APPDATA%\Game Manager\custom-games.json`.
   - **Enter** opens the first match; **Escape** or ✕ clears the search.
 - **The title bar** has **Rescan** (⟳), which looks for games again.
 - **A game's page**: its icon, name and install folder, with chips for its store, bitness and
-  graphics APIs; **Play** (and the store's other launches), **Folder**, **PCGamingWiki**, and
-  **Remove** for games added by hand. Below them are the tabs: **Overview**, **ReShade**, **DXVK &
-  LAA**, **Upscalers** and, with an NVIDIA graphics driver, **NVIDIA overrides**.
+  graphics APIs; **Play** (and the store's other launches), **Folder** and **PCGamingWiki**.
+  Below them are the tabs: **Overview**, **ReShade**, **DXVK & LAA**, **Upscalers** and, with an
+  NVIDIA graphics driver, **NVIDIA overrides**.
 
 The graphics API chips (DirectX 8–12, OpenGL, Vulkan) come from PCGamingWiki's API table when the
 wiki has the game (looked up once, when you select it, and cached in `%LOCALAPPDATA%\Game

@@ -4,7 +4,8 @@
 //! The game page: a header with the icon, the name in the title
 //! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan), a
 //! launch bar with the Play button, the alternative launches, Folder and PCGamingWiki, then the
-//! tabs and the open tab's cards.
+//! tabs and the open tab's cards. A game added by hand is removed from its menu (`game_menu.rs`,
+//! Remove from Game Manager), not from here.
 //!
 //! The tabs: Overview (Game settings, the draft in `edit.rs`, beside the game's details), ReShade
 //! with its Shaders and Add-ons views (`mods_view.rs`, `reshade_panel.rs`), DXVK & LAA
@@ -20,11 +21,11 @@ use windows_canvas::ColorF;
 use crate::app_view::field_label;
 use crate::edit::{EditChoice, EditDraft, EditField};
 use crate::shell::WindowInfo;
-use crate::ui::el::{Align, El, col, dropdown, row, scroll, spacer, text};
+use crate::ui::el::{Align, El, col, dropdown, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
     PlayState, Tab, accent_button, button, card, card_header, chip, heading, hint,
-    icon_text_button, play_button, subtle_button, tabs, text_box,
+    icon_text_button, play_button, tabs, text_box,
 };
 use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list};
 
@@ -243,14 +244,6 @@ impl GameManager {
                 .tooltip("Fixes and settings for this game on PCGamingWiki")
                 .on_click(Message::OpenWiki(game.id.clone())),
         );
-        items.push(spacer());
-        if game.store == Store::Custom {
-            items.push(
-                subtle_button(g::DELETE, "Remove")
-                    .name(format!("Remove {}", game.name))
-                    .on_click(Message::RemoveGame(game.id.clone())),
-            );
-        }
         row(items).gap(8.0)
     }
 
