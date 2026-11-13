@@ -12,9 +12,12 @@ roxmltree = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# Win32 features are named after C headers: launcher (shellapi, winuser), icons and covers
-# (wincodec, shared for its frames, clipper and scaler, shlobj_core, shlwapi, combaseapi, objbase,
-# objidlbase, wtypes, wtypesbase, ocidl, windef),
+fast_image_resize = { workspace = true }
+image-webp = { workspace = true }
+png = { workspace = true }
+zune-jpeg = { workspace = true }
+# Win32 features are named after C headers: launcher (shellapi, winuser), the Shell's COM
+# objects (shlobj_core, combaseapi, objbase, objidlbase, wtypes, wtypesbase, ocidl, windef),
 # EA resources (libloaderapi, minwindef), version info (winver), shortcuts (shobjidl_core, objidl,
 # coml2api), web requests (winhttp), Xbox packages and their architecture (WinRT
 # Management_Deployment, ApplicationModel, System), mod files as administrator and 7-Zip (synchapi,
@@ -24,7 +27,7 @@ thiserror = { workspace = true }
 # profiles (icm).
 windows = { workspace = true, features = [
     "shellapi", "winuser",
-    "wincodec", "shared", "shlobj_core", "shlwapi", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
+    "shlobj_core", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
     "libloaderapi", "minwindef",
     "winver",
     "shobjidl_core", "objidl", "coml2api",

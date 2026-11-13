@@ -99,6 +99,9 @@ rebuild `app.exe`: build again before checking a change, or you'll be checking a
   - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`,
     and so are `%APPDATA%` writes. PowerShell and the app see this view; Git Bash reads the real
     files. Compare the user's files from both before calling them untouched.
+  - Not every write is redirected: on 2026-11-13 a cover chosen in the agent build was written to
+    the user's real `%APPDATA%\Game Manager\covers` (a folder that already existed there), and
+    Reset cover deleted it there. Expect a check's writes in either place.
   - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
   - The user's own runs are not redirected.
 - **DXVK**: when the user's DXVK cache holds a build of an older layout, Install has to replace it

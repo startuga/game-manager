@@ -27,9 +27,13 @@ holds the rules and facts that span them.
     Windows' own decoder shows it too; cached; nothing is decoded or scaled here, no icon
     handles, no GDI) and `data_module.rs` (a program or DLL mapped as data, for its resources:
     icons, EA's Game Definition File).
-  - `covers.rs` (cover art: the user's own, the cache, the stores' files on this PC, the stores'
-    servers, the Steam store by name; 2:3 JPEG thumbnails made with WIC). Each store's facts are
+  - `covers.rs` (cover art: the user's own, the stores' originals downloaded once by id or by
+    name into the cache, and meanwhile the smaller copies the stores keep on this PC; every file
+    kept byte for byte, never re-encoded). Each store's facts are
     in its own module (`steam::cached_cover`, `epic::cover_url`, `gog::cached_cover`, …).
+  - `picture.rs` (pictures in pure Rust: JPEG, PNG and WebP through their crates, BMP and icon
+    bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, the capture's PNG; no
+    Windows API).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
   - `http.rs` (WinHTTP `get`/`download`).
 - **Mods**:
@@ -104,7 +108,7 @@ holds the rules and facts that span them.
 - **Format numbers**: bump the one whose layout changes.
   - `snapshot::VERSION`: the serde form of `Game`.
   - `icon::CACHE_FORMAT`.
-  - `covers::CACHE_FORMAT` (how thumbnails are made).
+  - `covers::CACHE_FORMAT` (what is cached for a cover).
   - `dxvk::CACHE_FORMAT`.
   - `reshade::CACHE_FORMAT`.
 
@@ -184,16 +188,21 @@ holds the rules and facts that span them.
     `include_assets` gives `asset_url_format` and `library_capsule_2x`, under
     `shared.fastly.steamstatic.com/store_item_assets/`.
   - **GOG Galaxy** keeps 342 × 482 WebP covers in
-    `%ProgramData%\GOG.com\Galaxy\webcache\<user>\gog\<id>\<hash>_glx_vertical_cover.webp`; WIC
-    reads them through Windows' WebP extension. Else `api.gog.com/v2/games/<id>` →
-    `_links.boxArtImage`.
+    `%ProgramData%\GOG.com\Galaxy\webcache\<user>\gog\<id>\<hash>_glx_vertical_cover.webp`
+    (image-webp reads them; WIC needed Windows' WebP extension). The original:
+    `api.gog.com/v2/games/<id>` → `_links.boxArtImage`, a JPEG. It is 342 × 482 too: GOG's image
+    server makes every form (`.jpg`, `.png`, `.webp`, `_glx_vertical_cover.webp`) from one
+    342 × 482 source, so a GOG tile is enlarged above 150% scaling.
   - **The Epic launcher** keeps its catalog, not the pictures: the legacy launcher in
     `Data\Catalog\catcache.bin` (base64 JSON), the current one in `cache\prod\catalog-cache.json`.
-    Items list a `DieselGameBoxTall` (1200 × 1600) address on `cdn1.epicgames.com`, whose server
-    resizes on `?h=600&w=450&resize=1`. Epic's GraphQL store lookup needs a browser's User-Agent:
-    not used.
+    Items list a `DieselGameBoxTall` address on `cdn1.epicgames.com`: the original is a
+    1200 × 1600 PNG of about 1.7 MB (its server would resize it on `?h=600&w=450&resize=1`, as a
+    JPEG). Epic's GraphQL store lookup needs a browser's User-Agent: not used.
   - **Xbox**: `displaycatalog.mp.microsoft.com/v7.0/products?bigIds=<StoreId>` lists a 2:3
-    `Poster`; `?w=400&h=600` resizes it.
+    `Poster`: Forza Horizon 5's original is a 1440 × 2160 JPEG of 617 KB (`?w=400&h=600` would
+    resize it).
+  - **Originals at the display's scaling**: a 200 × 300 DIP tile is 450 × 675 px at 225%. The old
+    400 × 600 thumbnails were enlarged there; the originals are shrunk by Direct2D instead.
   - **Ubisoft Connect** has no cover by id. Its old cache's picture is 240 × 280, so the Steam
     store is asked by name first and the picture stays only when that finds nothing. On 4
     games the store had 2 under the same name (not "Beyond Good & Evil - 20th Anniversary

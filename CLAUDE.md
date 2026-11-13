@@ -43,9 +43,11 @@ DLSS overrides in their driver profiles.
   - Tests may unwrap (`clippy.toml`); `build.rs` and `examples/scan.rs` allow `expect` with a
     reason.
 - **Release profile**, tuned for speed: `opt-level = 3`, `lto`, `codegen-units = 1`,
-  `panic = "abort"` (nothing catches an unwinding panic), `strip`. `app.exe` was 2.41 MB on
-  2026-11-08 with My PC (2.28 MB before it; 1.68 MB with `opt-level = "s"`; the WinUI one
-  5.93 MB). It links the C runtime dynamically (`VCRUNTIME140.dll`).
+  `panic = "abort"` (nothing catches an unwinding panic), `strip`. `app.exe` was 4.08 MB on
+  2026-11-13 with pictures decoded in Rust (2.87 MB before: the JPEG, PNG and WebP decoders add
+  about 510 KB, fast_image_resize about 465 KB), 2.41 MB on 2026-11-08 with My PC (2.28 MB
+  before it; 1.68 MB with `opt-level = "s"`; the WinUI one 5.93 MB). It links the C runtime
+  dynamically (`VCRUNTIME140.dll`).
 
 ## Commands
 - `cargo build`; `cargo run -p app`.
@@ -93,6 +95,7 @@ these:
 - **Errors and `unsafe`**: typed errors, one unsafe operation per block with `// SAFETY:`, and
   RAII owners for handles (details in `core/CLAUDE.md`).
 - **No GDI**: the window is drawn with Direct2D and DirectWrite only, text boxes included; no
-  child windows. Pictures are decoded with WIC, game icons too (read from `.ico` files and
-  programs' resources, never through icon handles). The core keeps `wingdi` only for display
+  child windows. Pictures are decoded in pure Rust (`gm_core::picture`: JPEG, PNG, WebP, BMP,
+  `.ico`), with no WIC; game icons are read from `.ico` files and programs' resources, never
+  through icon handles. Covers are the stores' original files, scaled by Direct2D as it draws them. The core keeps `wingdi` only for display
   settings' structures (`DEVMODEW`), which draw nothing.

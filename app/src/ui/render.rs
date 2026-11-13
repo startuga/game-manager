@@ -4,7 +4,10 @@
 //!   drawing the same text reuses one layout; entries unused for a few frames are dropped. It also
 //!   answers the layout's `Measure`. Oxanium, the page titles' font, is embedded and loaded once.
 //! - **`Renderer`** owns the GPU device and the window's swap chain, and keeps each picture's
-//!   bitmap by key. A frame clears to the base colour and draws the tree in order: fills and
+//!   bitmap by key (an `ID2D1Bitmap1` made through the device context, so pictures are drawn with
+//!   a chosen interpolation and source rectangle). A fitted picture made for its pixels is drawn on
+//!   whole pixels; a cover (`El::cover`) fills its box from its centre, scaled with high-quality
+//!   cubic in a rounded layer. A frame clears to the base colour and draws the tree in order: fills and
 //!   outlines (hover and press states from `UiState`), text, pictures, spinners, drop-down faces,
 //!   text boxes, custom painters, scroll views clipped to their viewport with their thin bars, and
 //!   the keyboard focus ring; then the open drop-down's list, the text box menu and the tooltip on
@@ -23,12 +26,19 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::f32::consts::TAU;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Instant;
-use windows::Win32::{D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_RECT_F, ID2D1DeviceContext};
+use windows::Win32::{
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_NONE,
+    D2D1_BITMAP_PROPERTIES1, D2D1_INTERPOLATION_MODE, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
+    D2D1_PIXEL_FORMAT, D2D1_RECT_F, D2D1_ROUNDED_RECT, D2D1_SIZE_U, DXGI_FORMAT_B8G8R8A8_UNORM,
+    ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Layer,
+};
 use windows_canvas::{
-    Bitmap, Brush, ColorF, DrawingSession, Ellipse, GpuDevice, GradientStop, RoundedRect,
-    SwapChain, Vector2,
+    Brush, ColorF, DrawingSession, Ellipse, GpuDevice, GradientStop, RoundedRect, SwapChain,
+    Vector2,
 };
 use windows_text::{
     FontCollection, FontWeight, TextAlignment, TextFormat, TextLayout, Trimming, WordWrapping,
@@ -199,7 +209,7 @@ pub struct Renderer {
     chain: SwapChain,
     /// Pixels per DIP, for drawing pictures on whole pixels.
     scale: f32,
-    bitmaps: HashMap<String, (Bitmap, Arc<Picture>)>,
+    bitmaps: HashMap<String, (ID2D1Bitmap1, Arc<Picture>)>,
     start: Instant,
 }
 
@@ -315,6 +325,29 @@ fn to_canvas(rect: Rect) -> windows_canvas::Rect {
     windows_canvas::Rect::from_xywh(rect.x, rect.y, rect.w, rect.h)
 }
 
+fn d2d_rect(rect: Rect) -> D2D1_RECT_F {
+    D2D1_RECT_F {
+        left: rect.x,
+        top: rect.y,
+        right: rect.right(),
+        bottom: rect.bottom(),
+    }
+}
+
+/// The part of a `width` × `height` picture that fills a `box_width` × `box_height` box, cut
+/// around its centre: `(x, y, width, height)` in the picture's pixels. A 3:4 cover on a 2:3 tile
+/// loses a strip at its left and right; a landscape picture keeps its middle.
+fn cover_source(width: f32, height: f32, box_width: f32, box_height: f32) -> (f32, f32, f32, f32) {
+    let scale = (box_width / width).max(box_height / height);
+    let (kept_width, kept_height) = (box_width / scale, box_height / scale);
+    (
+        (width - kept_width) / 2.0,
+        (height - kept_height) / 2.0,
+        kept_width,
+        kept_height,
+    )
+}
+
 /// What elements and custom painters draw with.
 pub struct Painter<'a> {
     session: &'a DrawingSession<'a>,
@@ -324,7 +357,7 @@ pub struct Painter<'a> {
     scale: f32,
     /// Multiplies every colour's alpha (an element's opacity, a disabled subtree).
     alpha: f32,
-    bitmaps: &'a mut HashMap<String, (Bitmap, Arc<Picture>)>,
+    bitmaps: &'a mut HashMap<String, (ID2D1Bitmap1, Arc<Picture>)>,
     elapsed: f32,
     /// The frame's time, for the hover fades.
     now: Instant,
@@ -454,17 +487,152 @@ impl Painter<'_> {
         self.text.text(spec, max_width)
     }
 
-    fn picture(&mut self, key: &str, picture: &Arc<Picture>, rect: Rect) {
+    /// A premultiplied BGRA picture as a bitmap on this session's device, at 96 DPI, so its DIPs
+    /// are its pixels (`DrawBitmap`'s source rectangles).
+    fn create_bitmap(&self, picture: &Picture) -> Option<ID2D1Bitmap1> {
+        let context = self.session.as_interface::<ID2D1DeviceContext>();
+        let properties = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+            colorContext: ManuallyDrop::new(None),
+        };
+        let size = D2D1_SIZE_U {
+            width: picture.width,
+            height: picture.height,
+        };
+        // SAFETY: `pixels` holds `width * 4 * height` bytes (`Picture`), as the size and pitch say;
+        // `properties` lives for the call and holds no interface to release.
+        unsafe {
+            context.CreateBitmap(
+                size,
+                Some(picture.pixels.as_ptr().cast()),
+                picture.width * 4,
+                &properties,
+            )
+        }
+        .ok()
+    }
+
+    /// Uploads `picture` once per key, again when the view hands over another. False when it
+    /// can't be.
+    fn upload(&mut self, key: &str, picture: &Arc<Picture>) -> bool {
         let fresh = !matches!(self.bitmaps.get(key), Some((_, kept)) if Arc::ptr_eq(kept, picture));
         if fresh {
-            let Ok(bitmap) =
-                self.session
-                    .create_bitmap(&picture.pixels, picture.width, picture.height)
-            else {
-                return;
+            let Some(bitmap) = self.create_bitmap(picture) else {
+                return false;
             };
             self.bitmaps
                 .insert(key.to_owned(), (bitmap, Arc::clone(picture)));
+        }
+        true
+    }
+
+    /// Draws `source` (in the bitmap's pixels; all of it when `None`) into `dest`.
+    fn draw_bitmap(
+        &self,
+        bitmap: &ID2D1Bitmap1,
+        dest: Rect,
+        source: Option<D2D1_RECT_F>,
+        mode: D2D1_INTERPOLATION_MODE,
+    ) {
+        let context = self.session.as_interface::<ID2D1DeviceContext>();
+        let dest = d2d_rect(dest);
+        // SAFETY: both rectangles live for the call; `bitmap` was made on this session's device.
+        unsafe {
+            context.DrawBitmap(
+                bitmap,
+                Some(&dest),
+                self.alpha,
+                mode,
+                source.as_ref().map(|source| source as *const D2D1_RECT_F),
+                None,
+            )
+        };
+    }
+
+    /// A picture filling `rect`, cut around its centre (`cover_source`), its corners rounded by
+    /// `radius`: Direct2D's high-quality cubic filter scales it, pre-downscaling a picture it
+    /// shrinks, so a cover's original file is drawn at any display scaling.
+    fn cover(&mut self, key: &str, picture: &Arc<Picture>, rect: Rect, radius: f32) {
+        if rect.w <= 0.0 || rect.h <= 0.0 || !self.upload(key, picture) {
+            return;
+        }
+        let Some((bitmap, _)) = self.bitmaps.get(key) else {
+            return;
+        };
+        let (x, y, w, h) =
+            cover_source(picture.width as f32, picture.height as f32, rect.w, rect.h);
+        let source = D2D1_RECT_F {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + h,
+        };
+        let rounded = radius > 0.0 && self.push_rounded(rect, radius);
+        self.draw_bitmap(
+            bitmap,
+            rect,
+            Some(source),
+            D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+        );
+        if rounded {
+            self.pop_layer();
+        }
+    }
+
+    /// Clips what follows to `rect` with corners of `radius`, antialiased, until `pop_layer`.
+    /// False when the layer couldn't be pushed (nothing is then clipped).
+    fn push_rounded(&self, rect: Rect, radius: f32) -> bool {
+        let context = self.session.as_interface::<ID2D1DeviceContext>();
+        let mut factory = None;
+        // SAFETY: `factory` is a valid out-pointer for the call.
+        unsafe { context.GetFactory(&mut factory) };
+        let Some(factory) = factory else {
+            return false;
+        };
+        let shape = D2D1_ROUNDED_RECT {
+            rect: d2d_rect(rect),
+            radiusX: radius,
+            radiusY: radius,
+        };
+        // SAFETY: `shape` lives for the call.
+        let Ok(geometry) = (unsafe { factory.CreateRoundedRectangleGeometry(&shape) }) else {
+            return false;
+        };
+        let mut parameters = D2D1_LAYER_PARAMETERS1 {
+            contentBounds: d2d_rect(rect),
+            geometricMask: ManuallyDrop::new(Some((*geometry).clone())),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Default::default(),
+            opacity: 1.0,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+        };
+        // The identity: the mask is in the same coordinates as the drawing.
+        parameters.maskTransform.m11 = 1.0;
+        parameters.maskTransform.m22 = 1.0;
+        // SAFETY: `parameters` lives for the call, which takes its own reference to the mask; the
+        // session is between BeginDraw and EndDraw, and `pop_layer` follows.
+        unsafe { context.PushLayer(&parameters, None::<&ID2D1Layer>) };
+        // SAFETY: the mask's reference is released once, here; `parameters` isn't used after.
+        unsafe { ManuallyDrop::drop(&mut parameters.geometricMask) };
+        true
+    }
+
+    fn pop_layer(&self) {
+        let context = self.session.as_interface::<ID2D1DeviceContext>();
+        // SAFETY: pairs with the `push_rounded` just before it, in the same session.
+        unsafe { context.PopLayer() };
+    }
+
+    fn picture(&mut self, key: &str, picture: &Arc<Picture>, rect: Rect) {
+        if !self.upload(key, picture) {
+            return;
         }
         let Some((bitmap, _)) = self.bitmaps.get(key) else {
             return;
@@ -478,14 +646,16 @@ impl Painter<'_> {
             dw,
             dh,
         );
-        // A picture made for the pixels it takes (icons, covers) lands on whole pixels, so each of
-        // its pixels is one on screen and nothing blurs it.
-        if (dw * self.scale - w).abs() < 0.5 && (dh * self.scale - h).abs() < 0.5 {
+        // A picture made for the pixels it takes (icons) lands on whole pixels, so each of its
+        // pixels is one on screen and nothing blurs it; any other is scaled as it is drawn.
+        let mode = if (dw * self.scale - w).abs() < 0.5 && (dh * self.scale - h).abs() < 0.5 {
             let snap = |value: f32| (value * self.scale).round() / self.scale;
             dest = Rect::new(snap(dest.x), snap(dest.y), w / self.scale, h / self.scale);
-        }
-        self.session
-            .draw_bitmap(bitmap, &to_canvas(dest), self.alpha);
+            D2D1_INTERPOLATION_MODE_LINEAR
+        } else {
+            D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
+        };
+        self.draw_bitmap(bitmap, dest, None, mode);
     }
 
     fn spinner(&mut self, rect: Rect) {
@@ -564,7 +734,16 @@ impl Painter<'_> {
                 text, placeholder, ..
             } => self.edit(placed, text, placeholder, ui),
             Kind::Text(spec) => self.text(spec, rect.inset(el.padding)),
-            Kind::Image { key, picture } => self.picture(key, picture, rect.inset(el.padding)),
+            Kind::Image {
+                key,
+                picture,
+                cover: false,
+            } => self.picture(key, picture, rect.inset(el.padding)),
+            Kind::Image {
+                key,
+                picture,
+                cover: true,
+            } => self.cover(key, picture, rect.inset(el.padding), el.radius),
             Kind::Spinner => self.spinner(rect),
             Kind::DropDown {
                 items, selected, ..
@@ -953,5 +1132,35 @@ pub fn glyph_spec(glyph: &str, size: f32, color: ColorF) -> TextSpec {
         color,
         wrap: false,
         align: TextAlign::Center,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cover_fills_its_tile_cut_around_its_centre() {
+        // Already 2:3 (Steam's 600 × 900): all of it.
+        assert_eq!(
+            cover_source(600.0, 900.0, 200.0, 300.0),
+            (0.0, 0.0, 600.0, 900.0)
+        );
+        // 3:4 (Epic's 1200 × 1600): a strip off each side, the full height.
+        let (x, y, w, h) = cover_source(1200.0, 1600.0, 200.0, 300.0);
+        assert!((x - 66.67).abs() < 0.01 && y == 0.0, "{x}, {y}");
+        assert!((w - 1066.67).abs() < 0.01 && h == 1600.0, "{w}, {h}");
+        // A landscape picture keeps its middle; a tall one loses its top and bottom.
+        assert_eq!(
+            cover_source(900.0, 600.0, 200.0, 300.0),
+            (250.0, 0.0, 400.0, 600.0)
+        );
+        assert_eq!(
+            cover_source(100.0, 300.0, 200.0, 300.0),
+            (0.0, 75.0, 100.0, 150.0)
+        );
+        // Smaller than the tile (Ubisoft's 240 × 280): cut the same way, then enlarged.
+        let (x, _, w, h) = cover_source(240.0, 280.0, 200.0, 300.0);
+        assert!((w - 186.67).abs() < 0.01 && h == 280.0 && (x - 26.67).abs() < 0.01);
     }
 }

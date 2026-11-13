@@ -670,10 +670,7 @@ impl GameManager {
                 }
             }
             Message::Icon(message) => self.handle_icon(message, context),
-            Message::ScaleChanged => {
-                self.handle_cover(CoverMessage::ScaleChanged, context);
-                self.redecode_icons(context);
-            }
+            Message::ScaleChanged => self.redecode_icons(context),
             Message::Search(query) => self.query = query,
             Message::ClearSearch => self.query.clear(),
             Message::SearchSubmit => {

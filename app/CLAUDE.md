@@ -23,7 +23,8 @@ samples in `crates/samples/`) instead of guessing.
     rows, Add a game) and `filter_menu.rs` (that button's flyout: Sort, Smart filters, Smart
     Collections; `FilterMessage`; the view saved when it closes).
   - `library_page.rs` (the Library grid: a cover tile per game, by store; the window opens on it)
-    and `covers.rs` (loading the core's covers, decoded for the tiles; Choose and Reset cover).
+    and `covers.rs` (loading the core's covers, the stores' originals decoded at full size, a
+    stand-in until each arrives; Choose and Reset cover).
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
@@ -49,9 +50,9 @@ samples in `crates/samples/`) instead of guessing.
   - `el.rs` (the element tree views return; builders), `layout.rs` (a small flexbox, tested),
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
     `render.rs` (drawing; text and bitmap caches), `uia.rs` (UI Automation), `theme.rs` (design
-    tokens), `widgets.rs` (controls), `image.rs` (WIC decoding: icons and covers at the
-    pixels they take, covers' rounded corners, PNG capture), `text_edit.rs` (a text box's editing: caret,
-    selection, words, undo; tested).
+    tokens), `widgets.rs` (controls), `image.rs` (icons at the pixels they take and covers at
+    full size, decoded in pure Rust through `gm_core::picture`; the PNG capture), `text_edit.rs` (a
+    text box's editing: caret, selection, words, undo; tested).
 - `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
   frame, DPI), `text_input.rs` (text boxes' keys, characters, clicks, clipboard, caret blink,
   menu and IME), `ctx.rs` (background work, effects), `dialogs.rs` (Open dialog, start error),
@@ -103,12 +104,17 @@ samples in `crates/samples/`) instead of guessing.
   worked out from the sidebar's width (`flyout_origin`), whatever is above it. That `layers` is always there, with or without the flyout, so
   the elements under it keep their ids. Its lines are check boxes and list items (Toggle and
   SelectionItem in UI Automation); Tab moves through them.
-- **Pictures**: `el::image` draws a decoded picture scaled to fit, uploaded once per `key`. Icons
-  and covers are decoded at the exact pixel size they take for `Ctx::scale` (`image::decode_icons`,
-  `image::decode_covers`, covers with their corners cut into the alpha), and a picture whose
-  pixels match its place on screen is drawn on whole pixels, so nothing resamples it again;
-  `App::scale_changed` makes them again. An icon image of exactly that size shows untouched.
-  A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
+- **Pictures**: `el::image` draws a decoded picture, uploaded once per `key` as a Direct2D
+  bitmap.
+  - **Fitted** (the default): icons are made at the exact pixel size they take for `Ctx::scale`
+    (`image::decode_icons`), and a picture whose pixels match its place on screen is drawn on
+    whole pixels, so nothing resamples it again; `App::scale_changed` makes them again. An icon
+    image of exactly that size shows untouched.
+  - **`.cover()`**: a cover is the store's original at full size (`image::decode_covers`). It
+    fills its box, cut around its centre, and Direct2D scales it as it draws, with its
+    high-quality cubic filter, inside a layer that rounds its corners (`.radius`). A new display
+    scaling needs nothing made again.
+  - A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).
 - **Sliders** (`el::slider`): a press or drag moves the thumb in `UiState::sliding` (drawn only);

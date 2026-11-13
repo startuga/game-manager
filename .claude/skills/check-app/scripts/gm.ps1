@@ -133,10 +133,29 @@ function Select-GmGame([string]$Name) {
     Start-Sleep -Milliseconds 1100
 }
 
-# The centre of an element, in screen pixels (for Send-GmClick).
+# The centre of an element, in screen pixels (for Send-GmClick): `$x, $y = Get-GmCenter $el`.
 function Get-GmCenter($Element) {
     $r = $Element.Current.BoundingRectangle
-    , @(($r.X + $r.Width / 2), ($r.Y + $r.Height / 2))
+    ($r.X + $r.Width / 2), ($r.Y + $r.Height / 2)
+}
+
+# Rests the pointer on an element (a hover), as a posted WM_MOUSEMOVE.
+function Send-GmHover($Element) {
+    $x, $y = Get-GmCenter $Element
+    Send-GmMessage 0x0200 0 (ConvertTo-GmPoint $x $y)
+    Start-Sleep -Milliseconds 600
+}
+
+# An element's rectangle in DIPs from the window's top-left (for Save-GmScreen's -Crop), grown by
+# `Margin` DIPs on each side.
+function Get-GmCrop($Element, [double]$Margin = 0) {
+    $r = $Element.Current.BoundingRectangle
+    if ($r.IsEmpty -or [double]::IsInfinity($r.Width)) { throw "$($Element.Current.Name) is not on screen: scroll it into view first (SetFocus)" }
+    $window = New-Object GmNative.User32+RECT
+    [void][GmNative.User32]::GetWindowRect($global:GmHwnd, [ref]$window)
+    $scale = Get-GmScale
+    @((($r.X - $window.Left) / $scale - $Margin), (($r.Y - $window.Top) / $scale - $Margin),
+        ($r.Width / $scale + 2 * $Margin), ($r.Height / $scale + 2 * $Margin))
 }
 
 # --- Posted input (no input desktop: these reach the window as messages) --------------------------

@@ -21,6 +21,12 @@ roxmltree = "0.21.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+# Pictures in pure Rust (`gm_core::picture`): JPEG, PNG and WebP decoders, and the resizer for
+# icons.
+fast_image_resize = { version = "6.1.0", default-features = false, features = ["std"] }
+image-webp = "0.2.4"
+png = "0.18.1"
+zune-jpeg = "0.5.15"
 
 # Every crate opts in with `[lints] workspace = true`. They enforce the conventions in CLAUDE.md:
 # each unsafe operation in its own block with a `// SAFETY:` comment, no unwrap/expect outside

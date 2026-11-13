@@ -191,10 +191,12 @@ pub enum Kind<M> {
     /// Only a box: its fill, outline and children.
     Box,
     Text(TextSpec),
-    /// A picture, uploaded to the GPU once and kept by `key`.
+    /// A picture, uploaded to the GPU once and kept by `key`. It fits inside its box, or with
+    /// `cover` fills it, cut around its centre (`El::cover`).
     Image {
         key: String,
         picture: Arc<super::image::Picture>,
+        cover: bool,
     },
     /// A progress ring, turning while it is shown.
     Spinner,
@@ -436,6 +438,15 @@ impl<M> El<M> {
         self.radius = radius;
         self
     }
+    /// An image fills its box, cut around its centre, as CSS's `object-fit: cover` (a cover on
+    /// its tile), instead of fitting inside it; its `radius` rounds its corners. Direct2D scales
+    /// it as it draws (`render.rs`).
+    pub fn cover(mut self) -> Self {
+        if let Kind::Image { cover, .. } = &mut self.kind {
+            *cover = true;
+        }
+        self
+    }
     pub fn key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());
         self
@@ -610,6 +621,7 @@ pub fn image<M>(key: impl Into<String>, picture: Arc<super::image::Picture>) -> 
     El::new(Kind::Image {
         key: key.into(),
         picture,
+        cover: false,
     })
 }
 

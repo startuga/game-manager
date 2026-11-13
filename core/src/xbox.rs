@@ -280,7 +280,8 @@ pub(crate) fn store_id(dir: &Path) -> Option<String> {
     Some(config.store_id).filter(|id| !id.is_empty())
 }
 
-/// The address of a game's 2:3 poster, asked of Microsoft's store catalog and for 400 × 600;
+/// The address of a game's 2:3 poster, asked of Microsoft's store catalog: the original file
+/// (1440 × 2160 for Forza Horizon 5; `?w=400&h=600` would have the server re-encode it smaller).
 /// `None` when the catalog lists none. Blocking.
 pub(crate) fn cover_url(store_id: &str) -> Result<Option<String>> {
     let url = format!(
@@ -305,7 +306,7 @@ fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
     let address = uri.strip_prefix("https:").unwrap_or(uri);
     address
         .starts_with("//")
-        .then(|| format!("https:{address}?w=400&h=600&q=90"))
+        .then(|| format!("https:{address}"))
 }
 
 #[cfg(test)]
@@ -529,7 +530,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             parse_cover_url(&answer).as_deref(),
-            Some("https://store-images.s-microsoft.com/image/apps.49800.poster?w=400&h=600&q=90")
+            Some("https://store-images.s-microsoft.com/image/apps.49800.poster")
         );
         // No poster, or an id the catalog does not know.
         let square: serde_json::Value = serde_json::from_str(

@@ -277,9 +277,10 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
 // Cover art (`covers.rs`)
 // ---------------------------------------------------------------------------------------------
 
-/// The address of the tall cover (`DieselGameBoxTall`, 1200 × 1600) the launcher's catalog cache
-/// lists for a game, asked for at 450 × 600. The launcher keeps the catalog on disk, not the
-/// pictures. Both launchers hold the same catalog items:
+/// The address of the tall cover (`DieselGameBoxTall`) the launcher's catalog cache lists for a
+/// game: the original file, a 1200 × 1600 PNG (the image server would resize it on
+/// `?h=600&w=450&resize=1`, re-encoded as a JPEG, which isn't asked for). The launcher keeps the
+/// catalog on disk, not the pictures. Both launchers hold the same catalog items:
 /// - the current one in `cache\prod\catalog-cache.json`, by catalog item id;
 /// - the legacy one in `Data\Catalog\catcache.bin`, a base64-encoded JSON array.
 pub(crate) fn cover_url(game: &Game) -> Option<String> {
@@ -294,13 +295,8 @@ pub(crate) fn cover_url(game: &Game) -> Option<String> {
             .join(r"Catalog\catcache.bin");
         legacy_catalog_cover(&fs::read(catalog).ok()?, item_id, app_name)
     })?;
-    // Spaces are part of some names; the size goes on as a query the image server honours.
-    let url = url.replace(' ', "%20");
-    Some(if url.contains('?') {
-        url
-    } else {
-        format!("{url}?h=600&w=450&resize=1")
-    })
+    // Spaces are part of some names.
+    Some(url.replace(' ', "%20"))
 }
 
 /// The catalog item id in the game's own launch link (`…apps/<namespace>%3A<item>%3A<app>?…`).

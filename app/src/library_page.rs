@@ -94,7 +94,9 @@ impl GameManager {
     fn tile(&self, game: &Game) -> El<Message> {
         let id = game.id.clone();
         let art = match self.covers.pictures.get(&game.id) {
-            Some(picture) => image(format!("cover:{}", game.id), picture.clone()),
+            Some(picture) => image(format!("cover:{}", game.id), picture.clone())
+                .cover()
+                .radius(theme::RADIUS_CARD),
             None => row([self.icon(game, crate::icons::LARGE)])
                 .justify(Align::Center)
                 .bg(theme::CARD)

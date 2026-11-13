@@ -68,7 +68,7 @@ fn depth_floor(deepest: u16) -> u16 {
 /// (see the module's doc).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IconImage {
-    /// Its place in the file's directory (`image_file`).
+    /// Its place in the file's directory (`image_data`).
     pub index: usize,
     pub width: u32,
     pub height: u32,
@@ -199,11 +199,11 @@ pub fn images(ico: &[u8]) -> Vec<IconImage> {
         .collect()
 }
 
-/// Image `index` of an `.ico` file on its own (`alone`), for a decoder. (WIC's icon decoder
-/// doesn't keep a file's order in its frame numbers, so the image picked is handed over alone.)
-pub fn image_file(ico: &[u8], index: usize) -> Option<Vec<u8>> {
+/// Image `index` of an `.ico` file as it is in the file: a PNG, or a bitmap (a DIB with its
+/// transparency mask), for `picture::icon` to decode.
+pub(crate) fn image_data(ico: &[u8], index: usize) -> Option<&[u8]> {
     let (_, image) = entries(ico).into_iter().find(|(at, _)| *at == index)?;
-    alone(image.data)
+    Some(image.data)
 }
 
 /// The image to show `size` pixels wide, among the true-colour ones when there are any: that
@@ -571,19 +571,20 @@ mod tests {
         let large = png_header(256);
         let ico = ico_with(&[&small, &large, b"neither"]);
         assert_eq!(images(&ico), [image(0, 16, 32), image(1, 256, 32)]);
-        // An image on its own: the PNG as it is, a bitmap in a one-image file, byte for byte.
-        assert_eq!(image_file(&ico, 1), Some(large.clone()));
-        let alone = image_file(&ico, 0).unwrap();
-        assert!(is_ico(&alone));
-        assert_eq!(images(&alone), [image(0, 16, 32)]);
-        assert_eq!(entries(&alone)[0].1.data, small.as_slice());
+        // Each image as it is in the file; on its own, the PNG as it is, a bitmap in a one-image
+        // file, byte for byte.
+        assert_eq!(image_data(&ico, 1), Some(large.as_slice()));
+        assert_eq!(image_data(&ico, 0), Some(small.as_slice()));
+        assert_eq!(alone(&large), Some(large.clone()));
+        let one = alone(&small).unwrap();
+        assert!(is_ico(&one));
+        assert_eq!(images(&one), [image(0, 16, 32)]);
+        assert_eq!(entries(&one)[0].1.data, small.as_slice());
         // Its directory entry says what the image's header does: 0 for 256.
         let entry = |file: &[u8]| file[6..10].to_vec();
-        assert_eq!(entry(&alone), [16, 16, 0, 0]);
-        let large_dib = ico_with(&[&dib(256, [0; 4])]);
-        assert_eq!(entry(&image_file(&large_dib, 0).unwrap()), [0, 0, 0, 0]);
-        assert_eq!(image_file(&ico, 2), None);
-        assert_eq!(image_file(&ico, 3), None);
+        assert_eq!(entry(&one), [16, 16, 0, 0]);
+        assert_eq!(entry(&alone(&dib(256, [0; 4])).unwrap()), [0, 0, 0, 0]);
+        assert_eq!(image_data(&ico, 3), None);
         assert!(images(b"not an icon").is_empty());
         assert_eq!(best_of(&own(&[b"nothing readable"])), None);
     }

@@ -1,4 +1,4 @@
-//! COM setup for the threads that use the Shell's or WIC's COM objects (icons, shortcuts).
+//! COM setup for the threads that use the Shell's COM objects (shortcuts).
 
 use std::marker::PhantomData;
 use windows::Win32::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};

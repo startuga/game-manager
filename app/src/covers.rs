@@ -10,9 +10,11 @@
 //!      as it arrives (`Fetched`). A game is asked for once at a time (`fetching`); once a request
 //!      fails for want of a connection, the job stops asking for the rest. Failures show nothing:
 //!      the tile keeps its icon, and the next start tries again.
-//! - **Sizes**: covers are decoded at the tile's pixel size for the window's display scaling
-//!   (`Ctx::scale`), with the tile's rounded corners cut in (`ui::image::decode_covers`). When
-//!   the scaling changes they are all made again (`ScaleChanged`).
+//! - **The stores' originals**: a cover is the store's own file, decoded at its full size
+//!   (`ui::image::decode_covers`); Direct2D scales it into its tile and rounds its corners as it
+//!   draws it (`el::El::cover`), so a new display scaling needs nothing made again.
+//! - **Stand-ins**: a smaller copy the store keeps on this PC shows until the original has
+//!   arrived. Such a game stays among those `load_covers` asks for (`CoverState::stand_ins`).
 //! - **Choose cover…** opens the Open dialog for a picture, which becomes the game's own cover
 //!   (`covers::set_own`); **Reset cover** drops it and what was downloaded for the game, and
 //!   looks its cover up afresh.
@@ -26,7 +28,6 @@ use gm_core::covers::Cover;
 
 use crate::shell::ctx::{Ctx, FilePicker};
 use crate::ui::image::{self, Picture};
-use crate::ui::theme;
 use crate::{GameManager, Message};
 
 /// A cover's size on a tile, in DIPs: 2:3, as the stores' portrait covers are.
@@ -44,6 +45,8 @@ pub(crate) struct CoverPicture {
     picture: Arc<Picture>,
     /// The user's own image, not a store's.
     own: bool,
+    /// The store's smaller copy on this PC, shown until the original arrives.
+    stand_in: bool,
 }
 
 #[derive(Clone)]
@@ -64,8 +67,6 @@ pub(crate) enum CoverMessage {
     Reset(String),
     /// The game's own cover was dropped (or not).
     ResetDone(String, Result<(), String>),
-    /// The window's display scaling changed: the covers are made again for it.
-    ScaleChanged,
 }
 
 impl From<CoverMessage> for Message {
@@ -80,50 +81,58 @@ pub(crate) struct CoverState {
     pub pictures: HashMap<String, Arc<Picture>>,
     /// Games showing the user's own image (the menu offers Reset cover).
     pub own: HashSet<String>,
+    /// Games showing a stand-in: their original is still asked for.
+    stand_ins: HashSet<String>,
     /// Games being looked up on the network.
     fetching: HashSet<String>,
 }
 
 impl CoverState {
     fn show(&mut self, cover: CoverPicture) {
-        if cover.own {
-            self.own.insert(cover.id.clone());
-        } else {
-            self.own.remove(&cover.id);
-        }
+        let flag = |set: &mut HashSet<String>, on: bool| {
+            if on {
+                set.insert(cover.id.clone());
+            } else {
+                set.remove(&cover.id);
+            }
+        };
+        flag(&mut self.own, cover.own);
+        flag(&mut self.stand_ins, cover.stand_in);
         self.pictures.insert(cover.id, cover.picture);
     }
 
     fn forget(&mut self, id: &str) {
         self.pictures.remove(id);
         self.own.remove(id);
+        self.stand_ins.remove(id);
+    }
+
+    /// Whether a game still needs its cover: none shown, or only a stand-in.
+    fn wants(&self, id: &str) -> bool {
+        !self.pictures.contains_key(id) || self.stand_ins.contains(id)
     }
 }
 
-/// A cover's size and corner radius in pixels at a display scaling.
-fn pixels(scale: f32) -> ((u32, u32), u32) {
-    let px = |dips: f32| (dips * scale).round().max(1.0) as u32;
-    ((px(COVER_WIDTH), px(COVER_HEIGHT)), px(theme::RADIUS_CARD))
-}
-
-/// The core's covers decoded for tiles at `scale`; what is no picture is left out.
-fn decode(covers: Vec<(String, Cover)>, scale: f32) -> Vec<CoverPicture> {
-    let (size, radius) = pixels(scale);
-    let own: HashSet<String> = covers
+/// The core's covers decoded at their full size; what is no picture is left out.
+fn decode(covers: Vec<(String, Cover)>) -> Vec<CoverPicture> {
+    let flags: HashMap<String, (bool, bool)> = covers
         .iter()
-        .filter(|(_, cover)| cover.own)
-        .map(|(id, _)| id.clone())
+        .map(|(id, cover)| (id.clone(), (cover.own, cover.stand_in)))
         .collect();
     let items = covers
         .into_iter()
-        .map(|(id, cover)| (id, cover.jpeg))
+        .map(|(id, cover)| (id, cover.bytes))
         .collect();
-    image::decode_covers(items, size, radius)
+    image::decode_covers(items)
         .into_iter()
-        .map(|(id, picture)| CoverPicture {
-            own: own.contains(&id),
-            id,
-            picture: Arc::new(picture),
+        .map(|(id, picture)| {
+            let (own, stand_in) = flags.get(&id).copied().unwrap_or_default();
+            CoverPicture {
+                id,
+                picture: Arc::new(picture),
+                own,
+                stand_in,
+            }
         })
         .collect()
 }
@@ -139,30 +148,29 @@ fn deal(games: Vec<Game>, count: usize) -> Vec<Vec<Game>> {
 }
 
 impl GameManager {
-    /// Loads the covers of the games that show none. With `network`, the stores' servers are
-    /// asked for those still missing (after a scan; the snapshot's games are about to be
-    /// scanned). With `prune` (a full, fresh library), cached covers no game uses are deleted.
+    /// Loads the covers of the games that show none, or only a stand-in. With `network`, the
+    /// stores' servers are asked for the originals still missing (after a scan; the snapshot's
+    /// games are about to be scanned). With `prune` (a full, fresh library), cached covers no
+    /// game uses are deleted.
     pub(crate) fn load_covers(&mut self, network: bool, prune: bool, context: &Ctx<Message>) {
         let wanted: Vec<Game> = self
             .games
             .iter()
-            .filter(|game| !self.covers.pictures.contains_key(&game.id))
+            .filter(|game| self.covers.wants(&game.id))
             .cloned()
             .collect();
         let library = prune.then(|| self.games.clone());
-        let scale = context.scale();
-        let want_width = pixels(scale).0.0;
         context.spawn_stream(move |send| {
             let mut batch = Vec::new();
-            let rest = gm_core::covers::load_local(&wanted, want_width, &mut |game, cover| {
+            let rest = gm_core::covers::load_local(&wanted, &mut |game, cover| {
                 batch.push((game.id.clone(), cover));
                 if batch.len() >= BATCH {
-                    let covers = decode(std::mem::take(&mut batch), scale);
+                    let covers = decode(std::mem::take(&mut batch));
                     send(CoverMessage::Loaded(covers).into());
                 }
             });
             if !batch.is_empty() {
-                send(CoverMessage::Loaded(decode(batch, scale)).into());
+                send(CoverMessage::Loaded(decode(batch)).into());
             }
             if let Some(library) = library {
                 gm_core::covers::prune(&library);
@@ -188,7 +196,6 @@ impl GameManager {
                     .into_iter()
                     .filter(|game| self.covers.fetching.insert(game.id.clone()))
                     .collect();
-                let scale = context.scale();
                 for list in deal(games, FETCHERS) {
                     context.spawn_stream(move |send| {
                         let mut offline = false;
@@ -206,9 +213,8 @@ impl GameManager {
                                     Err(_) => None,
                                 }
                             };
-                            let cover = cover.and_then(|cover| {
-                                decode(vec![(game.id.clone(), cover)], scale).pop()
-                            });
+                            let cover = cover
+                                .and_then(|cover| decode(vec![(game.id.clone(), cover)]).pop());
                             send(CoverMessage::Fetched(game.id, cover).into());
                         }
                     });
@@ -229,7 +235,7 @@ impl GameManager {
                 // Owned by the app's window, which is disabled while the dialog is open.
                 self.picking = FilePicker::new()
                     .title(format!("Choose a cover for {}", game.name))
-                    .filter_extensions("Pictures", ["jpg", "jpeg", "png", "webp", "bmp", "gif"])
+                    .filter_extensions("Pictures", ["jpg", "jpeg", "png", "webp", "bmp"])
                     .filter_all()
                     .request(context, move |picked| {
                         let picked = picked.map_err(|e| format!("could not choose a picture: {e}"));
@@ -238,13 +244,12 @@ impl GameManager {
             }
             CoverMessage::Picked(id, Ok(Some(file))) => {
                 self.picking = false;
-                let scale = context.scale();
-                // Reading and scaling the picture are disk work.
+                // Reading and decoding the picture are blocking work.
                 context.spawn_background(move |_cancel| {
                     let chosen = gm_core::covers::set_own(&id, &file)
                         .map_err(|e| e.to_string())
                         .and_then(|cover| {
-                            decode(vec![(id, cover)], scale)
+                            decode(vec![(id, cover)])
                                 .pop()
                                 .ok_or_else(|| "The cover could not be read back.".to_owned())
                         });
@@ -273,10 +278,6 @@ impl GameManager {
                 self.load_covers(true, false, context);
             }
             CoverMessage::ResetDone(_, Err(e)) => self.error = Some(e),
-            CoverMessage::ScaleChanged => {
-                self.covers.pictures.clear();
-                self.load_covers(true, false, context);
-            }
         }
     }
 
@@ -288,6 +289,9 @@ impl GameManager {
             .retain(|id, _| games.iter().any(|game| game.id == *id));
         self.covers
             .own
+            .retain(|id| games.iter().any(|game| game.id == *id));
+        self.covers
+            .stand_ins
             .retain(|id| games.iter().any(|game| game.id == *id));
     }
 }
@@ -316,15 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn covers_are_sized_for_the_display_scaling() {
-        // 200 × 300 DIPs with the cards' 8 DIP corners.
-        assert_eq!(pixels(1.0), ((200, 300), 8));
-        assert_eq!(pixels(1.25), ((250, 375), 10));
-        assert_eq!(pixels(1.5), ((300, 450), 12));
-        assert_eq!(pixels(2.0), ((400, 600), 16));
-    }
-
-    #[test]
     fn games_are_dealt_out_to_the_jobs() {
         let ids = |lists: Vec<Vec<Game>>| -> Vec<Vec<String>> {
             lists
@@ -349,18 +344,26 @@ mod tests {
             height: 1,
             pixels: vec![0; 4],
         });
-        let cover = |own| CoverPicture {
+        let cover = |own, stand_in| CoverPicture {
             id: "steam:220".into(),
             picture: picture.clone(),
             own,
+            stand_in,
         };
         let mut state = CoverState::default();
-        state.show(cover(true));
+        assert!(state.wants("steam:220"));
+        // The PC's copy shows, and the original is still wanted.
+        state.show(cover(false, true));
+        assert!(state.pictures.contains_key("steam:220") && state.wants("steam:220"));
+        // The original arrived: wanted no more.
+        state.show(cover(false, false));
+        assert!(!state.wants("steam:220"));
+        state.show(cover(true, false));
         assert!(state.pictures.contains_key("steam:220") && state.own.contains("steam:220"));
         // The store's cover replaces it after Reset cover.
-        state.show(cover(false));
+        state.show(cover(false, false));
         assert!(state.pictures.contains_key("steam:220") && state.own.is_empty());
         state.forget("steam:220");
-        assert!(state.pictures.is_empty());
+        assert!(state.pictures.is_empty() && state.wants("steam:220"));
     }
 }

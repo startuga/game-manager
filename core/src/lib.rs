@@ -21,6 +21,7 @@ pub mod nvidia;
 pub mod pc;
 pub mod pcgamingwiki;
 pub mod pe;
+pub mod picture;
 mod security;
 mod seven_zip;
 mod shortcut;
