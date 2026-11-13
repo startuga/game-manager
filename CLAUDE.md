@@ -49,7 +49,7 @@ DLSS overrides in their driver profiles.
 - `cargo run -p gm-core --example scan` checks the scanners without the UI.
   - `-- -v` prints launch commands, icons, programs and wiki links.
   - `-- --graphics` prints the wiki's and the files' APIs, about 2 s a game.
-  - `-- --icons <dir>` saves every icon as a PNG.
+  - `-- --icons <dir>` saves each icon as the app gets it (its best image, `.png` or `.ico`).
   - `-- --nvidia` prints the driver's version and DLLs, then each game's NVIDIA driver profile
     with its Present Method, flags and DLSS overrides (read only).
   - `-- --pc` prints My PC instead of the games: hardware, displays with their modes, colour
@@ -61,46 +61,26 @@ DLSS overrides in their driver profiles.
   `cargo test`.
 
 ## Checking the app from an agent session
-- **No screen capture**: inspect the running window with UI Automation
-  (`System.Windows.Automation` in PowerShell), and see it as a PNG: start it with
-  `GAME_MANAGER_CAPTURE=<path>` and post `WM_APP + 9` to its window (`app/CLAUDE.md`).
-  - The Open dialog (class `#32770`) is a child of the app's window in the UI Automation tree,
-    not a top-level window. It shows its Win32 controls as plain panes. Take the
-    `NativeWindowHandle` of the last element with AutomationId `1148` (the `Edit` inside the
-    combo boxes) for `WM_SETTEXT`, then `PostMessage` `BM_CLICK` to the AutomationId `1` element
-    that has a window handle (Open; an item of the file list has the same id).
-- **No input desktop**: drag and drop and the UAC prompt can't be done (the cursor reads 0,0 and
-  there is no foreground window). Ask the user to try them on a build they run. Right-clicks and
-  keys can be posted to the Direct2D window (`WM_RBUTTONDOWN`/`WM_RBUTTONUP`, `WM_KEYDOWN`).
-  ReShade's Vulkan layer always needs the UAC prompt, so the user tests it.
-- **Packaged session**: programs started from the Claude desktop app run inside its package.
-  - Their `%LOCALAPPDATA%` writes are redirected to `AppData\Local\Packages\Claude_…\LocalCache`,
-    and so are `%APPDATA%` writes (seen in PowerShell and the app, not in Git Bash, which reads
-    the real files): compare the user's files from both before calling them untouched.
-  - Deleting a real folder there fails with os error 4395 (seen with an old DXVK cache folder).
-  - The user's own runs are not redirected.
-- **Live downloads**: `cargo test -p gm-core live_builds -- --ignored` fetches each ReShade
-  variant and the default effects; `live_upscalers` one version of each upscaler DLL.
-- **The user's files**: back up `%APPDATA%\Game Manager\*.json` before a check and restore them
-  after, comparing first that only the test changed them.
-- **My PC changes the user's own PC**: its switches write their registry (note the values and put
-  them back exactly), and display modes, HDR, colour profiles, brightness and GPU scheduling are
-  for the user to try (`app/CLAUDE.md`).
-- **The user's window**: never close or kill it. If `target\debug\app.exe` is locked, build into
-  `CARGO_TARGET_DIR=target\agent`.
-- **Mods**: never install into the user's real games, whose folders may hold their own DXVK or
-  ReShade. Use a throwaway custom game instead:
-  - Set up a temp folder with a copy of `SysWOW64\notepad.exe` as `game.exe` and a fake
-    `d3d9.dll`.
-  - Add an entry to `custom-games.json` and `"graphicsApi": "DirectX9"` to `game-settings.json`.
-  - Drive Install, Settings, Reinstall and Uninstall, then compare the folder with how it started.
-  - `app.exe --file-ops <percent-encoded ops>` can be run directly (not elevated).
-  - **Upscalers**: give the throwaway game real old vendor DLLs (from the upscaler cache after
-    `live_upscalers`) in a subfolder, then swap, swap again and restore, and compare the folder.
-  - **Deploy in ReShade ▸ Shaders, and Apply in (or leaving) ReShade ▸ Add-ons, with "All
-    games with ReShade" reach every game with ReShade in `mods.json`** that has no choice of its
-    own, the user's real ones too. Before clicking them, check that only throwaway games have a `reshade` record (or test
-    with a `mods.json` that holds only them). "Only <game>" reaches just that game.
+The `check-app` skill (`.claude/skills/check-app/SKILL.md`) builds, starts, drives and captures
+the window, guards the user's files, and holds the details (UI Automation, posted input, the
+Open dialog, the packaged session, mods with a throwaway game, icon diagnostics). Never break
+these:
+- **The user's window**: never close or kill it. Build into `CARGO_TARGET_DIR=target\agent` and
+  close only `target\agent\debug\app.exe`.
+- **The user's files**: back up `%APPDATA%\Game Manager` before a check and restore it after,
+  comparing first that only the test changed it. Programs started from the Claude desktop app
+  write to a packaged copy, so compare from both views (PowerShell and Git Bash).
+- **The clipboard is the user's**: save its text before a Cut, Copy or Paste check and put it
+  back after.
+- **My PC changes the user's own PC**: note the registry values its switches write and put them
+  back exactly; display modes, HDR, colour profiles, brightness and GPU scheduling are for the
+  user to try.
+- **Mods**: never install into the user's real games; use a throwaway custom game. "All games
+  with ReShade" (Deploy in Shaders, Apply in Add-ons) reaches the user's real games too.
+- **The game menu's Uninstall…** hands the game to its store for real: open its dialog and
+  Cancel.
+- **What the user tries**: drag and drop, the UAC prompt (ReShade's Vulkan layer), Shift+F10, and
+  DXVK when its cache holds an older layout. There is no input desktop here.
 
 ## Conventions
 - **Background work**: blocking work (disk, registry, network) never runs on the UI thread.

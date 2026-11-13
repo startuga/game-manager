@@ -132,34 +132,10 @@ in `crates/samples/`) instead of guessing.
   drag and where minimize, maximize (Snap Layouts) and close are.
 
 ## Checking it from an agent session
-- **UI Automation** sees every control by name (buttons, rows, tabs, drop-downs, text boxes with
-  their Value, sliders). Invoke, SelectionItem, Toggle, ExpandCollapse, Value and RangeValue act
-  like clicks, typing and dragging; Focus and Expand scroll the element into view first.
-- **My PC**: the switches write the user's real registry (`HKCU\Software\Microsoft\GameBar`,
-  `HKCU\Software\Microsoft\DirectX\UserGpuPreferences`). Note their values first and put them back
-  exactly (a missing `AutoGameModeEnabled` is deleted again). Resolution, refresh rate, HDR,
-  colour profile, brightness and GPU scheduling (UAC) change the user's screen or need a restart:
-  ask the user to try them.
-- **The window draws itself to a PNG**: start the app with `GAME_MANAGER_CAPTURE=<path>` in its
-  environment, then post `WM_APP + 9` to its window; the Read tool shows the PNG, text boxes
-  included.
-- **Typing**: post `WM_CHAR` for each character and `WM_KEYDOWN` for Backspace, Delete, the
-  arrows, Home, End, Enter and Escape. Ctrl and Shift can't be held by posted messages (the app
-  reads the real key state), so check Ctrl shortcuts through the text box menu and the unit
-  tests (`text_input::edit_action`). A text box's Value (UI Automation) reads and sets its text.
-- **The clipboard is the user's**: save its text before a Cut, Copy or Paste check and put it
-  back after.
-- **Right-clicks** can be posted (`WM_RBUTTONDOWN`/`WM_RBUTTONUP` at client coordinates), and
-  so can a drag (`WM_LBUTTONDOWN`, `WM_MOUSEMOVE` with `MK_LBUTTON`, `WM_LBUTTONUP`). The Menu
-  key is a posted `WM_CONTEXTMENU` with `lparam` −1; Shift+F10 reads the real keyboard, so the
-  user tries it.
-- **The game menu's Uninstall…** hands the game to its store for real: in a check, open its
-  dialog and Cancel. `scan -v` prints each game's route without running it.
-- **Names repeat**: "ReShade" is a tab, a view pill (both TabItems, the tab first) and a card.
-  Pick elements by control type, and the nth match where names repeat.
-- **DXVK in an agent session**: when the user's DXVK cache holds a build of an older layout,
-  Install has to replace it and fails with os error 4395 (root `CLAUDE.md`). ReShade and LAA can
-  be checked; ask the user to try DXVK.
+The `check-app` skill (`.claude/skills/check-app/`) runs and drives the window: UI Automation
+(every control by name, with its patterns), posted typing, keys, right-clicks and drags, the
+window's own drawing (`GAME_MANAGER_CAPTURE`, `WM_APP + 9`) and its real pixels. Its `SKILL.md`
+lists what can't be checked here and the rules (My PC's registry, the clipboard, Uninstall…).
 
 ## Game settings and Mods
 - **Game settings** (`game_page::game_settings`, `edit.rs`):
