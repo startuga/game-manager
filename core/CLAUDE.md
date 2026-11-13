@@ -16,6 +16,8 @@ holds the rules and facts that span them.
     lists are sorted and filtered (`LibraryView`); `apply`).
   - `snapshot.rs` (last scan, for a fast start).
   - `pe.rs` (architecture and imports from PE headers).
+  - `unreal.rs` (an Unreal Engine game's root launcher names the program the game runs as, where
+    mods go: its resource `RCDATA 201`).
 - **Around games**:
   - `launcher.rs` (`launch`, `open_folder`; both on the UI thread, whose COM apartment the Shell
     needs).
@@ -87,7 +89,8 @@ holds the rules and facts that span them.
   3. `default_program`.
   4. `dedupe_install_dirs` (a dropped duplicate gives its program to the kept game).
   5. Custom games, with `apply` too.
-  6. `complete_game` (icon fallback, then `arch` from the PE header unless already set, and
+  6. `complete_game` (an Unreal launcher gives way to the program it starts unless the user chose
+     the program, icon fallback, then `arch` from the PE header unless already set, and
      `installed`, the day the game's folder was created).
 - A store that fails adds a `ScanError` to `ScanReport::errors`; it never hides other stores'
   games.
@@ -152,6 +155,13 @@ holds the rules and facts that span them.
   - `DirectXUserGlobalSettings` flags can hold more bits (2097): only the lowest is on or off.
   - `scan --pc` read everything here in about 50 ms; DDC/CI brightness is slower, and a TV
     over HDMI has none.
+- **Unreal Engine games** (`unreal.rs`): Steam's and Epic's data name the small launcher at the
+  game's root (Unreal's `BootstrapPackagedGame`, 200–440 KB, beside `Engine\`), which only starts
+  the game. On 5 games its resource `RCDATA 201` named the real program every time:
+  `Snowfall\Binaries\Win64\GWT.exe` for `GWT.exe`, `Phoenix\Binaries\Win64\HogwartsLegacy.exe`,
+  `SwayzeGame\Binaries\Win64\SwayzeGame.exe`; only Sifu's and The Outer Worlds' were
+  `*-Shipping.exe`, so names are never guessed. Unreal Engine 3 games (Assassin's Creed
+  Chronicles) have no launcher.
 - **Stores**:
   - The EA app's data is encrypted: there is no EA-app launch link.
   - Xbox packaged games start only through `shell:AppsFolder\<family>!<app>`.

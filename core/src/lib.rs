@@ -31,6 +31,7 @@ pub mod steam;
 mod text;
 pub mod ubisoft;
 pub mod uninstall;
+mod unreal;
 pub mod vdf;
 mod version_info;
 pub mod xbox;
@@ -149,6 +150,7 @@ pub struct Game {
     pub icon: Option<IconRef>,
     /// The game's own executable, when known. Scanners set it when Play does not start the game
     /// directly (Steam); otherwise `scan_all` takes the icon's `.exe` or the program Play starts.
+    /// An Unreal Engine launcher gives way to the program it starts (`unreal.rs`).
     #[serde(default)]
     pub program: Option<PathBuf>,
     /// The game's processor architecture: from the package (Xbox) or from `program`'s PE header.
@@ -290,6 +292,7 @@ pub fn scan_all() -> ScanReport {
 /// calls it for every game.
 pub fn complete_game(game: &mut Game) {
     default_program(game);
+    follow_unreal_launcher(game);
     default_icon_to_program(game);
     if game.arch.is_none() {
         game.arch = game.program.as_deref().and_then(pe::architecture);
@@ -328,6 +331,22 @@ fn default_program(game: &mut Game) {
         Launch::Exe { path, .. } if is_exe(path) => Some(path.clone()),
         _ => None,
     });
+}
+
+/// A program that is an Unreal Engine launcher gives way to the program it starts, where mods go
+/// (`unreal::packaged_program`); a program chosen in Game settings stays as chosen. Play still
+/// starts the launcher, which installs the prerequisites and passes the game its arguments.
+fn follow_unreal_launcher(game: &mut Game) {
+    let chosen = game
+        .edits
+        .as_ref()
+        .is_some_and(|edits| edits.program.is_some());
+    if chosen {
+        return;
+    }
+    if let Some(program) = game.program.as_deref().and_then(unreal::packaged_program) {
+        game.program = Some(program);
+    }
 }
 
 fn is_exe(path: &Path) -> bool {
@@ -501,6 +520,49 @@ mod tests {
             Some(IconRef::file(r"C:\Games\Hello, World\a.ico"))
         );
         assert_eq!(IconRef::parse("  "), None);
+    }
+
+    #[test]
+    fn an_unreal_launcher_gives_way_to_the_program_it_starts() {
+        let dir = std::env::temp_dir().join(format!("GM-Unreal-Game-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let binaries = dir.join(r"Sifu\Binaries\Win64");
+        std::fs::create_dir_all(&binaries).unwrap();
+        std::fs::create_dir_all(dir.join("Engine")).unwrap();
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let real = binaries.join("Sifu-Win64-Shipping.exe");
+        std::fs::copy(system.join(r"System32\hostname.exe"), &real).unwrap();
+        let launcher = dir.join("Sifu.exe");
+        unreal::make_launcher(
+            &launcher,
+            &unreal::wide(r"Sifu\Binaries\Win64\Sifu-Win64-Shipping.exe"),
+        );
+
+        // Epic names the launcher (its icon): the program is the one it starts, its bitness too.
+        let mut sifu = game("epic:sifu", Store::Epic, dir.to_str());
+        sifu.icon = Some(IconRef::file(&launcher));
+        sifu.launch = Launch::Exe {
+            path: launcher.clone(),
+            args: String::new(),
+            working_dir: None,
+        };
+        complete_game(&mut sifu);
+        assert_eq!(sifu.program.as_ref(), Some(&real));
+        assert_eq!(sifu.arch, Some(Arch::X64));
+        // Play and the icon stay the launcher's.
+        assert!(matches!(&sifu.launch, Launch::Exe { path, .. } if *path == launcher));
+        assert_eq!(sifu.icon.as_ref().map(|icon| &icon.path), Some(&launcher));
+
+        // A program chosen in Game settings stays as chosen, the launcher included.
+        let mut chosen = game("epic:sifu", Store::Epic, dir.to_str());
+        chosen.program = Some(launcher.clone());
+        chosen.edits = Some(config::GameEdits {
+            program: Some(launcher.clone()),
+            ..config::GameEdits::default()
+        });
+        complete_game(&mut chosen);
+        assert_eq!(chosen.program.as_ref(), Some(&launcher));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
