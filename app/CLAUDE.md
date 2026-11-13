@@ -85,9 +85,9 @@ in `crates/samples/`) instead of guessing.
   go round the top layer's items. `Key::Menu` (the Menu key and Shift+F10, a keyboard
   `WM_CONTEXTMENU`) sends the focused element's `on_context` at its lower-left; the menu's first
   item then takes focus, and focus goes back once it closes (`UiState::follow_menu`).
-- **Flyouts under a button** (`filter_menu.rs`): the layer sits in a `layers` over just the part
-  of the window the button is in (the sidebar and the page), so the panel is placed by constant
-  padding whatever is above it. That `layers` is always there, with or without the flyout, so
+- **Flyouts beside a button** (`filter_menu.rs`): the layer sits in a `layers` over just the part
+  of the window the button is in (the sidebar and the page), so the panel is placed by padding
+  worked out from the sidebar's width (`flyout_origin`), whatever is above it. That `layers` is always there, with or without the flyout, so
   the elements under it keep their ids. Its lines are check boxes and list items (Toggle and
   SelectionItem in UI Automation); Tab moves through them.
 - **Pictures**: `el::image` draws a decoded picture scaled to fit, uploaded once per `key`. Covers

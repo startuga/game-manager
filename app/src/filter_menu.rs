@@ -12,8 +12,11 @@
 //! It stays open while its lines are clicked; a click outside or Escape closes it. The button
 //! shows a dot while a filter or a collection is on.
 //!
-//! **Where it opens**: its layer lies over the sidebar and the page only (`app_view.rs`), so the
-//! panel sits right under the button whatever is above them (the title bar, an error).
+//! **Where it opens**: on the button's right side, its top level with the button's
+//! (`flyout_origin`), over the start of the page, however wide the sidebar is. The button ends
+//! where the sidebar's padding begins, so its right edge follows the sidebar's width with no need
+//! to measure it. The layer lies over the sidebar and the page only (`app_view.rs`), so the panel
+//! keeps its place whatever is above them (the title bar, an error).
 //!
 //! **Saved** in `game-settings.json` (`gm_core::config::save_library_view`) when the flyout
 //! closes, if anything changed: one write per visit. The saved view is read once at start. A
@@ -37,11 +40,23 @@ const CAPTION_HEIGHT: f32 = 26.0;
 const SEPARATOR_HEIGHT: f32 = 9.0;
 const GAP: f32 = 2.0;
 const PADDING: f32 = 4.0;
-/// The sidebar's padding: the flyout's left edge is the search box's.
+/// The sidebar's padding: the button's right edge is this far from the sidebar's, and its top
+/// this far from the sidebar's top.
 const SIDE: f32 = 10.0;
-/// From the top of the sidebar to under the button, and the space kept under the flyout.
-const TOP: f32 = SIDE + theme::CONTROL_HEIGHT + 4.0;
+/// The space between the button and the flyout.
+const OFFSET: f32 = 4.0;
+/// The space kept between the flyout and the window's edges.
 const MARGIN: f32 = 8.0;
+
+/// Where the flyout's top-left corner goes, in the layer over the sidebar and the page: right of
+/// the button, level with its top. A window too narrow for that (none is: the sidebar is at
+/// most 480 wide and the window at least 860) gets it against its right edge, never left of
+/// the sidebar's padding.
+fn flyout_origin(sidebar_width: f32, layer_width: f32) -> (f32, f32) {
+    let beside = sidebar_width - SIDE + OFFSET;
+    let x = beside.min(layer_width - MARGIN - WIDTH).max(SIDE);
+    (x, SIDE)
+}
 
 /// The button's tooltip and UI Automation name.
 const NAME: &str = "Sort and filters";
@@ -291,8 +306,9 @@ impl GameManager {
         .on_click(FilterMessage::Clear.into());
         lines.push(clear, ITEM_HEIGHT);
 
+        let (x, y) = flyout_origin(self.sidebar_width, window.size.0);
         // As tall as its lines, or as the window leaves room for: then it scrolls.
-        let room = window.size.1 - theme::TITLE_BAR_HEIGHT - TOP - MARGIN;
+        let room = window.size.1 - theme::TITLE_BAR_HEIGHT - y - MARGIN;
         let height = (lines.height + 2.0 * PADDING).min(room.max(ITEM_HEIGHT * 4.0));
         let panel = col([scroll("filters", col(lines.lines).gap(GAP)).fill_height()])
             .pad(PADDING)
@@ -306,7 +322,7 @@ impl GameManager {
             .opaque();
         let backdrop = col([]).grow().modal().on_click(FilterMessage::Close.into());
         let placed = col([panel])
-            .padding(Edges::new(SIDE, TOP, 0.0, 0.0))
+            .padding(Edges::new(x, y, 0.0, 0.0))
             .halign(Align::Start)
             .valign(Align::Start);
         Some(layers([backdrop, placed]).grow())
@@ -371,5 +387,28 @@ impl GameManager {
             let view = gm_core::config::load_library_view().map_err(|e| e.to_string());
             FilterMessage::Loaded(view).into()
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flyout_opens_beside_the_button() {
+        // The button ends 10 inside the sidebar; the flyout starts 4 past it, level with it.
+        assert_eq!(flyout_origin(theme::SIDEBAR_WIDTH, 1200.0), (294.0, SIDE));
+        // It follows the sidebar's width, the widest too in the narrowest window.
+        assert_eq!(
+            flyout_origin(theme::SIDEBAR_MAX_WIDTH, 860.0),
+            (474.0, SIDE)
+        );
+        assert_eq!(
+            flyout_origin(theme::SIDEBAR_MIN_WIDTH, 860.0),
+            (214.0, SIDE)
+        );
+        // With no room beside it, against the window's right edge, never past the left.
+        assert_eq!(flyout_origin(480.0, 600.0), (312.0, SIDE));
+        assert_eq!(flyout_origin(480.0, 200.0), (SIDE, SIDE));
     }
 }
