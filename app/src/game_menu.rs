@@ -292,7 +292,7 @@ impl GameManager {
             format!("Choose a cover for {}", game.name),
             MenuAction::ChooseCover,
         );
-        if self.covers.own.contains(&game.id) {
+        if self.covers.is_own(&game.id) {
             rows.item(
                 g::UNDO,
                 "Reset cover",

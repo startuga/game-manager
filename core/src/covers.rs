@@ -16,7 +16,9 @@
 //!    the store has none.
 //!
 //! `load_local` does 1 to 3 for a whole library and says which games the network may still help;
-//! `fetch` does 2 for one game. Both block: call them off the UI thread.
+//! `fetch` does 2 for one game. Both block: call them off the UI thread. A `Cover` names its file,
+//! so the app holds no picture it isn't showing; `read` gives the file's bytes when a tile needs
+//! them.
 //!
 //! **Never re-encoded**: every cover is kept byte for byte as the store (or the user) has it:
 //! Steam's 600 × 900 JPEG, Epic's 1200 × 1600 PNG, Xbox's 1440 × 2160 JPEG. A download or a chosen
@@ -44,10 +46,12 @@ const MISS_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// The extensions a cover is kept under, one per format.
 const EXTENSIONS: [&str; 5] = ["jpg", "png", "webp", "bmp", "ico"];
 
-/// A game's cover: a picture file's bytes, as the store (or the user) has it.
+/// A game's cover: a picture file, as the store (or the user) has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cover {
-    pub bytes: Vec<u8>,
+    /// The user's own file, the cache's copy of the store's original, or the store's copy on
+    /// this PC. It held a whole picture when the cover was found.
+    pub file: PathBuf,
     /// The user's own picture (`set_own`), not a store's.
     pub own: bool,
     /// A smaller copy kept on this PC, shown until the store's original has arrived: the app asks
@@ -56,13 +60,19 @@ pub struct Cover {
 }
 
 impl Cover {
-    fn new(bytes: Vec<u8>, own: bool, stand_in: bool) -> Self {
+    fn new(file: PathBuf, own: bool, stand_in: bool) -> Self {
         Self {
-            bytes,
+            file,
             own,
             stand_in,
         }
     }
+}
+
+/// A cover's file as it is now: its bytes, to decode; `None` when it can't be read (gone since).
+/// Blocking.
+pub fn read(cover: &Cover) -> Option<Vec<u8>> {
+    read_file(&cover.file)
 }
 
 /// The covers that need no network: the user's own, the store's originals in the cache, and
@@ -261,13 +271,13 @@ fn local_cover(
     own: Option<&Path>,
     stores: &Stores,
 ) -> (Option<Cover>, bool) {
-    if let Some(bytes) = own.and_then(|dir| read_own(dir, &game.id)) {
-        return (Some(Cover::new(bytes, true, false)), false);
+    if let Some(file) = own.and_then(|dir| find_own(dir, &game.id)) {
+        return (Some(Cover::new(file, true, false)), false);
     }
     let net = net_identity(game);
     let name = name_identity(game);
-    if let Some(bytes) = cache.read(&net).or_else(|| cache.read(&name)) {
-        return (Some(Cover::new(bytes, false, false)), false);
+    if let Some(file) = cache.find(&net).or_else(|| cache.find(&name)) {
+        return (Some(Cover::new(file, false, false)), false);
     }
     // The original is still to be asked for, unless the stores said they have none.
     let by_id = has_id_source(game.store) && !cache.missed(&net);
@@ -275,9 +285,8 @@ fn local_cover(
     // Meanwhile, the store's smaller copy on this PC.
     let copy = stores
         .local_file(game)
-        .and_then(|file| read_file(&file))
-        .filter(|bytes| picture::format(bytes).is_some())
-        .map(|bytes| Cover::new(bytes, false, true));
+        .filter(|file| read_file(file).is_some_and(|bytes| picture::format(&bytes).is_some()))
+        .map(|file| Cover::new(file, false, true));
     (copy, by_id || by_name)
 }
 
@@ -294,8 +303,8 @@ fn fetch_into(game: &Game, cache: &Cache) -> Result<Option<Cover>> {
         };
         match bytes {
             Some(bytes) => {
-                cache.write(&net, &bytes);
-                return Ok(Some(Cover::new(bytes, false, false)));
+                let file = cache.write(&net, &bytes);
+                return Ok(file.map(|file| Cover::new(file, false, false)));
             }
             None => cache.mark_miss(&net),
         }
@@ -317,8 +326,8 @@ fn fetch_into(game: &Game, cache: &Cache) -> Result<Option<Cover>> {
     };
     match bytes {
         Some(bytes) => {
-            cache.write(&name, &bytes);
-            Ok(Some(Cover::new(bytes, false, false)))
+            let file = cache.write(&name, &bytes);
+            Ok(file.map(|file| Cover::new(file, false, false)))
         }
         None => {
             cache.mark_miss(&name);
@@ -402,8 +411,9 @@ fn own_files<'a>(dir: &'a Path, game_id: &str) -> impl Iterator<Item = PathBuf> 
         .map(move |extension| dir.join(format!("{name}.{extension}")))
 }
 
-fn read_own(dir: &Path, game_id: &str) -> Option<Vec<u8>> {
-    own_files(dir, game_id).find_map(|file| read_picture(&file))
+/// The user's own cover of a game: the file that holds a picture of the format its name says.
+fn find_own(dir: &Path, game_id: &str) -> Option<PathBuf> {
+    own_files(dir, game_id).find(|file| read_picture(file).is_some())
 }
 
 fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
@@ -418,7 +428,7 @@ fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
     for other in own_files(dir, game_id).filter(|other| *other != file) {
         let _ = fs::remove_file(other);
     }
-    Ok(Cover::new(bytes, true, false))
+    Ok(Cover::new(file, true, false))
 }
 
 fn clear_own_in(dir: &Path, cache: Option<&Cache>, game: &Game) -> Result<()> {
@@ -503,18 +513,17 @@ impl Cache {
         self.stem(identity).with_extension("none")
     }
 
-    fn read(&self, identity: &str) -> Option<Vec<u8>> {
+    /// The cached file that holds a picture of the format its name says.
+    fn find(&self, identity: &str) -> Option<PathBuf> {
         self.files(identity)
             .into_iter()
-            .find_map(|file| read_picture(&file))
+            .find(|file| read_picture(file).is_some())
     }
 
-    /// Kept byte for byte under its format's extension (nothing when it is no picture). A found
-    /// cover also ends the wait a miss started.
-    fn write(&self, identity: &str, bytes: &[u8]) {
-        let Some(format) = picture::format(bytes) else {
-            return;
-        };
+    /// Kept byte for byte under its format's extension: the file, or `None` when it is no
+    /// picture or can't be written. A found cover also ends the wait a miss started.
+    fn write(&self, identity: &str, bytes: &[u8]) -> Option<PathBuf> {
+        let format = picture::format(bytes)?;
         let file = self.stem(identity).with_extension(format.extension());
         for other in self
             .files(identity)
@@ -523,8 +532,9 @@ impl Cache {
         {
             let _ = fs::remove_file(other);
         }
-        let _ = write_file(&file, bytes);
+        let written = write_file(&file, bytes).is_ok();
         let _ = fs::remove_file(self.miss_file(identity));
+        written.then_some(file)
     }
 
     /// Whether this was looked up and not found less than `MISS_AGE` ago.
@@ -595,6 +605,11 @@ mod tests {
         }
     }
 
+    /// What the cache holds for `identity`, read from its file.
+    fn cached(cache: &Cache, identity: &str) -> Option<Vec<u8>> {
+        cache.find(identity).map(|file| fs::read(file).unwrap())
+    }
+
     /// A PNG of one colour.
     fn png(width: u32, height: u32) -> Vec<u8> {
         picture::encode_png(&Rgba {
@@ -647,25 +662,26 @@ mod tests {
     fn the_cache_keeps_originals_by_format_and_week_long_misses() {
         let cache = Cache::at(temp_dir("cache")).unwrap();
         let (half_life, portal) = ("net|steam:220|2", "net|steam:400|2");
-        assert_eq!(cache.read(half_life), None);
+        assert_eq!(cached(&cache, half_life), None);
         assert!(!cache.missed(half_life));
         // Kept byte for byte, under the extension its format has.
         let original = png(6, 9);
-        cache.write(half_life, &original);
-        assert_eq!(cache.read(half_life), Some(original.clone()));
-        let file = cache.existing_file(half_life).unwrap();
+        let file = cache.write(half_life, &original).unwrap();
+        assert_eq!(cached(&cache, half_life), Some(original.clone()));
+        assert_eq!(cache.existing_file(half_life), Some(file.clone()));
+        assert_eq!(cache.find(half_life), Some(file.clone()));
         assert_eq!(file.extension().unwrap(), "png");
         assert_eq!(fs::read(&file).unwrap(), original);
         // A new original in another format replaces it; what is no picture is not written.
         let bitmap = bmp(4, 6);
         cache.write(half_life, &bitmap);
-        assert_eq!(cache.read(half_life), Some(bitmap.clone()));
+        assert_eq!(cached(&cache, half_life), Some(bitmap.clone()));
         assert!(!file.exists());
-        cache.write(portal, b"<html>");
+        assert_eq!(cache.write(portal, b"<html>"), None);
         assert_eq!(cache.existing_file(portal), None);
         // A file whose content isn't what its name says is not read.
         fs::write(cache.stem(portal).with_extension("jpg"), png(2, 3)).unwrap();
-        assert_eq!(cache.read(portal), None);
+        assert_eq!(cached(&cache, portal), None);
         cache.forget(portal);
 
         // A miss holds for a week, then the lookup may run again.
@@ -685,7 +701,7 @@ mod tests {
         cache.write(portal, &original);
         assert!(!cache.missed(portal));
         cache.forget(portal);
-        assert_eq!(cache.read(portal), None);
+        assert_eq!(cached(&cache, portal), None);
 
         // Pruning keeps what is in use, and files that are not the cache's.
         cache.mark_miss(portal);
@@ -699,7 +715,7 @@ mod tests {
         let mut used: HashSet<PathBuf> = cache.files(half_life).into_iter().collect();
         used.insert(cache.miss_file(half_life));
         cache.prune(&used);
-        assert_eq!(cache.read(half_life), Some(bitmap));
+        assert_eq!(cached(&cache, half_life), Some(bitmap));
         assert!(!cache.miss_file(portal).exists());
         assert!(!stale.exists() && !old_webp.exists() && !leftover.exists());
         assert!(unrelated.exists());
@@ -744,7 +760,8 @@ mod tests {
         };
         let find = |game: &Game| {
             let (cover, ask) = local_cover(game, &cache, Some(&own), &stores);
-            (cover.map(|cover| (cover.bytes, cover.own)), ask)
+            let read = |cover: Cover| (read(&cover).unwrap(), cover.own);
+            (cover.map(read), ask)
         };
         let half_life = game("steam:220", "Half-Life 2", Store::Steam);
 
@@ -772,7 +789,8 @@ mod tests {
         let mine = png(200, 300);
         fs::write(&picked, &mine).unwrap();
         let set = set_own_in(&own, &half_life.id, &picked).unwrap();
-        assert_eq!((set.bytes.clone(), set.own), (mine.clone(), true));
+        assert_eq!((read(&set).unwrap(), set.own), (mine.clone(), true));
+        assert_eq!(set.file, own.join("steam_220.png"));
         assert_eq!(fs::read(own.join("steam_220.png")).unwrap(), mine);
         assert_eq!(find(&half_life), (Some((mine, true)), false));
         // Choosing again in another format replaces the earlier file.

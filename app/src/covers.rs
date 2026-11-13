@@ -1,20 +1,27 @@
-//! Cover art on the Library's tiles: loading the covers the core finds (`gm_core::covers`),
-//! decoding them for the tiles, and the game menu's Choose cover… and Reset cover.
+//! Cover art on the Library's tiles: the covers the core finds (`gm_core::covers`), decoded only
+//! while their tiles are near the screen, and the game menu's Choose cover… and Reset cover.
 //!
-//! - **Loading** (`load_covers`), for the games that show no cover yet, after the snapshot, each
-//!   scan and a game added by hand:
-//!   1. One background job takes what needs no network (the user's own image, the cover cache,
-//!      the stores' files on this PC) and sends the decoded covers in batches.
+//! - **Sources** (`load_covers`), for the games that have none yet, or only a stand-in, after the
+//!   snapshot, each scan and a game added by hand:
+//!   1. One background job takes what needs no network (the user's own picture, the cover cache,
+//!      the stores' files on this PC) and sends each cover's file in batches (`Loaded`).
 //!   2. After a scan it then names the games the network may still help (`Missing`). They go to at
-//!      most `FETCHERS` jobs that ask the stores' servers one game at a time, each cover showing
-//!      as it arrives (`Fetched`). A game is asked for once at a time (`fetching`); once a request
+//!      most `FETCHERS` jobs that ask the stores' servers one game at a time, each cover arriving
+//!      on its own (`Fetched`). A game is asked for once at a time (`fetching`); once a request
 //!      fails for want of a connection, the job stops asking for the rest. Failures show nothing:
 //!      the tile keeps its icon, and the next start tries again.
-//! - **The stores' originals**: a cover is the store's own file, decoded at its full size
-//!   (`ui::image::decode_covers`); Direct2D scales it into its tile and rounds its corners as it
-//!   draws it (`el::El::cover`), so a new display scaling needs nothing made again.
+//! - **Pixels only near the screen**: a cover is the store's original file, and only its path is
+//!   kept (`CoverState::sources`). The shell says which tiles are on the screen or within one
+//!   window height of it (`App::near_screen`, tiles made with `El::watch`): their covers are
+//!   decoded at full size in up to `DECODERS` background jobs (`Decoded`), and the others' pixels
+//!   are dropped, so the Library left behind frees all of them. The renderer drops their bitmaps
+//!   too. Direct2D scales each cover into its tile as it draws it (`el::El::cover`), so the display
+//!   scaling changes nothing here. A tile shows its icon until its cover is decoded.
+//! - **Generations**: each new source of a game (the original after a stand-in, the user's own)
+//!   gets a new generation, and a decoded cover is kept only for the generation it was decoded
+//!   from, so a stand-in decoded late never hides the original.
 //! - **Stand-ins**: a smaller copy the store keeps on this PC shows until the original has
-//!   arrived. Such a game stays among those `load_covers` asks for (`CoverState::stand_ins`).
+//!   arrived; such a game stays among those `load_covers` asks for (`CoverState::wants`).
 //! - **Choose cover…** opens the Open dialog for a picture, which becomes the game's own cover
 //!   (`covers::set_own`); **Reset cover** drops it and what was downloaded for the game, and
 //!   looks its cover up afresh.
@@ -33,36 +40,33 @@ use crate::{GameManager, Message};
 /// A cover's size on a tile, in DIPs: 2:3, as the stores' portrait covers are.
 pub(crate) const COVER_WIDTH: f32 = 200.0;
 pub(crate) const COVER_HEIGHT: f32 = 300.0;
+/// The key prefix of a game's tile, which the shell reports when it is near the screen.
+pub(crate) const TILE_KEY: &str = "tile:";
 /// How many jobs ask the stores' servers at once.
 const FETCHERS: usize = 4;
-/// How many covers the local job decodes before it sends them on.
+/// How many jobs decode covers at once.
+const DECODERS: usize = 4;
+/// How many covers the local job finds before it sends them on.
 const BATCH: usize = 12;
-
-/// A decoded cover for a game's tile.
-#[derive(Clone)]
-pub(crate) struct CoverPicture {
-    id: String,
-    picture: Arc<Picture>,
-    /// The user's own image, not a store's.
-    own: bool,
-    /// The store's smaller copy on this PC, shown until the original arrives.
-    stand_in: bool,
-}
 
 #[derive(Clone)]
 pub(crate) enum CoverMessage {
-    /// Covers that needed no network, decoded.
-    Loaded(Vec<CoverPicture>),
-    /// The games the stores' servers may have a cover for (or a sharper one).
+    /// Covers that needed no network: their files.
+    Loaded(Vec<(String, Cover)>),
+    /// The games the stores' servers may have a cover for (or the original of a stand-in).
     Missing(Vec<Game>),
     /// One game's lookup on the network ended: its cover, if one was found.
-    Fetched(String, Option<CoverPicture>),
+    Fetched(String, Option<Cover>),
+    /// The games whose tiles are on the screen or near it (`App::near_screen`).
+    Near(HashSet<String>),
+    /// A cover decoded from the source of that generation; `None` when it couldn't be.
+    Decoded(String, u64, Option<Arc<Picture>>),
     /// The game menu's Choose cover….
     Choose(String),
     /// The picture picked for the game; `None` when the dialog was cancelled.
     Picked(String, Result<Option<PathBuf>, String>),
     /// The picked picture as the game's cover, or why it can't be one.
-    Chosen(Result<CoverPicture, String>),
+    Chosen(Result<(String, Cover), String>),
     /// The game menu's Reset cover.
     Reset(String),
     /// The game's own cover was dropped (or not).
@@ -75,80 +79,119 @@ impl From<CoverMessage> for Message {
     }
 }
 
-/// The covers shown, by game id.
+/// The games' covers: their files, and the pixels of those near the screen.
 #[derive(Default)]
 pub(crate) struct CoverState {
-    pub pictures: HashMap<String, Arc<Picture>>,
-    /// Games showing the user's own image (the menu offers Reset cover).
-    pub own: HashSet<String>,
-    /// Games showing a stand-in: their original is still asked for.
-    stand_ins: HashSet<String>,
+    /// Each game's cover and its generation.
+    sources: HashMap<String, (Cover, u64)>,
+    /// Decoded covers, only for games near the screen, with the generation each came from.
+    pictures: HashMap<String, (Arc<Picture>, u64)>,
+    /// The games whose tiles are near the screen.
+    near: HashSet<String>,
+    /// The generation being decoded, by game.
+    decoding: HashMap<String, u64>,
     /// Games being looked up on the network.
     fetching: HashSet<String>,
+    /// The last generation given out.
+    generation: u64,
 }
 
 impl CoverState {
-    fn show(&mut self, cover: CoverPicture) {
-        let flag = |set: &mut HashSet<String>, on: bool| {
-            if on {
-                set.insert(cover.id.clone());
-            } else {
-                set.remove(&cover.id);
-            }
-        };
-        flag(&mut self.own, cover.own);
-        flag(&mut self.stand_ins, cover.stand_in);
-        self.pictures.insert(cover.id, cover.picture);
+    /// The cover to draw on a game's tile, once decoded.
+    pub fn picture(&self, id: &str) -> Option<&Arc<Picture>> {
+        self.pictures.get(id).map(|(picture, _)| picture)
+    }
+
+    /// Whether the game's cover is the user's own (the menu offers Reset cover).
+    pub fn is_own(&self, id: &str) -> bool {
+        self.sources.get(id).is_some_and(|(cover, _)| cover.own)
+    }
+
+    /// Whether a game still needs its cover: none found, or only a stand-in.
+    fn wants(&self, id: &str) -> bool {
+        self.sources.get(id).is_none_or(|(cover, _)| cover.stand_in)
+    }
+
+    /// A game's new cover, as a new generation. Its picture stays until the new one is decoded.
+    fn set_source(&mut self, id: String, cover: Cover) {
+        self.generation += 1;
+        self.sources.insert(id, (cover, self.generation));
     }
 
     fn forget(&mut self, id: &str) {
+        self.sources.remove(id);
         self.pictures.remove(id);
-        self.own.remove(id);
-        self.stand_ins.remove(id);
+        self.decoding.remove(id);
     }
 
-    /// Whether a game still needs its cover: none shown, or only a stand-in.
-    fn wants(&self, id: &str) -> bool {
-        !self.pictures.contains_key(id) || self.stand_ins.contains(id)
+    /// The games now near the screen: the others' pictures are dropped.
+    fn set_near(&mut self, near: HashSet<String>) {
+        self.pictures.retain(|id, _| near.contains(id));
+        self.near = near;
     }
-}
 
-/// The core's covers decoded at their full size; what is no picture is left out.
-fn decode(covers: Vec<(String, Cover)>) -> Vec<CoverPicture> {
-    let flags: HashMap<String, (bool, bool)> = covers
-        .iter()
-        .map(|(id, cover)| (id.clone(), (cover.own, cover.stand_in)))
-        .collect();
-    let items = covers
-        .into_iter()
-        .map(|(id, cover)| (id, cover.bytes))
-        .collect();
-    image::decode_covers(items)
-        .into_iter()
-        .map(|(id, picture)| {
-            let (own, stand_in) = flags.get(&id).copied().unwrap_or_default();
-            CoverPicture {
-                id,
-                picture: Arc::new(picture),
-                own,
-                stand_in,
+    /// The covers near the screen to decode: those whose picture is missing or older than their
+    /// source, and not being decoded already. They are marked as being decoded.
+    fn start_decoding(&mut self) -> Vec<(String, Cover, u64)> {
+        let mut wanted = Vec::new();
+        for id in &self.near {
+            let Some((cover, generation)) = self.sources.get(id) else {
+                continue;
+            };
+            let shown = self.pictures.get(id).map(|(_, shown)| shown);
+            if shown == Some(generation) || self.decoding.get(id) == Some(generation) {
+                continue;
             }
-        })
-        .collect()
+            wanted.push((id.clone(), cover.clone(), *generation));
+        }
+        for (id, _, generation) in &wanted {
+            self.decoding.insert(id.clone(), *generation);
+        }
+        wanted
+    }
+
+    /// A decoded cover: kept when its game is still near the screen and its source the same.
+    fn decoded(&mut self, id: String, generation: u64, picture: Option<Arc<Picture>>) {
+        if self.decoding.get(&id) == Some(&generation) {
+            self.decoding.remove(&id);
+        }
+        let current = self.sources.get(&id).map(|(_, current)| *current);
+        if let Some(picture) = picture
+            && current == Some(generation)
+            && self.near.contains(&id)
+        {
+            self.pictures.insert(id, (picture, generation));
+        }
+    }
+
+    /// Keeps only what belongs to `ids` (after a scan, games that are gone).
+    fn retain(&mut self, ids: &HashSet<&str>) {
+        self.sources.retain(|id, _| ids.contains(id.as_str()));
+        self.pictures.retain(|id, _| ids.contains(id.as_str()));
+        self.decoding.retain(|id, _| ids.contains(id.as_str()));
+    }
 }
 
-/// `games` dealt out to at most `count` lists, so each job has about as many to ask for.
-fn deal(games: Vec<Game>, count: usize) -> Vec<Vec<Game>> {
-    let mut lists = vec![Vec::new(); count.min(games.len())];
-    for (index, game) in games.into_iter().enumerate() {
+/// `items` dealt out to at most `count` lists, so each job has about as much to do.
+fn deal<T: Clone>(items: Vec<T>, count: usize) -> Vec<Vec<T>> {
+    let mut lists = vec![Vec::new(); count.min(items.len())];
+    for (index, item) in items.into_iter().enumerate() {
         let list = index % lists.len();
-        lists[list].push(game);
+        lists[list].push(item);
     }
     lists
 }
 
+/// The game ids among the keys the shell reports near the screen (`TILE_KEY`).
+pub(crate) fn near_tiles(keys: &HashSet<String>) -> HashSet<String> {
+    keys.iter()
+        .filter_map(|key| key.strip_prefix(TILE_KEY))
+        .map(str::to_owned)
+        .collect()
+}
+
 impl GameManager {
-    /// Loads the covers of the games that show none, or only a stand-in. With `network`, the
+    /// Finds the covers of the games that have none, or only a stand-in. With `network`, the
     /// stores' servers are asked for the originals still missing (after a scan; the snapshot's
     /// games are about to be scanned). With `prune` (a full, fresh library), cached covers no
     /// game uses are deleted.
@@ -165,12 +208,11 @@ impl GameManager {
             let rest = gm_core::covers::load_local(&wanted, &mut |game, cover| {
                 batch.push((game.id.clone(), cover));
                 if batch.len() >= BATCH {
-                    let covers = decode(std::mem::take(&mut batch));
-                    send(CoverMessage::Loaded(covers).into());
+                    send(CoverMessage::Loaded(std::mem::take(&mut batch)).into());
                 }
             });
             if !batch.is_empty() {
-                send(CoverMessage::Loaded(decode(batch)).into());
+                send(CoverMessage::Loaded(batch).into());
             }
             if let Some(library) = library {
                 gm_core::covers::prune(&library);
@@ -181,15 +223,35 @@ impl GameManager {
         });
     }
 
+    /// Decodes the covers near the screen that aren't yet, off the UI thread, each sent as soon
+    /// as it is ready.
+    fn decode_near_covers(&mut self, context: &Ctx<Message>) {
+        for list in deal(self.covers.start_decoding(), DECODERS) {
+            context.spawn_stream(move |send| {
+                for (id, cover, generation) in list {
+                    let picture = gm_core::covers::read(&cover)
+                        .and_then(|bytes| image::decode_cover(&bytes))
+                        .map(Arc::new);
+                    send(CoverMessage::Decoded(id, generation, picture).into());
+                }
+            });
+        }
+    }
+
+    /// A game's cover found or chosen, unless the game is gone since (removed, uninstalled).
+    fn add_cover(&mut self, id: String, cover: Cover) {
+        if self.games.iter().any(|game| game.id == id) {
+            self.covers.set_source(id, cover);
+        }
+    }
+
     pub(crate) fn handle_cover(&mut self, message: CoverMessage, context: &Ctx<Message>) {
         match message {
             CoverMessage::Loaded(covers) => {
-                for cover in covers {
-                    // A game gone since (removed, uninstalled) needs none.
-                    if self.games.iter().any(|game| game.id == cover.id) {
-                        self.covers.show(cover);
-                    }
+                for (id, cover) in covers {
+                    self.add_cover(id, cover);
                 }
+                self.decode_near_covers(context);
             }
             CoverMessage::Missing(games) => {
                 let games: Vec<Game> = games
@@ -213,8 +275,6 @@ impl GameManager {
                                     Err(_) => None,
                                 }
                             };
-                            let cover = cover
-                                .and_then(|cover| decode(vec![(game.id.clone(), cover)]).pop());
                             send(CoverMessage::Fetched(game.id, cover).into());
                         }
                     });
@@ -222,11 +282,17 @@ impl GameManager {
             }
             CoverMessage::Fetched(id, cover) => {
                 self.covers.fetching.remove(&id);
-                if let Some(cover) = cover
-                    && self.games.iter().any(|game| game.id == id)
-                {
-                    self.covers.show(cover);
+                if let Some(cover) = cover {
+                    self.add_cover(id, cover);
+                    self.decode_near_covers(context);
                 }
+            }
+            CoverMessage::Near(ids) => {
+                self.covers.set_near(ids);
+                self.decode_near_covers(context);
+            }
+            CoverMessage::Decoded(id, generation, picture) => {
+                self.covers.decoded(id, generation, picture);
             }
             CoverMessage::Choose(id) => {
                 let Some(game) = self.games.iter().find(|game| game.id == id) else {
@@ -244,15 +310,11 @@ impl GameManager {
             }
             CoverMessage::Picked(id, Ok(Some(file))) => {
                 self.picking = false;
-                // Reading and decoding the picture are blocking work.
+                // Reading and checking the picture are blocking work.
                 context.spawn_background(move |_cancel| {
                     let chosen = gm_core::covers::set_own(&id, &file)
-                        .map_err(|e| e.to_string())
-                        .and_then(|cover| {
-                            decode(vec![(id, cover)])
-                                .pop()
-                                .ok_or_else(|| "The cover could not be read back.".to_owned())
-                        });
+                        .map(|cover| (id, cover))
+                        .map_err(|e| e.to_string());
                     CoverMessage::Chosen(chosen).into()
                 });
             }
@@ -261,7 +323,10 @@ impl GameManager {
                 self.picking = false;
                 self.error = Some(e);
             }
-            CoverMessage::Chosen(Ok(cover)) => self.covers.show(cover),
+            CoverMessage::Chosen(Ok((id, cover))) => {
+                self.add_cover(id, cover);
+                self.decode_near_covers(context);
+            }
             CoverMessage::Chosen(Err(e)) => self.error = Some(e),
             CoverMessage::Reset(id) => {
                 let Some(game) = self.games.iter().find(|game| game.id == id).cloned() else {
@@ -283,16 +348,8 @@ impl GameManager {
 
     /// After a scan: covers of games that are gone are dropped.
     pub(crate) fn drop_covers_of_missing_games(&mut self) {
-        let games = &self.games;
-        self.covers
-            .pictures
-            .retain(|id, _| games.iter().any(|game| game.id == *id));
-        self.covers
-            .own
-            .retain(|id| games.iter().any(|game| game.id == *id));
-        self.covers
-            .stand_ins
-            .retain(|id| games.iter().any(|game| game.id == *id));
+        let ids: HashSet<&str> = self.games.iter().map(|game| game.id.as_str()).collect();
+        self.covers.retain(&ids);
     }
 }
 
@@ -334,36 +391,107 @@ mod tests {
         );
         // Fewer games than jobs: a job each, and none for nothing.
         assert_eq!(ids(deal(vec![game("1"), game("2")], 4)), [["1"], ["2"]]);
-        assert!(deal(Vec::new(), 4).is_empty());
+        assert!(deal(Vec::<Game>::new(), 4).is_empty());
     }
 
-    #[test]
-    fn a_shown_cover_remembers_whose_it_is() {
-        let picture = Arc::new(Picture {
+    fn cover(file: &str, own: bool, stand_in: bool) -> Cover {
+        Cover {
+            file: PathBuf::from(file),
+            own,
+            stand_in,
+        }
+    }
+
+    fn picture() -> Arc<Picture> {
+        Arc::new(Picture {
             width: 1,
             height: 1,
             pixels: vec![0; 4],
-        });
-        let cover = |own, stand_in| CoverPicture {
-            id: "steam:220".into(),
-            picture: picture.clone(),
-            own,
-            stand_in,
-        };
+        })
+    }
+
+    fn near(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    /// What `start_decoding` hands out: game ids and generations, sorted.
+    fn decode(state: &mut CoverState) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = state
+            .start_decoding()
+            .into_iter()
+            .map(|(id, _, generation)| (id, generation))
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn covers_are_decoded_only_near_the_screen() {
         let mut state = CoverState::default();
+        state.set_source("steam:220".into(), cover("hl2.jpg", false, false));
+        state.set_source("epic:sifu".into(), cover("sifu.png", false, false));
+        // Nothing near the screen: nothing to decode.
+        assert!(decode(&mut state).is_empty());
+        state.set_near(near(&["steam:220", "steam:400"]));
+        // Only the near game with a source; once handed out, not again while it decodes.
+        assert_eq!(decode(&mut state), [("steam:220".to_owned(), 1)]);
+        assert!(decode(&mut state).is_empty());
+        state.decoded("steam:220".into(), 1, Some(picture()));
+        assert!(state.picture("steam:220").is_some());
+        assert!(decode(&mut state).is_empty());
+        // Scrolled away (or the Library left): its pixels go; back near, decoded again.
+        state.set_near(near(&["epic:sifu"]));
+        assert!(state.picture("steam:220").is_none());
+        assert_eq!(decode(&mut state), [("epic:sifu".to_owned(), 2)]);
+        // A decode that finishes after its tile left is dropped.
+        state.set_near(HashSet::new());
+        state.decoded("epic:sifu".into(), 2, Some(picture()));
+        assert!(state.picture("epic:sifu").is_none());
+        // One that failed can be tried again.
+        state.set_near(near(&["epic:sifu"]));
+        assert_eq!(decode(&mut state), [("epic:sifu".to_owned(), 2)]);
+        state.decoded("epic:sifu".into(), 2, None);
+        assert_eq!(decode(&mut state), [("epic:sifu".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn a_stand_in_decoded_late_never_hides_the_original() {
+        let mut state = CoverState::default();
+        state.set_near(near(&["steam:220"]));
+        state.set_source("steam:220".into(), cover("client.jpg", false, true));
         assert!(state.wants("steam:220"));
-        // The PC's copy shows, and the original is still wanted.
-        state.show(cover(false, true));
-        assert!(state.pictures.contains_key("steam:220") && state.wants("steam:220"));
-        // The original arrived: wanted no more.
-        state.show(cover(false, false));
+        assert_eq!(decode(&mut state), [("steam:220".to_owned(), 1)]);
+        // The original arrives while the stand-in is being decoded.
+        state.set_source("steam:220".into(), cover("original.jpg", false, false));
         assert!(!state.wants("steam:220"));
-        state.show(cover(true, false));
-        assert!(state.pictures.contains_key("steam:220") && state.own.contains("steam:220"));
-        // The store's cover replaces it after Reset cover.
-        state.show(cover(false, false));
-        assert!(state.pictures.contains_key("steam:220") && state.own.is_empty());
+        assert_eq!(decode(&mut state), [("steam:220".to_owned(), 2)]);
+        state.decoded("steam:220".into(), 2, Some(picture()));
+        let original = Arc::clone(state.picture("steam:220").unwrap());
+        // The stand-in's late result is refused.
+        state.decoded("steam:220".into(), 1, Some(picture()));
+        assert!(Arc::ptr_eq(state.picture("steam:220").unwrap(), &original));
+        // The user's own replaces it; the original shows until it is decoded.
+        state.set_source("steam:220".into(), cover("mine.png", true, false));
+        assert!(state.is_own("steam:220"));
+        assert!(Arc::ptr_eq(state.picture("steam:220").unwrap(), &original));
+        assert_eq!(decode(&mut state), [("steam:220".to_owned(), 3)]);
+        // Reset cover: nothing left, and wanted again.
         state.forget("steam:220");
-        assert!(state.pictures.is_empty() && state.wants("steam:220"));
+        assert!(state.picture("steam:220").is_none() && state.wants("steam:220"));
+        assert!(!state.is_own("steam:220"));
+    }
+
+    #[test]
+    fn games_gone_lose_their_covers_and_tile_keys_name_games() {
+        let mut state = CoverState::default();
+        state.set_source("steam:220".into(), cover("a.jpg", false, false));
+        state.set_source("ea:1".into(), cover("b.jpg", false, false));
+        state.set_near(near(&["steam:220", "ea:1"]));
+        state.decoded("ea:1".into(), 2, Some(picture()));
+        state.retain(&HashSet::from(["steam:220"]));
+        assert!(state.picture("ea:1").is_none() && state.wants("ea:1"));
+        assert!(!state.wants("steam:220"));
+        let keys = near(&["tile:steam:220", "tile:ea:1", "row:steam:220", "search"]);
+        assert_eq!(near_tiles(&keys), near(&["steam:220", "ea:1"]));
     }
 }

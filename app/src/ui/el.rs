@@ -280,6 +280,8 @@ pub struct El<M> {
     pub children: Vec<El<M>>,
     /// A stable identity across frames (scroll offsets, focus, typed text).
     pub key: Option<String>,
+    /// The app hears whether this keyed element is near the screen (`El::watch`).
+    pub watch: bool,
     pub on_click: Option<M>,
     /// A right-click, with the pointer's position in window DIPs.
     pub on_context: Option<OnValue<M, (f32, f32)>>,
@@ -327,6 +329,7 @@ impl<M> El<M> {
             opacity: 1.0,
             children: Vec::new(),
             key: None,
+            watch: false,
             on_click: None,
             on_context: None,
             on_drag: None,
@@ -445,6 +448,13 @@ impl<M> El<M> {
         if let Kind::Image { cover, .. } = &mut self.kind {
             *cover = true;
         }
+        self
+    }
+    /// The app hears, by this element's `key`, whether it is on the screen or within one window
+    /// height of it (`input::near_keys`, `App::near_screen`): a cover tile decodes its picture
+    /// only then.
+    pub fn watch(mut self) -> Self {
+        self.watch = true;
         self
     }
     pub fn key(mut self, key: impl Into<String>) -> Self {

@@ -30,7 +30,7 @@
 //! text layouts that turn a point into an offset); the caret's blink phase, an IME composition
 //! and the text box menu (`EditMenu`: Cut, Copy, Paste, Select all) live here as well.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use super::el::{El, Kind, Rect, Role};
@@ -315,6 +315,32 @@ enum Found<'a, M> {
     Hit(Hit<'a, M>),
     Blocked,
     Miss,
+}
+
+/// The keys of watched elements (`El::watch`) on the screen or within one window height of it,
+/// above or below: what the app keeps ready (`App::near_screen`). Scroll views lay out all their
+/// content, so an element scrolled out of view has its rectangle too.
+pub fn near_keys<M>(frame: &Frame<M>, window: Rect) -> HashSet<String> {
+    fn walk<M>(el: &El<M>, placed: &Placed, reach: &Rect, out: &mut HashSet<String>) {
+        let rect = &placed.rect;
+        let overlaps = rect.x < reach.right()
+            && rect.right() > reach.x
+            && rect.y < reach.bottom()
+            && rect.bottom() > reach.y;
+        if el.watch
+            && overlaps
+            && let Some(key) = &el.key
+        {
+            out.insert(key.clone());
+        }
+        for (child, child_placed) in el.children.iter().zip(&placed.children) {
+            walk(child, child_placed, reach, out);
+        }
+    }
+    let reach = Rect::new(window.x, window.y - window.h, window.w, window.h * 3.0);
+    let mut out = HashSet::new();
+    walk(&frame.root, &frame.placed, &reach, &mut out);
+    out
 }
 
 /// The last view and its layout.
@@ -1229,6 +1255,43 @@ mod tests {
     ) -> Option<&'static str> {
         ui.pointer_down(frame, x, y, Button::Left);
         ui.pointer_up(frame, x, y, Button::Left).1
+    }
+
+    #[test]
+    fn watched_elements_near_the_screen_are_reported_by_key() {
+        // A 200 × 200 window over a scroll view of 100-high rows: rows 0 and 1 on screen, 2 and 3
+        // within one screen below, 4 and on further down.
+        let root = || -> El<&'static str> {
+            let mut rows: Vec<El<&'static str>> = (0..8)
+                .map(|n| {
+                    col([text(format!("row {n}"))])
+                        .height(100.0)
+                        .key(format!("row:{n}"))
+                        .watch()
+                })
+                .collect();
+            // Unwatched, and watched without a key: never reported.
+            rows.push(col([text("plain")]).height(100.0).key("plain"));
+            rows.push(col([text("no key")]).height(100.0).watch());
+            scroll("list", col(rows))
+        };
+        let mut ui = ui();
+        let near = |ui: &UiState| {
+            let mut keys: Vec<String> = near_keys(&frame(root(), ui), ui.window)
+                .into_iter()
+                .collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(near(&ui), ["row:0", "row:1", "row:2", "row:3"]);
+        // Scrolled down 450: rows 4 to 6 on screen, 2, 3 and 7 within a screen of it.
+        let scrolled = frame(root(), &ui);
+        let (list, _) = scrolled.scroll_at(10.0, 10.0).unwrap();
+        ui.scroll.insert(list, 450.0);
+        assert_eq!(
+            near(&ui),
+            ["row:2", "row:3", "row:4", "row:5", "row:6", "row:7"]
+        );
     }
 
     #[test]

@@ -23,6 +23,10 @@
 //! - **No child windows**: text boxes are drawn like everything else, so nothing but Direct2D
 //!   paints the client area.
 //! - **Files dropped** on the window (`WM_DROPFILES`) go to `App::drop_files`.
+//! - **Near the screen**: after each layout the shell works out which watched elements
+//!   (`El::watch`) are on the screen or within one window height of it (`input::near_keys`).
+//!   When that set changes it goes to `App::near_screen`, and the app's answer is laid out before
+//!   the frame is drawn (cover tiles decode their pictures only then).
 //! - **Display scaling**: `Ctx::scale` holds the window's (set before the first message, and at
 //!   `WM_DPICHANGED`, which also calls `App::scale_changed`), for pictures the app makes at the
 //!   window's pixel size (covers).
@@ -39,6 +43,7 @@ mod text_input;
 pub mod window;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
@@ -61,7 +66,7 @@ use windows::core::PWSTR;
 use windows_window::{Window, run_with};
 
 use crate::ui::el::{El, Kind, Rect};
-use crate::ui::input::{Button, Frame, Key, KeyResult, UiState};
+use crate::ui::input::{self, Button, Frame, Key, KeyResult, UiState};
 use crate::ui::layout::{Layout, key_id};
 use crate::ui::render::{Renderer, Text};
 use crate::ui::theme;
@@ -78,6 +83,10 @@ pub const CAPTION_CLOSE: &str = "caption:close";
 
 /// The tooltip's timer.
 const TOOLTIP_TIMER: usize = 1;
+/// Fires a moment after a frame dropped pictures' bitmaps: Direct2D then releases its textures
+/// that went unused meanwhile (`Renderer::trim`).
+const TRIM_TIMER: usize = 3;
+const TRIM_DELAY_MS: u32 = 2000;
 
 /// The F of Ctrl+F (its virtual-key code is its letter's).
 const FIND_KEY: i32 = b'F' as i32;
@@ -111,6 +120,12 @@ pub trait App: 'static {
     /// The window's display scaling changed (another monitor, a new setting); `Ctx::scale` has
     /// the new one already.
     fn scale_changed(&self, _scale: f32) -> Option<Self::Message> {
+        None
+    }
+    /// The keys of watched elements (`El::watch`) on the screen or within one window height of
+    /// it, each time that set changes (scrolling, another page, a resize): the app keeps ready
+    /// what they show.
+    fn near_screen(&self, _keys: &HashSet<String>) -> Option<Self::Message> {
         None
     }
 }
@@ -247,6 +262,8 @@ struct Shell<A: App> {
     tracking: bool,
     /// The text box a dialog opened with (its first control), given the keyboard once.
     dialog_edit: Option<u64>,
+    /// The watched elements near the screen, as the app last heard them (`App::near_screen`).
+    near: HashSet<String>,
     /// The window has the keyboard focus (the caret blinks only then).
     window_focused: bool,
     /// The text box whose caret blinks and for which the IME is on.
@@ -289,6 +306,7 @@ impl<A: App> Shell<A> {
             minimized: false,
             tracking: false,
             dialog_edit: None,
+            near: HashSet::new(),
             window_focused: false,
             caret_box: None,
             high_surrogate: None,
@@ -362,6 +380,24 @@ impl<A: App> Shell<A> {
         self.refresh_uia();
     }
 
+    /// Tells the app when the watched elements near the screen have changed, and lays out its
+    /// answer at once, so the frame about to be drawn shows it.
+    fn follow_near(&mut self) {
+        let Some(frame) = &self.frame else {
+            return;
+        };
+        let near = input::near_keys(frame, self.ui.window);
+        if near == self.near {
+            return;
+        }
+        let message = self.app.near_screen(&near);
+        self.near = near;
+        if let Some(message) = message {
+            self.dispatch(message);
+            self.layout();
+        }
+    }
+
     fn refresh_uia(&self) {
         let Some(frame) = &self.frame else {
             return;
@@ -380,6 +416,7 @@ impl<A: App> Shell<A> {
         }
         if self.stale || self.frame.is_none() {
             self.layout();
+            self.follow_near();
         }
         if !self.redraw {
             return Ok(false);
@@ -396,6 +433,10 @@ impl<A: App> Shell<A> {
         renderer.resize(self.size.0, self.size.1, self.dpi as f32)?;
         let drawn = renderer.draw(frame, &self.ui, &self.text)?;
         self.redraw = drawn.animating;
+        if drawn.dropped {
+            // SAFETY: a timer on our own window; the same id restarts a running one.
+            unsafe { SetTimer(Some(hwnd(self.hwnd)), TRIM_TIMER, TRIM_DELAY_MS, None) };
+        }
         if !drawn.presented {
             // The device was lost: a new one draws the next frame.
             self.renderer = None;
@@ -518,6 +559,14 @@ impl<A: App> Shell<A> {
                 self.blink();
                 Some(0)
             }
+            WM_TIMER if wparam == TRIM_TIMER => {
+                // SAFETY: stops our own timer.
+                let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), TRIM_TIMER) };
+                if let Some(renderer) = &self.renderer {
+                    renderer.trim(TRIM_DELAY_MS / 2);
+                }
+                Some(0)
+            }
             WM_TIMER if wparam == TOOLTIP_TIMER => {
                 // SAFETY: stops our own timer.
                 let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), TOOLTIP_TIMER) };
@@ -610,6 +659,7 @@ impl<A: App> Shell<A> {
         };
         if self.stale || self.frame.is_none() {
             self.layout();
+            self.follow_near();
         }
         let (Some(renderer), Some(frame)) = (self.renderer.as_mut(), self.frame.as_ref()) else {
             return;

@@ -23,8 +23,9 @@ samples in `crates/samples/`) instead of guessing.
     rows, Add a game) and `filter_menu.rs` (that button's flyout: Sort, Smart filters, Smart
     Collections; `FilterMessage`; the view saved when it closes).
   - `library_page.rs` (the Library grid: a cover tile per game, by store; the window opens on it)
-    and `covers.rs` (loading the core's covers, the stores' originals decoded at full size, a
-    stand-in until each arrives; Choose and Reset cover).
+    and `covers.rs` (the core's covers kept as their files, the stores' originals decoded at full
+    size only while their tiles are near the screen, a stand-in until each original arrives;
+    Choose and Reset cover).
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
@@ -105,15 +106,24 @@ samples in `crates/samples/`) instead of guessing.
   the elements under it keep their ids. Its lines are check boxes and list items (Toggle and
   SelectionItem in UI Automation); Tab moves through them.
 - **Pictures**: `el::image` draws a decoded picture, uploaded once per `key` as a Direct2D
-  bitmap.
+  bitmap and kept while frames draw it: one the latest frame didn't draw is dropped
+  (`render::retain_drawn`), so a page left behind frees its pictures' GPU memory. Two seconds
+  later (`TRIM_TIMER`) `Renderer::trim` has Direct2D release the textures it cached for drawing
+  them (layers, pre-downscaled pictures), flushes Direct3D, and trims the driver's buffers
+  (`IDXGIDevice3::Trim`): without it the GPU memory stayed held on an idle window.
   - **Fitted** (the default): icons are made at the exact pixel size they take for `Ctx::scale`
     (`image::decode_icons`), and a picture whose pixels match its place on screen is drawn on
     whole pixels, so nothing resamples it again; `App::scale_changed` makes them again. An icon
     image of exactly that size shows untouched.
-  - **`.cover()`**: a cover is the store's original at full size (`image::decode_covers`). It
+  - **`.cover()`**: a cover is the store's original at full size (`image::decode_cover`). It
     fills its box, cut around its centre, and Direct2D scales it as it draws, with its
     high-quality cubic filter, inside a layer that rounds its corners (`.radius`). A new display
     scaling needs nothing made again.
+  - **Only near the screen**: a keyed element made with `.watch()` (a Library tile) is reported
+    to `App::near_screen` while it is on the screen or within one window height of it
+    (`input::near_keys`); the shell lays out the app's answer before the frame is drawn.
+    `covers.rs` keeps only each cover's file and decodes the covers of those tiles, dropping the
+    others' pixels: off the Library none are held.
   - A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).

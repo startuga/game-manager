@@ -93,7 +93,8 @@ impl GameManager {
     /// when it is pinned, and its name on one line under it. A click opens its page.
     fn tile(&self, game: &Game) -> El<Message> {
         let id = game.id.clone();
-        let art = match self.covers.pictures.get(&game.id) {
+        // Decoded while the tile is near the screen (`.watch()`), else its icon meanwhile.
+        let art = match self.covers.picture(&game.id) {
             Some(picture) => image(format!("cover:{}", game.id), picture.clone())
                 .cover()
                 .radius(theme::RADIUS_CARD),
@@ -121,7 +122,8 @@ impl GameManager {
         .radius(theme::RADIUS_CARD)
         .hover_overlay(TILE_HOVER)
         .role(crate::ui::el::Role::ListItem)
-        .key(format!("tile:{}", game.id))
+        .key(format!("{}{}", crate::covers::TILE_KEY, game.id))
+        .watch()
         .name(game.name.clone())
         .tooltip(game.name.clone())
         .on_click(Message::Select(Some(game.id.clone())))

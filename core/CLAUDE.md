@@ -29,7 +29,8 @@ holds the rules and facts that span them.
     icons, EA's Game Definition File).
   - `covers.rs` (cover art: the user's own, the stores' originals downloaded once by id or by
     name into the cache, and meanwhile the smaller copies the stores keep on this PC; every file
-    kept byte for byte, never re-encoded). Each store's facts are
+    kept byte for byte, never re-encoded; a `Cover` names its file, read with `covers::read` when
+    a tile needs it). Each store's facts are
     in its own module (`steam::cached_cover`, `epic::cover_url`, `gog::cached_cover`, …).
   - `picture.rs` (pictures in pure Rust: JPEG, PNG and WebP through their crates, BMP and icon
     bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, the capture's PNG; no

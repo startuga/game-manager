@@ -6,9 +6,9 @@
 //!   `.ico` file (`gm_core::icon`). It is made here once for each pixel size it is drawn at
 //!   (`picture::fit`): untouched when it is exactly that size, else scaled with Catmull-Rom,
 //!   premultiplied first so transparent edges stay clean. A picture (an Xbox logo) is fitted too.
-//! - **Covers** (`decode_covers`) are the stores' original files, decoded at their full size. The
-//!   renderer scales each into its tile as it draws it (`el::El::fill`), so covers don't depend on
-//!   the display's scaling.
+//! - **Covers** (`decode_cover`) are the stores' original files, decoded at their full size while
+//!   their tiles are near the screen (`covers.rs`). The renderer scales each into its tile as it
+//!   draws it (`el::El::cover`), so covers don't depend on the display's scaling.
 //!
 //! Decoding runs on the background thread that read the bytes, so the UI thread only uploads
 //! ready pixels.
@@ -64,17 +64,12 @@ fn decode_icon(bytes: &[u8], size: u32) -> Option<Picture> {
     Some(Picture::from_premultiplied(fitted))
 }
 
-/// Decodes cover art keyed by id (the stores' original files, or the user's own) at full size.
-/// What is no picture is left out.
-pub fn decode_covers(items: Vec<(String, Vec<u8>)>) -> Vec<(String, Picture)> {
-    items
-        .into_iter()
-        .filter_map(|(id, bytes)| {
-            let straight = picture::decode(&bytes).ok()?;
-            let premultiplied = picture::premultiply(straight).ok()?;
-            Some((id, Picture::from_premultiplied(premultiplied)))
-        })
-        .collect()
+/// A cover (a store's original file, or the user's own) decoded at full size; `None` when it
+/// is no picture.
+pub fn decode_cover(bytes: &[u8]) -> Option<Picture> {
+    let straight = picture::decode(bytes).ok()?;
+    let premultiplied = picture::premultiply(straight).ok()?;
+    Some(Picture::from_premultiplied(premultiplied))
 }
 
 /// Writes premultiplied BGRA pixels to `path` as a PNG (the window's frame capture for checks,
@@ -186,14 +181,8 @@ mod tests {
         let bytes = std::fs::read(&file).unwrap();
         std::fs::remove_file(&file).unwrap();
 
-        let items = vec![
-            ("steam:220".to_owned(), bytes),
-            ("ea:1".to_owned(), b"not a picture".to_vec()),
-        ];
-        let covers = decode_covers(items);
-        assert_eq!(covers.len(), 1);
-        let (id, cover) = &covers[0];
-        assert_eq!(id, "steam:220");
+        assert_eq!(decode_cover(b"not a picture"), None);
+        let cover = decode_cover(&bytes).unwrap();
         assert_eq!((cover.width, cover.height), (40, 60));
         assert_eq!(cover.pixels[(15 * 40 + 10) * 4..][..4], [30, 60, 200, 255]);
         let corner = &cover.pixels[..4];

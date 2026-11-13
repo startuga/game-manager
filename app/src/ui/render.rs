@@ -5,7 +5,12 @@
 //!   answers the layout's `Measure`. Oxanium, the page titles' font, is embedded and loaded once.
 //! - **`Renderer`** owns the GPU device and the window's swap chain, and keeps each picture's
 //!   bitmap by key (an `ID2D1Bitmap1` made through the device context, so pictures are drawn with
-//!   a chosen interpolation and source rectangle). A fitted picture made for its pixels is drawn on
+//!   a chosen interpolation and source rectangle) while frames draw it: a bitmap the latest frame
+//!   didn't draw is dropped (`retain_drawn`), and its picture with it when nothing else holds it.
+//!   Every frame draws all that is on screen, so a page left behind frees its pictures at once.
+//!   Direct2D keeps textures of its own for drawing them (a layer's, a picture pre-downscaled):
+//!   `trim` lets it release those no frame has used for a while, which the shell asks for shortly
+//!   after a frame dropped bitmaps (`Drawn::dropped`). A fitted picture made for its pixels is drawn on
 //!   whole pixels; a cover (`El::cover`) fills its box from its centre, scaled with high-quality
 //!   cubic in a rounded layer. A frame clears to the base colour and draws the tree in order: fills and
 //!   outlines (hover and press states from `UiState`), text, pictures, spinners, drop-down faces,
@@ -34,12 +39,13 @@ use windows::Win32::{
     D2D1_BITMAP_PROPERTIES1, D2D1_INTERPOLATION_MODE, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
     D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
     D2D1_PIXEL_FORMAT, D2D1_RECT_F, D2D1_ROUNDED_RECT, D2D1_SIZE_U, DXGI_FORMAT_B8G8R8A8_UNORM,
-    ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Layer,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Layer, ID3D11Device, IDXGIDevice3,
 };
 use windows_canvas::{
     Brush, ColorF, DrawingSession, Ellipse, GpuDevice, GradientStop, RoundedRect, SwapChain,
     Vector2,
 };
+use windows_core::Interface;
 use windows_text::{
     FontCollection, FontWeight, TextAlignment, TextFormat, TextLayout, Trimming, WordWrapping,
 };
@@ -202,6 +208,20 @@ pub struct Drawn {
     pub presented: bool,
     /// Something moves (a spinner): draw again right away.
     pub animating: bool,
+    /// Pictures this frame didn't draw let go of their bitmaps: `Renderer::trim` can soon give
+    /// Direct2D's own textures back too.
+    pub dropped: bool,
+}
+
+/// Pictures' bitmaps by key, each with its picture and the number of the frame that last drew it.
+type Bitmaps = HashMap<String, (ID2D1Bitmap1, Arc<Picture>, u64)>;
+
+/// Keeps the entries frame `frame` drew: what isn't on screen any more lets go of its bitmap.
+/// Whether any was dropped.
+fn retain_drawn<A, B>(map: &mut HashMap<String, (A, B, u64)>, frame: u64) -> bool {
+    let before = map.len();
+    map.retain(|_, (_, _, drawn)| *drawn == frame);
+    map.len() < before
 }
 
 pub struct Renderer {
@@ -209,7 +229,9 @@ pub struct Renderer {
     chain: SwapChain,
     /// Pixels per DIP, for drawing pictures on whole pixels.
     scale: f32,
-    bitmaps: HashMap<String, (ID2D1Bitmap1, Arc<Picture>)>,
+    bitmaps: Bitmaps,
+    /// Frames drawn (and captured), for `retain_drawn`.
+    frames: u64,
     start: Instant,
 }
 
@@ -237,6 +259,7 @@ impl Renderer {
             chain,
             scale: dpi / 96.0,
             bitmaps: HashMap::new(),
+            frames: 0,
             start: Instant::now(),
         })
     }
@@ -260,6 +283,7 @@ impl Renderer {
         let session = self.chain.begin_draw()?;
         session.clear(theme::BASE);
         let brush = session.create_solid_brush(ColorF::WHITE)?;
+        self.frames += 1;
         let mut painter = Painter {
             session: &session,
             brush: &brush,
@@ -267,6 +291,7 @@ impl Renderer {
             scale: self.scale,
             alpha: 1.0,
             bitmaps: &mut self.bitmaps,
+            frame: self.frames,
             elapsed,
             now: Instant::now(),
             animating: false,
@@ -274,13 +299,42 @@ impl Renderer {
         painter.element(&frame.root, &frame.placed, ui);
         painter.overlays(frame, ui);
         let animating = painter.animating;
+        let dropped = retain_drawn(&mut self.bitmaps, self.frames);
         // The session ends (EndDraw) before presenting.
         drop(session);
         let presented = self.chain.present()?;
         Ok(Drawn {
             presented,
             animating,
+            dropped,
         })
+    }
+
+    /// Lets Direct2D release the textures it keeps for drawing (layers, pre-downscaled pictures,
+    /// cached allocations) that no frame has used for `idle_ms`: once a page's pictures are gone,
+    /// their GPU memory goes too. What the next frame needs is made again.
+    pub fn trim(&self, idle_ms: u32) {
+        if let Ok(device) = self._device.d2d_device().cast::<ID2D1Device>() {
+            // SAFETY: a plain call on the live device; it only releases what Direct2D cached.
+            unsafe { device.ClearResources(idle_ms) };
+        }
+        let Ok(d3d) = self._device.d3d_device().cast::<ID3D11Device>() else {
+            return;
+        };
+        // Direct3D destroys released textures at its next flush, and the window may draw nothing
+        // for a long while.
+        let mut context = None;
+        // SAFETY: `context` is a valid out-pointer for the call.
+        unsafe { d3d.GetImmediateContext(&mut context) };
+        if let Some(context) = context {
+            // SAFETY: a plain call on the device's live immediate context.
+            unsafe { context.Flush() };
+        }
+        // The driver's own buffers, as an app being suspended gives them back.
+        if let Ok(dxgi) = d3d.cast::<IDXGIDevice3>() {
+            // SAFETY: a plain call on the live device, after Direct2D let go of its resources.
+            unsafe { dxgi.Trim() };
+        }
     }
 }
 
@@ -297,6 +351,8 @@ impl Renderer {
         let height = ui.window.h.ceil().max(1.0) as u32;
         let target = self._device.create_render_target(width, height)?;
         let elapsed = self.start.elapsed().as_secs_f32();
+        self.frames += 1;
+        let drawn = self.frames;
         let bitmaps = &mut self.bitmaps;
         target.draw(|session| {
             session.clear(theme::BASE);
@@ -309,6 +365,7 @@ impl Renderer {
                 scale: 1.0,
                 alpha: 1.0,
                 bitmaps: &mut *bitmaps,
+                frame: drawn,
                 elapsed,
                 now: Instant::now(),
                 animating: false,
@@ -317,6 +374,7 @@ impl Renderer {
             painter.overlays(frame, ui);
             Ok(())
         })?;
+        retain_drawn(&mut self.bitmaps, drawn);
         Ok((width, height, target.read_pixels()?))
     }
 }
@@ -357,7 +415,9 @@ pub struct Painter<'a> {
     scale: f32,
     /// Multiplies every colour's alpha (an element's opacity, a disabled subtree).
     alpha: f32,
-    bitmaps: &'a mut HashMap<String, (ID2D1Bitmap1, Arc<Picture>)>,
+    bitmaps: &'a mut Bitmaps,
+    /// This frame's number, stamped on each bitmap it draws.
+    frame: u64,
     elapsed: f32,
     /// The frame's time, for the hover fades.
     now: Instant,
@@ -518,17 +578,20 @@ impl Painter<'_> {
         .ok()
     }
 
-    /// Uploads `picture` once per key, again when the view hands over another. False when it
-    /// can't be.
+    /// Uploads `picture` once per key, again when the view hands over another, and marks it drawn
+    /// in this frame. False when it can't be.
     fn upload(&mut self, key: &str, picture: &Arc<Picture>) -> bool {
-        let fresh = !matches!(self.bitmaps.get(key), Some((_, kept)) if Arc::ptr_eq(kept, picture));
-        if fresh {
-            let Some(bitmap) = self.create_bitmap(picture) else {
-                return false;
-            };
-            self.bitmaps
-                .insert(key.to_owned(), (bitmap, Arc::clone(picture)));
+        if let Some((_, kept, drawn)) = self.bitmaps.get_mut(key)
+            && Arc::ptr_eq(kept, picture)
+        {
+            *drawn = self.frame;
+            return true;
         }
+        let Some(bitmap) = self.create_bitmap(picture) else {
+            return false;
+        };
+        self.bitmaps
+            .insert(key.to_owned(), (bitmap, Arc::clone(picture), self.frame));
         true
     }
 
@@ -562,7 +625,7 @@ impl Painter<'_> {
         if rect.w <= 0.0 || rect.h <= 0.0 || !self.upload(key, picture) {
             return;
         }
-        let Some((bitmap, _)) = self.bitmaps.get(key) else {
+        let Some((bitmap, _, _)) = self.bitmaps.get(key) else {
             return;
         };
         let (x, y, w, h) =
@@ -634,7 +697,7 @@ impl Painter<'_> {
         if !self.upload(key, picture) {
             return;
         }
-        let Some((bitmap, _)) = self.bitmaps.get(key) else {
+        let Some((bitmap, _, _)) = self.bitmaps.get(key) else {
             return;
         };
         let (w, h) = (picture.width.max(1) as f32, picture.height.max(1) as f32);
@@ -1138,6 +1201,23 @@ pub fn glyph_spec(glyph: &str, size: f32, color: ColorF) -> TextSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_what_the_latest_frame_drew_is_kept() {
+        let mut map: HashMap<String, ((), (), u64)> = HashMap::from([
+            ("cover:a".to_owned(), ((), (), 7)),
+            ("cover:b".to_owned(), ((), (), 6)),
+            ("icon:c".to_owned(), ((), (), 7)),
+        ]);
+        assert!(retain_drawn(&mut map, 7));
+        let mut kept: Vec<&String> = map.keys().collect();
+        kept.sort();
+        assert_eq!(kept, ["cover:a", "icon:c"]);
+        // Nothing more to drop; then a frame that drew nothing frees everything.
+        assert!(!retain_drawn(&mut map, 7));
+        assert!(retain_drawn(&mut map, 8));
+        assert!(map.is_empty());
+    }
 
     #[test]
     fn a_cover_fills_its_tile_cut_around_its_centre() {

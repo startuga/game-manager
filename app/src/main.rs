@@ -453,6 +453,11 @@ impl App for GameManager {
     fn scale_changed(&self, _scale: f32) -> Option<Message> {
         Some(Message::ScaleChanged)
     }
+
+    /// The Library's tiles near the screen: their covers are decoded, the others' dropped.
+    fn near_screen(&self, keys: &std::collections::HashSet<String>) -> Option<Message> {
+        Some(covers::CoverMessage::Near(covers::near_tiles(keys)).into())
+    }
 }
 
 impl GameManager {
