@@ -21,7 +21,12 @@ holds the rules and facts that span them.
     needs).
   - `uninstall.rs` (how a game is uninstalled: `route` reads the registry, `run` hands over
     through `launch`; nothing is deleted here).
-  - `icon.rs` (icons as PNG via the Shell + WIC, cached).
+  - `icon.rs` (icons as they are in the games' files, at their best: each icon's single best
+    image, the largest in true colour (its depth as the icon's directory lists it too), byte for
+    byte from `.ico` files and programs' icon resources, as a `.png` or a one-image `.ico` so
+    Windows' own decoder shows it too; cached; nothing is decoded or scaled here, no icon
+    handles, no GDI) and `data_module.rs` (a program or DLL mapped as data, for its resources:
+    icons, EA's Game Definition File).
   - `covers.rs` (cover art: the user's own, the cache, the stores' files on this PC, the stores'
     servers, the Steam store by name; 2:3 JPEG thumbnails made with WIC). Each store's facts are
     in its own module (`steam::cached_cover`, `epic::cover_url`, `gog::cached_cover`, …).
@@ -107,8 +112,8 @@ holds the rules and facts that span them.
 - **Errors**: return `gm_core::Result<T>` with a `gm_core::Error` variant, never a `String`
   error. A new failure gets its own variant when a caller may want to tell it apart.
 - **`unsafe`**: every block holds one operation and gets a `// SAFETY:` comment (Clippy enforces
-  both). A handle that must be freed is owned by a type whose `Drop` frees it: `OwnedIcon`,
-  `DataModule`, `ItemIdList`, `ComGuard`, WinHTTP's `Handle`, `elevate::OwnedHandle`.
+  both). A handle that must be freed is owned by a type whose `Drop` frees it:
+  `data_module::DataModule`, `ItemIdList`, `ComGuard`, WinHTTP's `Handle`, `elevate::OwnedHandle`.
 - **No game-specific data in code**: knowledge of particular games goes into `config/games.json`.
   Store file formats and registry locations stay in the scanners.
 - **Network goes through `http.rs`**, with a User-Agent that has contact details.

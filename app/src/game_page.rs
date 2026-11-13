@@ -119,7 +119,7 @@ impl GameManager {
             |dir| dir.display().to_string(),
         );
         row([
-            self.icon(game, 64.0),
+            self.icon(game, crate::icons::LARGE),
             col([
                 heading(game.name.clone()).wrap(),
                 text(folder)

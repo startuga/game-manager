@@ -23,6 +23,8 @@ in `crates/samples/`) instead of guessing.
     Collections; `FilterMessage`; the view saved when it closes).
   - `library_page.rs` (the Library grid: a cover tile per game, by store; the window opens on it)
     and `covers.rs` (loading the core's covers, decoded for the tiles; Choose and Reset cover).
+  - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
+    sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
     scroll position).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
@@ -46,8 +48,8 @@ in `crates/samples/`) instead of guessing.
   - `el.rs` (the element tree views return; builders), `layout.rs` (a small flexbox, tested),
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
     `render.rs` (drawing; text and bitmap caches), `uia.rs` (UI Automation), `theme.rs` (design
-    tokens), `widgets.rs` (controls), `image.rs` (WIC decoding, covers at their tile's pixel
-    size with rounded corners, PNG capture), `text_edit.rs` (a text box's editing: caret,
+    tokens), `widgets.rs` (controls), `image.rs` (WIC decoding: icons and covers at the
+    pixels they take, covers' rounded corners, PNG capture), `text_edit.rs` (a text box's editing: caret,
     selection, words, undo; tested).
 - `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
   frame, DPI), `text_input.rs` (text boxes' keys, characters, clicks, clipboard, caret blink,
@@ -100,9 +102,11 @@ in `crates/samples/`) instead of guessing.
   worked out from the sidebar's width (`flyout_origin`), whatever is above it. That `layers` is always there, with or without the flyout, so
   the elements under it keep their ids. Its lines are check boxes and list items (Toggle and
   SelectionItem in UI Automation); Tab moves through them.
-- **Pictures**: `el::image` draws a decoded picture scaled to fit, uploaded once per `key`. Covers
-  are decoded at their tile's exact pixel size for `Ctx::scale` with their corners cut into the
-  alpha (`image::decode_covers`), so they need no clipping; `App::scale_changed` makes them again.
+- **Pictures**: `el::image` draws a decoded picture scaled to fit, uploaded once per `key`. Icons
+  and covers are decoded at the exact pixel size they take for `Ctx::scale` (`image::decode_icons`,
+  `image::decode_covers`, covers with their corners cut into the alpha), and a picture whose
+  pixels match its place on screen is drawn on whole pixels, so nothing resamples it again;
+  `App::scale_changed` makes them again. An icon image of exactly that size shows untouched.
   A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).

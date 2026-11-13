@@ -1,7 +1,14 @@
-//! Pictures for the window: PNG and JPEG bytes (the core's game icons and covers) decoded with WIC
-//! into premultiplied BGRA pixels, the form Direct2D bitmaps take.
+//! Pictures for the window: the core's game icons and covers decoded with WIC into premultiplied
+//! BGRA pixels, the form Direct2D bitmaps take. Decoding keeps every pixel as it is; only scaling
+//! changes them, and each picture is scaled at most once, here, to the pixels it takes on screen,
+//! so the renderer draws it pixel for pixel.
 //!
-//! - **Icons** (`decode_all`) keep their size; the renderer scales them.
+//! - **Icons** (`decode_icons`): the core gives each icon's best image, a PNG or a one-image
+//!   `.ico` file (`gm_core::icon`). It is used untouched when it is exactly the size asked for;
+//!   else it is scaled to fit, premultiplied first so transparent edges stay clean, with WIC's
+//!   high-quality cubic filter, which keeps edges sharper than Fant's averaging. An `.ico` file
+//!   with several images gives the one `gm_core::icon::pick` chooses, decoded on its own
+//!   (`image_file`). A picture (an Xbox logo) is scaled to fit too.
 //! - **Covers** (`decode_covers`) are scaled here to the tile's exact pixel size, and their rounded
 //!   corners are cut into the alpha (`round_corners`), so the renderer needs no clipping and a
 //!   cover takes only the memory its tile shows.
@@ -11,12 +18,14 @@
 //! private to it).
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 use windows::Win32::{
     CLSCTX_INPROC_SERVER, CLSID_WICImagingFactory, COINIT_MULTITHREADED, CoCreateInstance,
     CoInitializeEx, CoUninitialize, GENERIC_WRITE, GUID_ContainerFormatPng,
     GUID_WICPixelFormat32bppPBGRA, IPropertyBag2, IWICBitmapFrameDecode, IWICBitmapFrameEncode,
     IWICBitmapSource, IWICImagingFactory, IWICPalette, SHCreateMemStream, WICBitmapDitherTypeNone,
-    WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
+    WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant,
+    WICBitmapInterpolationModeHighQualityCubic, WICBitmapPaletteTypeCustom,
     WICDecodeMetadataCacheOnDemand,
 };
 
@@ -56,9 +65,12 @@ impl Drop for Com {
     }
 }
 
-/// Decodes pictures keyed by id (the core's PNG icons), with one WIC factory for all of them.
-/// Bytes that are not a picture are left out.
-pub fn decode_all(items: Vec<(String, Vec<u8>)>) -> Vec<(String, Picture)> {
+/// Decodes the core's icons keyed by id (PNGs, `.ico` files or pictures) for both of `sizes`, in pixels, with one WIC factory for all of them. Icons that can't be decoded are left
+/// out.
+pub fn decode_icons(
+    items: Vec<(String, Arc<Vec<u8>>)>,
+    sizes: [u32; 2],
+) -> Vec<(String, [Picture; 2])> {
     let _com = Com::new();
     // SAFETY: COM is initialized on this thread while `_com` lives.
     let factory: windows::core::Result<IWICImagingFactory> =
@@ -69,11 +81,74 @@ pub fn decode_all(items: Vec<(String, Vec<u8>)>) -> Vec<(String, Picture)> {
     items
         .into_iter()
         .filter_map(|(id, bytes)| {
-            decode_with(&factory, &bytes)
-                .ok()
-                .map(|picture| (id, picture))
+            let small = decode_icon(&factory, &bytes, sizes[0]).ok()?;
+            let large = decode_icon(&factory, &bytes, sizes[1]).ok()?;
+            Some((id, [small, large]))
         })
         .collect()
+}
+
+/// An icon `size` pixels big (see the module's doc). Every interface used comes from the WIC
+/// call just before it, which succeeded.
+fn decode_icon(
+    factory: &IWICImagingFactory,
+    bytes: &[u8],
+    size: u32,
+) -> windows::core::Result<Picture> {
+    // The image picked, on its own (`gm_core::icon::image_file`), or the picture.
+    let alone;
+    let bytes = if gm_core::icon::is_ico(bytes) {
+        let picked = gm_core::icon::pick(&gm_core::icon::images(bytes), size)
+            .ok_or_else(windows::core::Error::empty)?;
+        alone = gm_core::icon::image_file(bytes, picked.index)
+            .ok_or_else(windows::core::Error::empty)?;
+        &alone
+    } else {
+        bytes
+    };
+    let frame = first_frame(factory, bytes)?;
+    let (mut width, mut height) = (0u32, 0u32);
+    // SAFETY: both out-pointers are valid locals.
+    unsafe { frame.GetSize(&mut width, &mut height) }.ok()?;
+    if width == 0 || height == 0 {
+        return Err(windows::core::Error::empty());
+    }
+    // Inside `size` × `size`, its shape kept (an icon is square; a logo may not be).
+    let fit = f64::from(size) / f64::from(width.max(height));
+    let target = (
+        ((f64::from(width) * fit).round() as u32).max(1),
+        ((f64::from(height) * fit).round() as u32).max(1),
+    );
+    if target == (width, height) {
+        return pixels_of(factory, &frame);
+    }
+    // SAFETY: a plain factory call.
+    let converter = unsafe { factory.CreateFormatConverter() }?;
+    // SAFETY: `frame` is live; no palette is needed for 32-bit output.
+    unsafe {
+        converter.Initialize(
+            &frame,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            None::<&IWICPalette>,
+            0.0,
+            WICBitmapPaletteTypeCustom,
+        )
+    }
+    .ok()?;
+    // SAFETY: a plain factory call.
+    let scaler = unsafe { factory.CreateBitmapScaler() }?;
+    // SAFETY: `converter` is live, and the size is not zero.
+    unsafe {
+        scaler.Initialize(
+            &converter,
+            target.0,
+            target.1,
+            WICBitmapInterpolationModeHighQualityCubic,
+        )
+    }
+    .ok()?;
+    pixels_of(factory, &scaler)
 }
 
 /// Decodes cover art keyed by id (the core's JPEG thumbnails) for tiles `size` pixels big, with
@@ -189,12 +264,6 @@ pub fn save_png(
     unsafe { encoder.Commit() }.ok()
 }
 
-/// The picture in `bytes` at its own size.
-fn decode_with(factory: &IWICImagingFactory, bytes: &[u8]) -> windows::core::Result<Picture> {
-    let frame = first_frame(factory, bytes)?;
-    pixels_of(factory, &frame)
-}
-
 /// The picture in `bytes` scaled to exactly `size` pixels.
 fn decode_scaled(
     factory: &IWICImagingFactory,
@@ -300,6 +369,74 @@ mod tests {
         round_corners(&mut square, 100);
         assert!(alpha(&square, 0, 0) < 255);
         assert_eq!(alpha(&square, 1, 1), 255);
+    }
+
+    /// A 32-bit bitmap `side` pixels square for an `.ico` file, with its (opaque) mask:
+    /// vertical stripes of `colors`, one pixel wide each.
+    fn stripes(side: u32, colors: &[[u8; 4]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend(40u32.to_le_bytes());
+        data.extend((side as i32).to_le_bytes());
+        data.extend((side as i32 * 2).to_le_bytes());
+        data.extend(1u16.to_le_bytes());
+        data.extend(32u16.to_le_bytes());
+        data.extend([0u8; 24]);
+        for _ in 0..side {
+            for x in 0..side {
+                data.extend(colors[x as usize % colors.len()]);
+            }
+        }
+        data.extend(vec![0u8; (side.div_ceil(32) * 4 * side) as usize]);
+        data
+    }
+
+    /// An `.ico` file holding `images` (bitmaps `side` pixels square).
+    fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut file = Vec::new();
+        file.extend(0u16.to_le_bytes());
+        file.extend(1u16.to_le_bytes());
+        file.extend((images.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * images.len();
+        for (side, data) in images {
+            file.extend([*side as u8, *side as u8, 0, 0]);
+            file.extend(1u16.to_le_bytes());
+            file.extend(32u16.to_le_bytes());
+            file.extend((data.len() as u32).to_le_bytes());
+            file.extend((offset as u32).to_le_bytes());
+            offset += data.len();
+        }
+        for (_, data) in images {
+            file.extend(data);
+        }
+        file
+    }
+
+    #[test]
+    fn an_icon_of_the_size_asked_for_is_used_pixel_for_pixel() {
+        let (red, blue) = ([0, 0, 255, 255], [255, 0, 0, 255]);
+        let bytes = Arc::new(ico(&[
+            (16, stripes(16, &[red, blue])),
+            (48, stripes(48, &[blue])),
+        ]));
+        let items = vec![
+            ("game".to_owned(), Arc::clone(&bytes)),
+            ("broken".to_owned(), Arc::new(b"not an icon".to_vec())),
+        ];
+        let icons = decode_icons(items, [16, 32]);
+        assert_eq!(icons.len(), 1);
+        let [small, large] = &icons[0].1;
+        // 16 px: the 16 px image untouched; any scaling would blend its one-pixel stripes.
+        assert_eq!((small.width, small.height), (16, 16));
+        for (index, pixel) in small.pixels.chunks(4).enumerate() {
+            let expected = if index % 2 == 0 { red } else { blue };
+            assert_eq!(pixel, expected, "pixel {index}");
+        }
+        // 32 px: scaled once from the next larger image, the 48 px one.
+        assert_eq!((large.width, large.height), (32, 32));
+        assert_eq!(large.pixels[(16 * 32 + 16) * 4..][..4], blue);
+        // Larger than any image: the largest, scaled up.
+        let up = decode_icons(vec![("game".to_owned(), bytes)], [64, 64]);
+        assert_eq!((up[0].1[0].width, up[0].1[0].height), (64, 64));
     }
 
     #[test]

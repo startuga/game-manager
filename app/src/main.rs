@@ -25,6 +25,7 @@ mod edit;
 mod filter_menu;
 mod game_menu;
 mod game_page;
+mod icons;
 mod library;
 mod library_page;
 mod mods_view;
@@ -57,13 +58,9 @@ use shell::{App, WindowInfo};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use ui::el::El;
-use ui::image::Picture;
 use upscalers_view::{UpscalerMessage, UpscalerState};
 
-/// Icons are extracted at 128 px so they stay sharp up to 96 DIPs at 133% or 40 DIPs at 320%.
-const ICON_PIXELS: u32 = 128;
 /// The tooltip of a bitness or graphics API the user chose.
 const CHOSEN: &str = "Chosen in Game settings";
 
@@ -119,8 +116,10 @@ enum Message {
     Scanned(Vec<Game>, Vec<String>),
     /// The games saved by the last scan, shown until the first scan of this start finishes.
     SnapshotLoaded(Vec<Game>),
-    /// Decoded icons keyed by game id.
-    IconsLoaded(Vec<(String, Arc<Picture>)>),
+    /// Game icons read or decoded (`icons.rs`).
+    Icon(icons::IconMessage),
+    /// The window's display scaling changed: covers and icons are made again.
+    ScaleChanged,
     Search(String),
     /// Enter in the search: opens the first game shown.
     SearchSubmit,
@@ -289,7 +288,8 @@ enum Message {
 
 struct GameManager {
     games: Vec<Game>,
-    icons: HashMap<String, Arc<Picture>>,
+    /// Game icons: their bytes and their pictures at the window's scaling (`icons.rs`).
+    icons: icons::IconState,
     query: String,
     /// How the lists are sorted and filtered (Sort and filters), and its flyout.
     view: LibraryView,
@@ -449,9 +449,9 @@ impl App for GameManager {
         Some(sidebar::SEARCH_KEY)
     }
 
-    /// Covers are decoded at the window's pixel size: made again for the new scaling.
+    /// Covers and icons are decoded at the window's pixel size: made again for the new scaling.
     fn scale_changed(&self, _scale: f32) -> Option<Message> {
-        Some(CoverMessage::ScaleChanged.into())
+        Some(Message::ScaleChanged)
     }
 }
 
@@ -459,7 +459,7 @@ impl GameManager {
     fn create(ctx: &Ctx<Message>) -> Self {
         let mut this = Self {
             games: Vec::new(),
-            icons: HashMap::new(),
+            icons: icons::IconState::default(),
             query: String::new(),
             view: LibraryView::default(),
             filters: FilterState::default(),
@@ -530,25 +530,6 @@ impl GameManager {
     /// save would drop the new game.
     fn can_add_game(&self) -> bool {
         !self.scanning && !self.picking && self.draft.is_none()
-    }
-
-    /// Extracts icons after the list is shown, so a large library appears without waiting, and
-    /// decodes them there too. `prune` (full library only) also drops cached icons no game uses
-    /// any more.
-    fn load_icons(games: Vec<Game>, prune: bool, context: &Ctx<Message>) {
-        context.spawn_background(move |_cancel| {
-            let icons = if prune {
-                gm_core::icon::refresh_all(&games, ICON_PIXELS)
-            } else {
-                gm_core::icon::extract_all(&games, ICON_PIXELS)
-            };
-            Message::IconsLoaded(
-                ui::image::decode_all(icons)
-                    .into_iter()
-                    .map(|(id, picture)| (id, Arc::new(picture)))
-                    .collect(),
-            )
-        });
     }
 
     fn selected_game(&self) -> Option<&Game> {
@@ -688,7 +669,11 @@ impl GameManager {
                     self.load_covers(false, false, context);
                 }
             }
-            Message::IconsLoaded(icons) => self.icons.extend(icons),
+            Message::Icon(message) => self.handle_icon(message, context),
+            Message::ScaleChanged => {
+                self.handle_cover(CoverMessage::ScaleChanged, context);
+                self.redecode_icons(context);
+            }
             Message::Search(query) => self.query = query,
             Message::ClearSearch => self.query.clear(),
             Message::SearchSubmit => {
@@ -1193,7 +1178,7 @@ impl GameManager {
             }
             Message::CustomGameRemoved(Ok(id)) => {
                 self.games.retain(|game| game.id != id);
-                self.icons.remove(&id);
+                self.icons.forget(&id);
                 self.drop_covers_of_missing_games();
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.tidy_view();

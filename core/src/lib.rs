@@ -5,6 +5,7 @@ mod com;
 pub mod config;
 pub mod covers;
 pub mod custom;
+mod data_module;
 pub mod ea;
 mod elevate;
 pub mod epic;

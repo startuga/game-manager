@@ -20,7 +20,7 @@ use gm_core::{Game, Store};
 
 use crate::game_menu::MenuMessage;
 use crate::library::{self, Section, SectionKind};
-use crate::ui::el::{El, Role, TextAlign, col, glyph, image, row, scroll, text};
+use crate::ui::el::{El, Role, col, glyph, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{divider, hint, nav_item, search_box, subtle_button, working};
 use crate::{GameManager, Message, Page};
@@ -139,30 +139,22 @@ impl GameManager {
         let selected =
             self.page == Page::Game && self.selected.as_deref() == Some(game.id.as_str());
         let id = game.id.clone();
-        row([self.icon(game, 24.0), text(game.name.clone()).fill_width()])
-            .gap(10.0)
-            .pad_xy(8.0, 0.0)
-            .height(36.0)
-            .radius(theme::RADIUS_CONTROL)
-            .hover_bg(theme::SUBTLE_HOVER)
-            .pressed_bg(theme::SUBTLE_PRESSED)
-            .role(crate::ui::el::Role::ListItem)
-            .selected(selected)
-            .key(format!("game:{}", game.id))
-            .name(game.name.clone())
-            .on_click(Message::Select(Some(game.id.clone())))
-            .on_context(move |at| MenuMessage::Open(id.clone(), at).into())
-    }
-
-    /// A game's icon, or the game glyph while it loads or when it has none.
-    pub(crate) fn icon(&self, game: &Game, size: f32) -> El<Message> {
-        match self.icons.get(&game.id) {
-            Some(picture) => image(format!("icon:{}", game.id), picture.clone()).size(size, size),
-            None => glyph(g::GAME, size * 0.6)
-                .color(theme::TEXT_TERTIARY)
-                .text_align(TextAlign::Center)
-                .size(size, size),
-        }
+        row([
+            self.icon(game, crate::icons::SMALL),
+            text(game.name.clone()).fill_width(),
+        ])
+        .gap(10.0)
+        .pad_xy(8.0, 0.0)
+        .height(36.0)
+        .radius(theme::RADIUS_CONTROL)
+        .hover_bg(theme::SUBTLE_HOVER)
+        .pressed_bg(theme::SUBTLE_PRESSED)
+        .role(crate::ui::el::Role::ListItem)
+        .selected(selected)
+        .key(format!("game:{}", game.id))
+        .name(game.name.clone())
+        .on_click(Message::Select(Some(game.id.clone())))
+        .on_context(move |at| MenuMessage::Open(id.clone(), at).into())
     }
 }
 

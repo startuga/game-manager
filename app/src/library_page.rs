@@ -95,7 +95,7 @@ impl GameManager {
         let id = game.id.clone();
         let art = match self.covers.pictures.get(&game.id) {
             Some(picture) => image(format!("cover:{}", game.id), picture.clone()),
-            None => row([self.icon(game, 64.0)])
+            None => row([self.icon(game, crate::icons::LARGE)])
                 .justify(Align::Center)
                 .bg(theme::CARD)
                 .stroke(theme::CARD_STROKE, 1.0)

@@ -197,6 +197,8 @@ pub struct Drawn {
 pub struct Renderer {
     _device: GpuDevice,
     chain: SwapChain,
+    /// Pixels per DIP, for drawing pictures on whole pixels.
+    scale: f32,
     bitmaps: HashMap<String, (Bitmap, Arc<Picture>)>,
     start: Instant,
 }
@@ -223,6 +225,7 @@ impl Renderer {
         Ok(Self {
             _device: device,
             chain,
+            scale: dpi / 96.0,
             bitmaps: HashMap::new(),
             start: Instant::now(),
         })
@@ -233,6 +236,7 @@ impl Renderer {
             self.chain.resize(width.max(1), height.max(1))?;
         }
         self.chain.set_dpi(dpi, dpi);
+        self.scale = dpi / 96.0;
         Ok(())
     }
 
@@ -250,6 +254,7 @@ impl Renderer {
             session: &session,
             brush: &brush,
             text,
+            scale: self.scale,
             alpha: 1.0,
             bitmaps: &mut self.bitmaps,
             elapsed,
@@ -290,6 +295,8 @@ impl Renderer {
                 session,
                 brush: &brush,
                 text,
+                // One pixel per DIP.
+                scale: 1.0,
                 alpha: 1.0,
                 bitmaps: &mut *bitmaps,
                 elapsed,
@@ -313,6 +320,8 @@ pub struct Painter<'a> {
     session: &'a DrawingSession<'a>,
     brush: &'a Brush,
     text: &'a Text,
+    /// Pixels per DIP.
+    scale: f32,
     /// Multiplies every colour's alpha (an element's opacity, a disabled subtree).
     alpha: f32,
     bitmaps: &'a mut HashMap<String, (Bitmap, Arc<Picture>)>,
@@ -461,14 +470,20 @@ impl Painter<'_> {
             return;
         };
         let (w, h) = (picture.width.max(1) as f32, picture.height.max(1) as f32);
-        let scale = (rect.w / w).min(rect.h / h);
-        let (dw, dh) = (w * scale, h * scale);
-        let dest = Rect::new(
+        let fit = (rect.w / w).min(rect.h / h);
+        let (dw, dh) = (w * fit, h * fit);
+        let mut dest = Rect::new(
             rect.x + (rect.w - dw) / 2.0,
             rect.y + (rect.h - dh) / 2.0,
             dw,
             dh,
         );
+        // A picture made for the pixels it takes (icons, covers) lands on whole pixels, so each of
+        // its pixels is one on screen and nothing blurs it.
+        if (dw * self.scale - w).abs() < 0.5 && (dh * self.scale - h).abs() < 0.5 {
+            let snap = |value: f32| (value * self.scale).round() / self.scale;
+            dest = Rect::new(snap(dest.x), snap(dest.y), w / self.scale, h / self.scale);
+        }
         self.session
             .draw_bitmap(bitmap, &to_canvas(dest), self.alpha);
     }

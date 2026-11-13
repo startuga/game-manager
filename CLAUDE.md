@@ -110,5 +110,6 @@ DLSS overrides in their driver profiles.
 - **Errors and `unsafe`**: typed errors, one unsafe operation per block with `// SAFETY:`, and
   RAII owners for handles (details in `core/CLAUDE.md`).
 - **No GDI**: the window is drawn with Direct2D and DirectWrite only, text boxes included; no
-  child windows. The core keeps `wingdi` only for display settings' structures (`DEVMODEW`), which
-  draw nothing.
+  child windows. Pictures are decoded with WIC, game icons too (read from `.ico` files and
+  programs' resources, never through icon handles). The core keeps `wingdi` only for display
+  settings' structures (`DEVMODEW`), which draw nothing.

@@ -3,7 +3,8 @@
 //! launched, where its icon comes from, which program the bitness was read from, the address of
 //! its PCGamingWiki page, how Uninstall… would hand it over (read only) and, for 32-bit games,
 //! their Large Address Aware status.
-//! `--icons <dir>` saves each game's icon there as `<id>.png`.
+//! `--icons <dir>` saves each game's icon there as the app gets it: its best image as it is in the
+//! game's files, `<id>.png` or a one-image `<id>.ico`, or the picture file (`.png`, `.jpg`).
 //! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
 //! side (no cache; the wiki is asked about once a second), and the API chosen in its settings.
 //! `--nvidia` prints the driver's version and its own DLSS DLLs, then each game's NVIDIA driver
@@ -20,7 +21,6 @@
 )]
 
 use gm_core::graphics::GraphicsApi;
-use gm_core::icon::IconExtractor;
 use std::path::PathBuf;
 
 fn main() {
@@ -176,14 +176,31 @@ fn main() {
 
     if let Some(dir) = icon_dir {
         std::fs::create_dir_all(&dir).expect("create icon folder");
-        let extractor = IconExtractor::new().expect("start WIC");
         for game in &report.games {
-            let png = game.icon.as_ref().and_then(|icon| extractor.png(icon, 64));
-            match png {
-                Some(png) => {
-                    let file = dir.join(format!("{}.png", game.id.replace(':', "_")));
-                    std::fs::write(&file, &png).expect("write icon");
-                    println!("icon ok    {:>6} bytes  {}", png.len(), game.name);
+            let bytes = game.icon.as_ref().and_then(gm_core::icon::read);
+            match bytes {
+                Some(bytes) => {
+                    // The icon's best image as it is in the game's files, or the picture.
+                    let (extension, image) = if gm_core::icon::is_ico(&bytes) {
+                        let images = gm_core::icon::images(&bytes);
+                        let image = images.first().map(|i| (i.width, i.height, i.bits));
+                        ("ico", image.filter(|_| images.len() == 1))
+                    } else if gm_core::icon::is_png(&bytes) {
+                        ("png", gm_core::icon::describe(&bytes))
+                    } else {
+                        ("jpg", None)
+                    };
+                    let name = format!("{}.{extension}", game.id.replace(':', "_"));
+                    std::fs::write(dir.join(name), &bytes).expect("write icon");
+                    let size = image.map_or_else(
+                        || "?".to_owned(),
+                        |(width, height, bits)| format!("{width} x {height}, {bits} bits"),
+                    );
+                    println!(
+                        "icon ok    {:>7} bytes  {extension}  {size:<20}  {}",
+                        bytes.len(),
+                        game.name
+                    );
                 }
                 None => println!("icon MISSING           {}", game.name),
             }

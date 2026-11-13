@@ -40,10 +40,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Win32::{
     CLSCTX_INPROC_SERVER, CLSID_WICImagingFactory, CoCreateInstance, GENERIC_READ,
-    GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, IPropertyBag2, IWICBitmapDecoder,
-    IWICBitmapFrameEncode, IWICImagingFactory, IWICPalette, SHCreateMemStream,
-    WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant,
-    WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand, WICRect,
+    GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, IPropertyBag2, IStream,
+    IWICBitmapDecoder, IWICBitmapFrameEncode, IWICImagingFactory, IWICPalette, LARGE_INTEGER,
+    SHCreateMemStream, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET, WICBitmapDitherTypeNone,
+    WICBitmapEncoderNoCache, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
+    WICDecodeMetadataCacheOnDemand, WICRect,
 };
 use windows::core::HSTRING;
 
@@ -698,8 +699,29 @@ impl Thumbnailer {
         unsafe { out.Commit() }.ok()?;
         // SAFETY: the encoder's only frame was committed.
         unsafe { encoder.Commit() }.ok()?;
-        crate::icon::read_all(&stream)
+        read_all(&stream)
     }
+}
+
+/// Reads a whole memory stream from the beginning.
+fn read_all(stream: &IStream) -> windows::core::Result<Vec<u8>> {
+    let too_large = |_| windows::core::Error::empty();
+    let mut stat = STATSTG::default();
+    // SAFETY: `stat` is a valid out-pointer; with STATFLAG_NONAME, Stat allocates no name that
+    // would need freeing.
+    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME as u32) }.ok()?;
+    // SAFETY: Stat filled in the size, and every member of the union holds a valid integer.
+    let size = unsafe { stat.cbSize.QuadPart };
+    // SAFETY: seeking a live stream to its start; no out-pointer.
+    unsafe { stream.Seek(LARGE_INTEGER { QuadPart: 0 }, STREAM_SEEK_SET as u32, None) }.ok()?;
+    let mut buffer = vec![0u8; usize::try_from(size).map_err(too_large)?];
+    let len = u32::try_from(buffer.len()).map_err(too_large)?;
+    let mut read = 0u32;
+    // SAFETY: `buffer` has exactly `len` bytes, so the stream cannot write past it, and `read` is
+    // a valid out-pointer.
+    unsafe { stream.Read(buffer.as_mut_ptr().cast(), len, Some(&mut read)) }.ok()?;
+    buffer.truncate(read as usize);
+    Ok(buffer)
 }
 
 /// The largest 2:3 rectangle around the centre of a `width` × `height` picture, as

@@ -207,7 +207,7 @@ impl GameManager {
             height: 0.0,
         };
         let header = row([
-            self.icon(game, 24.0),
+            self.icon(game, crate::icons::SMALL),
             col([
                 text(game.name.clone()).bold(),
                 text(game.store.name())
