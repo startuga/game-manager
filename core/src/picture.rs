@@ -4,7 +4,9 @@
 //! - **Formats** (`format`): JPEG (zune-jpeg), PNG (png), WebP (image-webp, lossy and lossless),
 //!   BMP, and `.ico` files, whose images are PNGs or bitmaps. Bitmaps (DIBs) are read here
 //!   (`decode_dib`): BI_RGB at 1, 4, 8, 16, 24 and 32 bits, and BI_BITFIELDS; compressed ones (RLE)
-//!   are refused.
+//!   are refused. A BMP whose pixels are said to start inside its headers or palette is damaged,
+//!   and every offset and length is added and multiplied checked, so no number in a file can wrap
+//!   one round.
 //! - **Sizes** (`size`) come from the headers alone, so a cover's size is known without decoding
 //!   it.
 //! - **Decoding** (`decode`) gives straight (not premultiplied) RGBA, 8 bits a channel, rows top to
@@ -216,8 +218,11 @@ pub fn decode(bytes: &[u8]) -> Result<Rgba, PictureError> {
         Format::Bmp => {
             let offset =
                 u32_at(bytes, 10).ok_or_else(|| damaged(format, "no file header"))? as usize;
-            let dib = &bytes[14..];
-            decode_dib(dib, Some(offset.saturating_sub(14)), false, format)
+            // Counted from the file's start: the pixels can't begin inside its 14-byte header.
+            let pixels_at = offset
+                .checked_sub(14)
+                .ok_or_else(|| damaged(format, "its pixels start inside its file header"))?;
+            decode_dib(&bytes[14..], Some(pixels_at), false, format)
         }
         Format::Ico => icon(bytes, u32::MAX),
     }
@@ -338,6 +343,34 @@ fn dib_size(dib: &[u8], icon: bool) -> Option<(u32, u32)> {
     Some((width, if icon { height / 2 } else { height }))
 }
 
+/// Where a 16- or 32-bit pixel keeps each channel (a mask of 0: none).
+#[derive(Clone, Copy)]
+struct Masks {
+    red: u32,
+    green: u32,
+    blue: u32,
+    alpha: u32,
+}
+
+impl Masks {
+    /// Palette and 24-bit pixels have none.
+    const NONE: Self = Self::of(0, 0, 0, 0);
+
+    const fn of(red: u32, green: u32, blue: u32, alpha: u32) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            alpha,
+        }
+    }
+
+    /// A pixel's value as R, G, B and A.
+    fn rgba(self, value: u32) -> [u8; 4] {
+        [self.red, self.green, self.blue, self.alpha].map(|mask| masked(value, mask))
+    }
+}
+
 /// One channel's value under `mask`, brought to 8 bits.
 fn masked(value: u32, mask: u32) -> u8 {
     if mask == 0 {
@@ -352,7 +385,9 @@ fn masked(value: u32, mask: u32) -> u8 {
 /// A device-independent bitmap: a BMP file's after its 14-byte file header, or an icon's image.
 /// `pixels_at` is where the pixel rows start, counted from the info header (a BMP file says so);
 /// `None` when they follow the header, its colour masks and its palette, as in an icon. `icon`:
-/// the height counts the AND mask too, which follows the rows (see the module's doc).
+/// the height counts the AND mask too, which follows the rows (see the module's doc). Pixels
+/// said to start inside the headers or the palette, and ends past what the numbers can hold, make
+/// the bitmap damaged.
 fn decode_dib(
     dib: &[u8],
     pixels_at: Option<usize>,
@@ -374,29 +409,21 @@ fn decode_dib(
 
     // Where the colour masks, palette and pixels are.
     let mut at = header;
-    let masks: [u32; 4] = match (compression, bits) {
-        (0, 1 | 4 | 8 | 24) => [0; 4],
-        (0, 16) => [0x7C00, 0x03E0, 0x001F, 0],
-        (0, 32) => [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000],
+    let masks = match (compression, bits) {
+        (0, 1 | 4 | 8 | 24) => Masks::NONE,
+        (0, 16) => Masks::of(0x7C00, 0x03E0, 0x001F, 0),
+        (0, 32) => Masks::of(0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000),
         // BI_BITFIELDS and BI_ALPHABITFIELDS: in the header from version 2 (52 bytes) on, else
         // just after it.
         (3 | 6, 16 | 32) => {
             let read = |at: usize| u32_at(dib, at).unwrap_or(0);
             if header >= 52 {
-                [
-                    read(40),
-                    read(44),
-                    read(48),
-                    if header >= 56 { read(52) } else { 0 },
-                ]
+                let alpha = if header >= 56 { read(52) } else { 0 };
+                Masks::of(read(40), read(44), read(48), alpha)
             } else {
                 let count = if compression == 6 { 4 } else { 3 };
-                let masks = [
-                    read(at),
-                    read(at + 4),
-                    read(at + 8),
-                    if count == 4 { read(at + 12) } else { 0 },
-                ];
+                let alpha = if count == 4 { read(at + 12) } else { 0 };
+                let masks = Masks::of(read(at), read(at + 4), read(at + 8), alpha);
                 at += 4 * count;
                 masks
             }
@@ -414,10 +441,13 @@ fn decode_dib(
         } else {
             (used as usize).min(full)
         };
-        let table = dib
-            .get(at..at + count * 4)
+        let end = at
+            .checked_add(count * 4)
             .ok_or_else(|| bad("its palette is cut off"))?;
-        at += count * 4;
+        let table = dib
+            .get(at..end)
+            .ok_or_else(|| bad("its palette is cut off"))?;
+        at = end;
         table
             .as_chunks::<4>()
             .0
@@ -427,16 +457,25 @@ fn decode_dib(
     } else {
         Vec::new()
     };
-    let start = pixels_at.unwrap_or(at);
+    // The pixels come after the header, the masks and the palette, never inside them.
+    let start = match pixels_at {
+        Some(start) if start < at => return Err(bad("its pixels start inside its header")),
+        Some(start) => start,
+        None => at,
+    };
     let (width, height) = (width as usize, height as usize);
     let stride = (width * usize::from(bits)).div_ceil(32) * 4;
+    let rows_end = stride
+        .checked_mul(height)
+        .and_then(|length| start.checked_add(length))
+        .ok_or_else(|| bad("its pixels are cut off"))?;
     let rows = dib
-        .get(start..start + stride * height)
+        .get(start..rows_end)
         .ok_or_else(|| bad("its pixels are cut off"))?;
 
     let mut pixels = vec![0u8; width * height * 4];
     // Only 16- and 32-bit pixels can carry alpha, under its mask.
-    let alpha_channel = matches!(bits, 16 | 32) && masks[3] != 0;
+    let alpha_channel = matches!(bits, 16 | 32) && masks.alpha != 0;
     let mut any_alpha = false;
     for y in 0..height {
         let row = &rows[y * stride..(y + 1) * stride];
@@ -454,19 +493,13 @@ fn decode_dib(
                     let pixel = &row[x * 3..x * 3 + 3];
                     [pixel[2], pixel[1], pixel[0], 255]
                 }
-                16 => {
-                    let value = u32::from(u16::from_le_bytes([row[x * 2], row[x * 2 + 1]]));
-                    masks.map(|mask| masked(value, mask))
-                }
-                _ => {
-                    let value = u32::from_le_bytes([
-                        row[x * 4],
-                        row[x * 4 + 1],
-                        row[x * 4 + 2],
-                        row[x * 4 + 3],
-                    ]);
-                    masks.map(|mask| masked(value, mask))
-                }
+                16 => masks.rgba(u32::from(u16::from_le_bytes([row[x * 2], row[x * 2 + 1]]))),
+                _ => masks.rgba(u32::from_le_bytes([
+                    row[x * 4],
+                    row[x * 4 + 1],
+                    row[x * 4 + 2],
+                    row[x * 4 + 3],
+                ])),
             };
             any_alpha |= alpha_channel && rgba[3] > 0;
             let at = (out * width + x) * 4;
@@ -483,8 +516,10 @@ fn decode_dib(
     // An icon without alpha takes its transparency from its AND mask, when it has one.
     if icon && !has_alpha {
         let mask_stride = width.div_ceil(32) * 4;
-        let mask_at = start + stride * height;
-        if let Some(mask) = dib.get(mask_at..mask_at + mask_stride * height) {
+        let mask_end = mask_stride
+            .checked_mul(height)
+            .and_then(|length| rows_end.checked_add(length));
+        if let Some(mask) = mask_end.and_then(|end| dib.get(rows_end..end)) {
             for y in 0..height {
                 let row = &mask[y * mask_stride..(y + 1) * mask_stride];
                 let out = if top_down { y } else { height - 1 - y };
@@ -896,6 +931,37 @@ mod tests {
         }
         fields.extend([255, 0, 0, 0]);
         assert_eq!(decode(&bmp_file(&fields, 52)).unwrap().pixels, RED);
+        // Pixels said to start inside the headers or the palette, or at an offset no file has.
+        let at_offset = |offset: u32| {
+            let mut file = bmp_file(&dib(2, 2, 24, 0, &[], &rows24, &[]), 40);
+            file[10..14].copy_from_slice(&offset.to_le_bytes());
+            decode(&file)
+        };
+        for offset in [0, 13, 14, 20, 53] {
+            assert!(
+                matches!(
+                    at_offset(offset),
+                    Err(PictureError::Damaged {
+                        format: Format::Bmp,
+                        ..
+                    })
+                ),
+                "offset {offset}"
+            );
+        }
+        assert_eq!(
+            top_bottom(&at_offset(54).unwrap()),
+            [RED, BLUE, white, black]
+        );
+        assert!(matches!(
+            at_offset(u32::MAX),
+            Err(PictureError::Damaged { .. })
+        ));
+        let in_palette = bmp_file(&dib(2, 2, 8, 0, &palette, &rows8, &[]), 40 + 8);
+        assert!(matches!(
+            decode(&in_palette),
+            Err(PictureError::Damaged { .. })
+        ));
         // RLE is not read; a file cut short is damaged.
         let rle = bmp_file(&dib(2, 2, 8, 1, &palette, &rows8, &[]), 56);
         assert!(matches!(

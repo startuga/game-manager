@@ -21,8 +21,9 @@ zune-jpeg = { workspace = true }
 # EA resources (libloaderapi, minwindef), version info (winver), shortcuts (shobjidl_core, objidl,
 # coml2api), web requests (winhttp), Xbox packages and their architecture (WinRT
 # Management_Deployment, ApplicationModel, System), mod files as administrator and 7-Zip (synchapi,
-# processthreadsapi, handleapi, winbase, winerror), who runs it and file permissions (winnt,
-# securitybaseapi, sddl, aclapi, accctrl), the signatures of upscaler DLLs (wintrust), and My PC:
+# processthreadsapi, handleapi, winbase, winerror) with long work's hash and file name (bcrypt),
+# who runs it and file permissions (winnt, securitybaseapi, sddl, aclapi, accctrl), the
+# signatures of upscaler DLLs (wintrust), and My PC:
 # hardware, memory modules and drives (sysinfoapi, fileapi), displays (wingdi) and their colour
 # profiles (icm).
 windows = { workspace = true, features = [
@@ -33,7 +34,7 @@ windows = { workspace = true, features = [
     "shobjidl_core", "objidl", "coml2api",
     "winhttp",
     "Management_Deployment", "ApplicationModel", "System",
-    "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror",
+    "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror", "bcrypt",
     "winnt", "securitybaseapi", "sddl", "aclapi", "accctrl",
     "wintrust",
     "sysinfoapi", "fileapi", "wingdi", "icm",

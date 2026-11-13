@@ -28,7 +28,9 @@
 //! **The cache** holds downloads under their format's extension, named after a hash of what was
 //! asked: the game's id (by id), or its id and the letters of its name (by name). A lookup that
 //! found nothing leaves an empty `.none` file and is not asked again for a week; a failed request
-//! leaves nothing and is tried again at the next start.
+//! leaves nothing and is tried again at the next start. Files are written whole, through a
+//! temporary file of their own (`json_file::write_whole`); `prune` leaves a temporary file
+//! younger than ten minutes, which may be a download still being written.
 
 use crate::picture::{self, Format};
 use crate::text::{fnv1a, letters};
@@ -423,7 +425,7 @@ fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
     picture::decode(&bytes).map_err(|_| not_a_picture())?;
     fs::create_dir_all(dir).map_err(Error::io(dir))?;
     let file = dir.join(format!("{}.{}", safe_name(game_id), format.extension()));
-    write_file(&file, &bytes).map_err(Error::io(&file))?;
+    json_file::write_whole(&file, &bytes).map_err(Error::io(&file))?;
     // The earlier choice, in another format.
     for other in own_files(dir, game_id).filter(|other| *other != file) {
         let _ = fs::remove_file(other);
@@ -456,13 +458,6 @@ fn read_picture(file: &Path) -> Option<Vec<u8>> {
     let bytes = read_file(file)?;
     let extension = file.extension()?.to_str()?;
     (picture::format(&bytes).map(Format::extension) == Some(extension)).then_some(bytes)
-}
-
-/// Written through a temporary file, so a reader never sees half a picture.
-fn write_file(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let temp = file.with_extension("tmp");
-    fs::write(&temp, bytes)?;
-    fs::rename(&temp, file)
 }
 
 /// The stores' original covers in one folder, each under its format's extension, and the `.none`
@@ -532,7 +527,7 @@ impl Cache {
         {
             let _ = fs::remove_file(other);
         }
-        let written = write_file(&file, bytes).is_ok();
+        let written = json_file::write_whole(&file, bytes).is_ok();
         let _ = fs::remove_file(self.miss_file(identity));
         written.then_some(file)
     }
@@ -557,7 +552,8 @@ impl Cache {
         let _ = fs::remove_file(self.miss_file(identity));
     }
 
-    /// Deletes cached covers, markers and leftover temporary files that are not in `used`.
+    /// Deletes cached covers and markers that are not in `used`, and temporary files left by
+    /// writes that ended long ago (a younger one may be a download being written).
     fn prune(&self, used: &HashSet<PathBuf>) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
@@ -566,8 +562,8 @@ impl Cache {
             let cached = path
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| EXTENSIONS.contains(&ext) || ext == "none" || ext == "tmp");
-            if cached && !used.contains(&path) {
+                .is_some_and(|ext| EXTENSIONS.contains(&ext) || ext == "none");
+            if (cached && !used.contains(&path)) || json_file::is_stale_temp(&path) {
                 let _ = fs::remove_file(&path);
             }
         }
@@ -707,18 +703,24 @@ mod tests {
         cache.mark_miss(portal);
         let stale = cache.dir.join("0123456789abcdef.jpg");
         let old_webp = cache.dir.join("0123456789abcdee.webp");
-        let leftover = cache.dir.join("fedcba9876543210.tmp");
+        let leftover = cache.dir.join("fedcba9876543210.jpg.1-0.tmp");
+        let in_progress = cache.dir.join("fedcba9876543210.jpg.1-1.tmp");
         let unrelated = cache.dir.join("notes.txt");
-        for file in [&stale, &old_webp, &leftover, &unrelated] {
+        for file in [&stale, &old_webp, &leftover, &in_progress, &unrelated] {
             fs::write(file, b"x").unwrap();
         }
+        let leftover_file = fs::File::options().write(true).open(&leftover).unwrap();
+        leftover_file
+            .set_modified(SystemTime::now() - Duration::from_secs(60 * 60))
+            .unwrap();
+        drop(leftover_file);
         let mut used: HashSet<PathBuf> = cache.files(half_life).into_iter().collect();
         used.insert(cache.miss_file(half_life));
         cache.prune(&used);
         assert_eq!(cached(&cache, half_life), Some(bitmap));
         assert!(!cache.miss_file(portal).exists());
         assert!(!stale.exists() && !old_webp.exists() && !leftover.exists());
-        assert!(unrelated.exists());
+        assert!(in_progress.exists() && unrelated.exists());
         fs::remove_dir_all(&cache.dir).unwrap();
     }
 

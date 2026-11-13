@@ -2,11 +2,17 @@
 //! settings and certificate store, and follows redirects, with no extra crates. `get` reads small
 //! answers into memory, `download` streams a file to disk, `etag` asks only for the headers.
 //! Blocking: call them off the UI thread.
+//!
+//! The process has one WinHTTP session (`session`), opened by the first request and kept, with
+//! the proxy settings and timeouts on it. Each request opens its own connection and request
+//! handles on it, while WinHTTP keeps the session's connections to a host open and reuses them,
+//! so the covers and version lists asked of one server at start share their TLS handshakes.
 
 use crate::{Error, Result};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 use windows::Win32::{
     HINTERNET, INTERNET_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
     WINHTTP_QUERY_ETAG, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle,
@@ -91,22 +97,28 @@ fn split_url(url: &str) -> Option<(&str, &str)> {
     (!host.is_empty()).then_some((host, path))
 }
 
-/// A `200 OK` answer being read. Fields drop in order, so the request closes before its
-/// connection, and the connection before the session.
-struct Response {
-    url: String,
-    request: Handle,
-    _connection: Handle,
-    _session: Handle,
+/// The process's WinHTTP session (see the module's doc). When two threads open one at once, the
+/// first kept is used and the other closes.
+fn session() -> windows::core::Result<&'static Session> {
+    static SESSION: OnceLock<Session> = OnceLock::new();
+    if let Some(session) = SESSION.get() {
+        return Ok(session);
+    }
+    let opened = Session::open()?;
+    Ok(SESSION.get_or_init(|| opened))
 }
 
-impl Response {
-    fn open(url: &str) -> Result<Self> {
-        Self::request(url, w!("GET"))
-    }
+/// A WinHTTP session, with the system's proxy and the timeouts.
+struct Session(Handle);
 
-    fn request(url: &str, method: PCWSTR) -> Result<Self> {
-        let (host, path) = split_url(url).ok_or_else(|| Error::InvalidUrl(url.to_owned()))?;
+// SAFETY: WinHTTP session handles may be used from any thread and by several at once; the handle
+// is only closed when the value drops, after its last use.
+unsafe impl Send for Session {}
+// SAFETY: as above; nothing here changes the session after it is opened.
+unsafe impl Sync for Session {}
+
+impl Session {
+    fn open() -> windows::core::Result<Self> {
         let agent = HSTRING::from(user_agent());
         // SAFETY: `agent` is a valid wide string for the call; null proxy names mean the system's.
         let session = Handle::new(unsafe {
@@ -117,16 +129,34 @@ impl Response {
                 PCWSTR::null(),
                 0,
             )
-        })
-        .map_err(Error::windows(url))?;
+        })?;
         // SAFETY: `session` is a live session handle.
         unsafe { WinHttpSetTimeouts(session.0, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS) }
-            .ok()
-            .map_err(Error::windows(url))?;
+            .ok()?;
+        Ok(Self(session))
+    }
+}
+
+/// A `200 OK` answer being read. Fields drop in order, so the request closes before its
+/// connection.
+struct Response {
+    url: String,
+    request: Handle,
+    _connection: Handle,
+}
+
+impl Response {
+    fn open(url: &str) -> Result<Self> {
+        Self::request(url, w!("GET"))
+    }
+
+    fn request(url: &str, method: PCWSTR) -> Result<Self> {
+        let (host, path) = split_url(url).ok_or_else(|| Error::InvalidUrl(url.to_owned()))?;
+        let session = session().map_err(Error::windows(url))?;
         let host_name = HSTRING::from(host);
-        // SAFETY: a live session handle and a valid wide string.
+        // SAFETY: the process's session handle, never closed, and a valid wide string.
         let connection =
-            Handle::new(unsafe { WinHttpConnect(session.0, &host_name, HTTPS_PORT, 0) })
+            Handle::new(unsafe { WinHttpConnect(session.0.0, &host_name, HTTPS_PORT, 0) })
                 .map_err(Error::windows(url))?;
         let object = HSTRING::from(path);
         // SAFETY: a live connection handle and valid wide strings; a null version, referrer and
@@ -179,7 +209,6 @@ impl Response {
             url: url.to_owned(),
             request,
             _connection: connection,
-            _session: session,
         })
     }
 
@@ -281,5 +310,15 @@ mod tests {
         assert_eq!(split_url("https://example.com"), Some(("example.com", "/")));
         assert_eq!(split_url("http://example.com/"), None);
         assert_eq!(split_url("https:///path"), None);
+    }
+
+    #[test]
+    fn the_process_has_one_session() {
+        let first = session().unwrap();
+        let from_another_thread = std::thread::spawn(|| session().unwrap().0.0 as usize)
+            .join()
+            .unwrap();
+        assert!(std::ptr::eq(first, session().unwrap()));
+        assert_eq!(first.0.0 as usize, from_another_thread);
     }
 }

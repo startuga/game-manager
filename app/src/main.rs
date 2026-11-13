@@ -370,7 +370,12 @@ fn main() -> ExitCode {
         _ => None,
     };
     if let Some(run) = elevated {
-        std::process::exit(run(&args.next().unwrap_or_default()) as i32);
+        // Long work comes in a file, checked against its hash (see the core's `elevate`).
+        let code = match gm_core::elevated_work(&args.next().unwrap_or_default()) {
+            Ok(work) => run(&work),
+            Err(code) => code,
+        };
+        std::process::exit(code as i32);
     }
     let options = shell::Options {
         title: "Game Manager".to_owned(),

@@ -36,6 +36,7 @@ pub mod vdf;
 mod version_info;
 pub mod xbox;
 
+pub use elevate::elevated_work;
 pub use error::{Error, Result, ScanError, ScanPart};
 pub use launcher::{launch, open_folder};
 

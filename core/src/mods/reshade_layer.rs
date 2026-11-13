@@ -6,6 +6,15 @@
 //!   `ReShade32.json` and `ReShade64.json` (whose `library_path` is the DLL next to them). When
 //!   Game Manager creates the folder it grants ALL APPLICATION PACKAGES read & execute, so Store
 //!   games can load the layer.
+//! - **Only an administrator's folder** (`check_folder`): a standard user may create folders and
+//!   files in `%ProgramData%` and owns what they create, so one could make `ReShade` (or a
+//!   junction by that name), or a DLL in it, before the layer is installed, and later swap the DLL
+//!   that every Vulkan program loads, elevated ones too. So an existing folder, and each of the
+//!   layer's files in it, must be a plain folder or file owned by Administrators, SYSTEM or
+//!   TrustedInstaller (`security::owner_is_admin`), as ReShade's setup and Game Manager make
+//!   them. Otherwise nothing is changed and the error asks to delete the folder. Game Manager
+//!   checks it before asking for administrator rights, to name the folder, and the copy running
+//!   as administrator checks it again.
 //! - The manifests are registered as implicit layers: a value named after the manifest's path,
 //!   0, under `HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers` (the 32-bit one under
 //!   `WOW6432Node`).
@@ -136,9 +145,52 @@ fn status_at(place: &Place) -> LayerStatus {
     }
 }
 
-/// Makes `change` to the layer on this computer. Needs administrator rights.
+/// Makes `change` to the layer on this computer, once its folder is checked. Needs administrator
+/// rights.
 pub(crate) fn apply(change: &LayerChange) -> Result<()> {
-    apply_at(&Place::system()?, change)
+    let place = Place::system()?;
+    check_folder(&place.folder)?;
+    apply_at(&place, change)
+}
+
+/// `check_folder` for the layer on this computer.
+pub(crate) fn check_system_folder() -> Result<()> {
+    check_folder(&Place::system()?.folder)
+}
+
+/// Refuses a layer folder a standard user could have prepared (see the module's doc): `folder`,
+/// when it exists, and each of the layer's files in it must be a plain folder or file that an
+/// administrator or Windows owns.
+fn check_folder(folder: &Path) -> Result<()> {
+    let files = LAYER_FILES
+        .iter()
+        .chain([&APPS_FILE])
+        .map(|name| folder.join(name));
+    for item in std::iter::once(folder.to_path_buf()).chain(files) {
+        let metadata = match fs::symlink_metadata(&item) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && item == folder => {
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(Error::io(&item)(error)),
+        };
+        // A junction or symbolic link is neither.
+        let plain = if item == folder {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if !plain || !security::owner_is_admin(&item)? {
+            return Err(Error::NotInstallable(format!(
+                "{} was not made by an administrator, so another program could change ReShade's \
+                 Vulkan layer through it. Delete the folder {} and try again.",
+                item.display(),
+                folder.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn apply_at(place: &Place, change: &LayerChange) -> Result<()> {
@@ -379,6 +431,30 @@ mod tests {
         assert!(!status_at(&place).installed);
         assert!(!place.folder.exists());
         let _ = windows_registry::CURRENT_USER.remove_tree(r"Software\Game Manager Tests");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_an_administrators_folder_is_used() {
+        let dir = std::env::temp_dir().join(format!("GM-Layer-Owner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // None yet: Game Manager makes it.
+        assert!(check_folder(&dir.join("ReShade")).is_ok());
+        // One a standard user made, or a junction by that name.
+        let made = dir.join("Made");
+        fs::create_dir(&made).unwrap();
+        fs::write(made.join("ReShade64.dll"), b"MZ").unwrap();
+        let link = dir.join("ReShade");
+        security::junction(&link, &made);
+        let by_user = !security::is_elevated();
+        assert_eq!(check_folder(&made).is_err(), by_user);
+        let error = check_folder(&link).unwrap_err().to_string();
+        assert!(error.contains(&link.display().to_string()), "{error}");
+        // Windows' own folder is an administrator's.
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        assert!(check_folder(&system.join("System32")).is_ok());
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 }

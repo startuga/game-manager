@@ -8,18 +8,28 @@
 //!   account.
 //! - ReShade's shared Vulkan layer folder is opened to ALL APPLICATION PACKAGES, so Store and Xbox
 //!   games can load the layer.
+//!
+//! **Who made a file** (`owner_is_admin`): work done as administrator trusts a file, folder or
+//! junction only when its owner is Administrators, SYSTEM or TrustedInstaller. A standard user
+//! owns what they create, so this tells apart what they could have put in place (a folder in
+//! `%ProgramData%`, a junction) from what an administrator or Windows made. The owner read is the
+//! path's own: a junction or symbolic link is opened, not followed.
 
 use crate::elevate::OwnedHandle;
 use crate::{Error, Result};
+use std::fs;
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use windows::Win32::{
     ConvertSidToStringSidW, ConvertStringSidToSidW, DACL_SECURITY_INFORMATION, DELETE,
-    EXPLICIT_ACCESS_W, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, GRANT_ACCESS,
-    GetCurrentProcess, GetNamedSecurityInfoW, GetTokenInformation, HANDLE, HLOCAL, LocalFree,
-    OpenProcessToken, PACL, PSECURITY_DESCRIPTOR, PSID, SE_FILE_OBJECT,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetEntriesInAclW, SetNamedSecurityInfoW, TOKEN_ELEVATION,
-    TOKEN_QUERY, TOKEN_USER, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W, TokenElevation,
-    TokenUser,
+    EXPLICIT_ACCESS_W, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, GRANT_ACCESS, GetCurrentProcess,
+    GetNamedSecurityInfoW, GetSecurityInfo, GetTokenInformation, HANDLE, HLOCAL, LocalFree,
+    OWNER_SECURITY_INFORMATION, OpenProcessToken, PACL, PSECURITY_DESCRIPTOR, PSID, READ_CONTROL,
+    SE_FILE_OBJECT, SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetEntriesInAclW, SetNamedSecurityInfoW,
+    TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    TokenElevation, TokenUser,
 };
 use windows::core::{HSTRING, PWSTR, WIN32_ERROR};
 
@@ -30,6 +40,13 @@ pub(crate) const MODIFY: u32 =
 pub(crate) const READ_EXECUTE: u32 = (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE) as u32;
 /// ALL APPLICATION PACKAGES, the group of every Store app.
 pub(crate) const ALL_APPLICATION_PACKAGES: &str = "S-1-15-2-1";
+/// The owners of what an administrator or Windows made: Administrators, SYSTEM and
+/// TrustedInstaller.
+const ADMIN_OWNERS: [&str; 3] = [
+    "S-1-5-32-544",
+    "S-1-5-18",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+];
 
 /// The SID of the user this process runs as ("S-1-5-21-…").
 pub(crate) fn current_user_sid() -> Result<String> {
@@ -54,15 +71,61 @@ pub(crate) fn current_user_sid() -> Result<String> {
     // SAFETY: the call wrote a TOKEN_USER at the start of the aligned buffer, which outlives
     // this borrow.
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+    // SAFETY: the SID points into `buffer`, alive for the call.
+    unsafe { sid_text(user.User.Sid, WHAT) }
+}
+
+/// `sid` as text ("S-1-5-…"); `what` names whose it is in an error.
+///
+/// # Safety
+/// `sid` must point to a valid SID for the call.
+unsafe fn sid_text(sid: PSID, what: &str) -> Result<String> {
     let mut text = PWSTR::null();
-    // SAFETY: the SID points into `buffer`, still alive; `text` is a valid out-pointer.
-    let converted = unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) };
-    converted.ok().map_err(Error::windows(WHAT))?;
+    // SAFETY: the caller keeps `sid` valid; `text` is a valid out-pointer.
+    let converted = unsafe { ConvertSidToStringSidW(sid, &mut text) };
+    converted.ok().map_err(Error::windows(what))?;
     let owner = Local(text.0.cast());
     // SAFETY: a null-terminated string from ConvertSidToStringSidW, freed by `owner` afterwards.
     let sid = unsafe { text.to_string() };
     drop(owner);
-    sid.map_err(|_| Error::NotInstallable(format!("Windows gave an unreadable SID for {WHAT}.")))
+    sid.map_err(|_| Error::NotInstallable(format!("Windows gave an unreadable SID for {what}.")))
+}
+
+/// Whether `path` itself (a junction or symbolic link is not followed) is owned by
+/// Administrators, SYSTEM or TrustedInstaller (see the module's doc). An error when it can't be
+/// opened.
+pub(crate) fn owner_is_admin(path: &Path) -> Result<bool> {
+    let file = fs::OpenOptions::new()
+        .access_mode(READ_CONTROL as u32)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS) as u32)
+        .open(path)
+        .map_err(Error::io(path))?;
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `file` is open with READ_CONTROL and outlives the call; the out-pointers are
+    // valid; `owner` points into `descriptor`, freed by `_descriptor` after its last use below.
+    let code = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION as u32,
+            Some(&mut owner),
+            None,
+            None,
+            None,
+            Some(&mut descriptor),
+        )
+    };
+    let _descriptor = Local(descriptor);
+    if code != 0 {
+        return Err(Error::Windows {
+            context: format!("the owner of {}", path.display()),
+            source: WIN32_ERROR(code).to_hresult().into(),
+        });
+    }
+    // SAFETY: `owner` points into the descriptor, alive until `_descriptor` drops.
+    let owner = unsafe { sid_text(owner, "the owner") }?;
+    Ok(ADMIN_OWNERS.contains(&owner.as_str()))
 }
 
 /// Whether this process runs as administrator (elevated).
@@ -185,10 +248,23 @@ impl Drop for Local {
     }
 }
 
+/// Makes `link` a junction to `target`, as a standard user may, for tests.
+#[cfg(test)]
+pub(crate) fn junction(link: &Path, target: &Path) {
+    let made = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::process::Command;
 
     #[test]
@@ -209,6 +285,28 @@ mod tests {
         assert!(listing.contains("APPLICATION PACKAGE"), "{listing}");
         assert!(grant(&dir.join("missing"), &sid, MODIFY).is_err());
         assert!(grant(&file, "not a SID", MODIFY).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn owners_are_read_from_the_path_itself() {
+        let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        // Windows' own folder and programs: TrustedInstaller.
+        assert!(owner_is_admin(&system).unwrap());
+        assert!(owner_is_admin(&system.join(r"System32\hostname.exe")).unwrap());
+
+        let dir = std::env::temp_dir().join(format!("GM-Owner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // A junction to Windows' folder is the user's, whatever it leads to.
+        let link = dir.join("link");
+        junction(&link, &system);
+        // Run as administrator, what the test makes is Administrators'.
+        let by_user = !is_elevated();
+        assert_eq!(owner_is_admin(&link).unwrap(), !by_user);
+        assert_eq!(owner_is_admin(&dir).unwrap(), !by_user);
+        assert!(owner_is_admin(&dir.join("missing")).is_err());
+        fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 }

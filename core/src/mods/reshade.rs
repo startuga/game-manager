@@ -71,7 +71,7 @@ const API_URL: &str = "https://api.github.com/repos/crosire/reshade";
 const SETUP_ARTIFACT: &str = "ReShade Setup";
 const CONFIG_FILE: &str = "ReShade.ini";
 /// The files ReShade saves into while the game runs.
-const SAVED_FILES: [&str; 3] = [CONFIG_FILE, "ReShadePreset.ini", "ReShade.log"];
+pub(crate) const SAVED_FILES: [&str; 3] = [CONFIG_FILE, "ReShadePreset.ini", "ReShade.log"];
 /// The effects' folder in the game's folder.
 pub(crate) const SHADERS_FOLDER: &str = "reshade-shaders";
 
@@ -581,23 +581,42 @@ fn run_job(job: &ReshadeJob) -> Result<()> {
             run_then(&job.ops, || reshade_layer::apply(change))
         }
         Some(_) => {
+            // Said here, with the folder's name; the copy as administrator checks it again.
+            reshade_layer::check_system_folder()?;
             let json = serde_json::to_string(job).map_err(Error::json("ReShade's changes"))?;
             elevate::run(RESHADE_OPS_ARG, &percent_encode(&json))
         }
     }
 }
 
-/// Runs the job passed with `--reshade-ops`. The result is the program's exit code: 0, or the
-/// HRESULT of what failed.
+/// Runs the job passed with `--reshade-ops`, once its operations and the layer build it installs
+/// from are checked (`super::vet`, `elevate::check_paths`). The result is the program's exit
+/// code: 0, or the HRESULT of what failed or was refused.
 pub fn run_encoded(encoded: &str) -> u32 {
     let job =
         percent_decode(encoded).and_then(|json| serde_json::from_str::<ReshadeJob>(&json).ok());
     let Some(job) = job else {
         return windows::Win32::E_INVALIDARG.0 as u32;
     };
-    super::exit_code(run_then(&job.ops, || match &job.layer {
-        Some(change) => reshade_layer::apply(change),
+    let build = job
+        .layer
+        .as_ref()
+        .and_then(|change| change.install_from.as_deref());
+    let vetted = super::vet(&job.ops).and_then(|()| match build {
+        Some(build) => {
+            let files: Vec<PathBuf> = reshade_layer::LAYER_FILES
+                .iter()
+                .map(|name| build.join(name))
+                .collect();
+            elevate::check_paths(files.iter().map(PathBuf::as_path))
+        }
         None => Ok(()),
+    });
+    super::exit_code(vetted.and_then(|()| {
+        run_then(&job.ops, || match &job.layer {
+            Some(change) => reshade_layer::apply(change),
+            None => Ok(()),
+        })
     }))
 }
 

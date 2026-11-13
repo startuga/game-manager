@@ -38,7 +38,7 @@ holds the rules and facts that span them.
     bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, the capture's PNG; no
     Windows API).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
-  - `http.rs` (WinHTTP `get`/`download`).
+  - `http.rs` (WinHTTP `get`/`download`/`etag`, on one session for the process).
 - **Mods**:
   - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`; `CopyTree` and
     `DeleteFiles` move a folder of files as one operation).
@@ -58,7 +58,8 @@ holds the rules and facts that span them.
     are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops` /
-    `--gpu-scheduling`).
+    `--gpu-scheduling`; long work in a file checked by its SHA-256; `check_paths`, where work
+    as administrator may go).
   - `nvidia.rs` (the game's NVIDIA driver profile through NVAPI: any DWORD settings read,
     planned and saved, with DXVK's Present Method and its flags; the driver's version and its NGX
     DLLs) and `mods/dlss_override.rs` (the DLSS overrides: `config/nvidia-overrides.json`,
@@ -71,8 +72,9 @@ holds the rules and facts that span them.
   - `pc/switches.rs` (GPU scheduling, Game Mode, windowed optimizations, Auto HDR).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
-  - `json_file.rs` (where files live, load/save).
-  - `security.rs` (the user's SID, whether elevated, granting file rights).
+  - `json_file.rs` (where files live, load/save, `write_whole` through a temporary file of its
+    own).
+  - `security.rs` (the user's SID, whether elevated, granting file rights, `owner_is_admin`).
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its
     text read back, through a message-only window).
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
@@ -225,8 +227,16 @@ holds the rules and facts that span them.
     catalog cache, and the first start had 48 covers cached after about 20 s.
 - **Protected folders**: Epic/EA under `C:\Program Files` need administrator rights; Steam's and
   some Epic folders grant Users full control. Mod file changes there run in
-  `app.exe --file-ops <ops>`, started with `runas`. The ops go on the command line, so the
-  elevated copy reads no file another program could change.
+  `app.exe --file-ops <ops>`, started with `runas`.
+  - **The ops go on the command line, or in a file whose SHA-256 is on it** (over 30 000
+    characters: Deploy to many protected games), so the elevated copy uses nothing another
+    program changed. Game Manager deletes that file afterwards, never the elevated copy.
+  - **The elevated copy checks the work before any of it runs** (`mods::vet`,
+    `elevate::check_paths`): whole local paths, none in `%SystemRoot%`, no junction or symbolic
+    link a standard user made on the way (an administrator's is followed), none inside a
+    `CopyTree`'s source, and `Writable` only for ReShade's saved files. Otherwise nothing runs,
+    and the exit code says why (`ERROR_BAD_PATHNAME`, `ERROR_REPARSE_POINT_ENCOUNTERED`,
+    `ERROR_NOT_SUPPORTED`, `ERROR_DATA_CHECKSUM_ERROR`).
 - **NVAPI**: `nvapi64.dll` (System32 only) exports just `nvapi_QueryInterface`; functions are
   fetched by the ids in NVIDIA's `nvapi_interface.h`.
   - **Struct packing**: `NVDRS_SETTING_V1` is inside `#pragma pack(4)` in `nvapi.h`. Its value
@@ -265,7 +275,10 @@ holds the rules and facts that span them.
     user (Modify), or ReShade cannot save there.
   - **The Vulkan layer**: `%ProgramData%\ReShade` (`ReShade32/64.dll` + `.json`), registered under
     `HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers` (32-bit under `WOW6432Node`); the folder grants
-    ALL APPLICATION PACKAGES read & execute. `ReShadeApps.ini` (UTF-8 with BOM) has one
+    ALL APPLICATION PACKAGES read & execute. A standard user may create folders in
+    `%ProgramData%`, so an existing `ReShade` folder and its layer files must be owned by
+    Administrators, SYSTEM or TrustedInstaller, and not be junctions; otherwise the layer isn't
+    touched and the error asks to delete the folder. `ReShadeApps.ini` (UTF-8 with BOM) has one
     `Apps=` line of paths split by commas, so a path with a comma can never match; it is left
     byte for byte except for the game's own entry. ReShade's setup removes the layer when the
     list ends empty, and so does Game Manager.

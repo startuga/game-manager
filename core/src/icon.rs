@@ -36,6 +36,7 @@
 //! Icons read from programs are cached in `%LOCALAPPDATA%\Game Manager\cache\icons` as `.png`
 //! or `.ico` files (`alone`'s), named after the program's path, the icon's index, and the
 //! program's length and modified time, so a game's program is only read again when it changes.
+//! They are written whole, through a temporary file of their own (`json_file::write_whole`).
 //! `.ico` and picture files are read where they are. No icon handle, GDI or WIC is used here.
 
 use crate::data_module::{DataModule, int_resource};
@@ -457,24 +458,22 @@ impl IconCache {
         })
     }
 
-    /// Written as `.png` or `.ico` by what it holds, through a temporary file, so another reader
-    /// never sees half an icon.
+    /// Written as `.png` or `.ico` by what it holds, through a temporary file of its own
+    /// (`json_file::write_whole`), so another reader never sees half an icon.
     fn write(stem: &Path, bytes: &[u8]) {
         let ext = if is_png(bytes) { "png" } else { "ico" };
-        let temp = stem.with_extension(format!("{ext}.tmp"));
-        if fs::write(&temp, bytes).is_ok() {
-            let _ = fs::rename(&temp, stem.with_extension(ext));
-        }
+        let _ = json_file::write_whole(&stem.with_extension(ext), bytes);
     }
 
-    /// Deletes cached icons (older versions' too, and leftover temporary files) that are not in
-    /// `used`.
+    /// Deletes cached icons (older versions' too) that are not in `used`, and temporary files
+    /// left by writes that ended long ago (a younger one may be another copy's write).
     fn prune(&self, used: &HashSet<PathBuf>) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
         for path in entries.flatten().map(|entry| entry.path()) {
-            if has_extension(&path, &["ico", "png", "tmp"]) && !used.contains(&path) {
+            let cached = has_extension(&path, &["ico", "png"]) && !used.contains(&path);
+            if cached || json_file::is_stale_temp(&path) {
                 let _ = fs::remove_file(&path);
             }
         }
@@ -843,18 +842,31 @@ mod tests {
         )];
         let stale = cache.dir.join("0123456789abcdef.ico");
         let old_format = cache.dir.join("0123456789abcdef.png");
-        let leftover = cache.dir.join("fedcba9876543210.ico.tmp");
+        let leftover = cache.dir.join("fedcba9876543210.ico.1-0.tmp");
         let leftover_png = cache.dir.join("fedcba9876543210.png.tmp");
+        let in_progress = cache.dir.join("fedcba9876543210.png.1-1.tmp");
         let unrelated = cache.dir.join("notes.txt");
-        for file in [&stale, &old_format, &leftover, &leftover_png, &unrelated] {
+        for file in [
+            &stale,
+            &old_format,
+            &leftover,
+            &leftover_png,
+            &in_progress,
+            &unrelated,
+        ] {
             fs::write(file, b"x").unwrap();
+        }
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+        for file in [&leftover, &leftover_png] {
+            let handle = fs::File::options().write(true).open(file).unwrap();
+            handle.set_modified(hour_ago).unwrap();
         }
         let (_, used) = extract_cached(&games, Some(&cache));
         cache.prune(&used);
         assert!(used.iter().any(|file| file.is_file()));
         assert!(!stale.exists() && !old_format.exists());
         assert!(!leftover.exists() && !leftover_png.exists());
-        assert!(unrelated.exists());
+        assert!(in_progress.exists() && unrelated.exists());
         fs::remove_dir_all(&cache.dir).unwrap();
     }
 }

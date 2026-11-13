@@ -9,6 +9,14 @@
 //! delete are first set aside as `<name>.gm-delete` and only removed, with the folders that end
 //! up empty, once everything succeeded. Folders of many files (ReShade's shaders) travel as one
 //! `CopyTree` or `DeleteFiles`, so an elevated run's command line stays short.
+//!
+//! **As administrator** (`--file-ops`, and ReShade's `--reshade-ops`), the operations are
+//! checked before any runs (`vet`): every path they read or change, the files a `CopyTree`
+//! writes and each `DeleteFiles` name too, must be one work may reach (`elevate::check_paths`:
+//! a whole local path, outside `%SystemRoot%`, through no junction a standard user made); a
+//! `CopyTree`'s source may hold no junction or symbolic link; and `Writable` opens only
+//! ReShade's own saved files (`ReShade.ini`, `ReShadePreset.ini`, `ReShade.log`) to the user.
+//! Anything else and nothing runs: the exit code says why.
 
 pub mod dlss_override;
 pub mod dxvk;
@@ -30,7 +38,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-use windows::Win32::{E_FAIL, E_INVALIDARG, ERROR_ALREADY_EXISTS};
+use windows::Win32::{
+    E_FAIL, E_INVALIDARG, ERROR_ALREADY_EXISTS, ERROR_NOT_SUPPORTED,
+    ERROR_REPARSE_POINT_ENCOUNTERED,
+};
 use windows::core::WIN32_ERROR;
 
 const MODS_FILE: &str = "mods.json";
@@ -416,15 +427,75 @@ fn can_write(folder: &Path) -> Result<bool> {
     }
 }
 
-/// Runs the operations passed with `--file-ops` (see `elevate`). The result is the program's exit
-/// code: 0, or the HRESULT of what failed.
+/// Runs the operations passed with `--file-ops` (see `elevate`), once `vet` has checked them.
+/// The result is the program's exit code: 0, or the HRESULT of what failed or was refused.
 pub fn run_encoded(encoded: &str) -> u32 {
     let ops =
         percent_decode(encoded).and_then(|json| serde_json::from_str::<Vec<FileOp>>(&json).ok());
     let Some(ops) = ops else {
         return E_INVALIDARG.0 as u32;
     };
-    exit_code(run(&ops))
+    exit_code(vet(&ops).and_then(|()| run(&ops)))
+}
+
+/// Checks, as administrator and before any of them runs, that `ops` reach only what Game
+/// Manager's own work does (see the module's doc). The error's Windows code says why:
+/// `ERROR_NOT_SUPPORTED` for a `Writable` of another file, else `elevate::check_paths`'s.
+pub(crate) fn vet(ops: &[FileOp]) -> Result<()> {
+    let refused = |path: &Path, code: i32| Err(Error::io(path)(io::Error::from_raw_os_error(code)));
+    let mut paths = Vec::new();
+    for op in ops {
+        match op {
+            FileOp::Copy { from, to } | FileOp::Move { from, to } => {
+                paths.extend([from.clone(), to.clone()]);
+            }
+            FileOp::Delete { path } | FileOp::DeleteTree { path } => paths.push(path.clone()),
+            FileOp::CopyTree { from, to } => {
+                if link_under(from) {
+                    return refused(from, ERROR_REPARSE_POINT_ENCOUNTERED);
+                }
+                paths.extend([from.clone(), to.clone()]);
+                paths.extend(files_under(from)?.iter().map(|relative| to.join(relative)));
+            }
+            FileOp::DeleteFiles { folder, names } => {
+                paths.push(folder.clone());
+                paths.extend(names.iter().map(|name| folder.join(name)));
+            }
+            FileOp::Writable { path, .. } => {
+                let saved = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        reshade::SAVED_FILES
+                            .iter()
+                            .any(|saved| saved.eq_ignore_ascii_case(name))
+                    });
+                if !saved {
+                    return refused(path, ERROR_NOT_SUPPORTED);
+                }
+                paths.push(path.clone());
+            }
+        }
+    }
+    elevate::check_paths(paths.iter().map(PathBuf::as_path))
+}
+
+/// Whether a junction or symbolic link is anywhere under `folder` (none is followed).
+fn link_under(folder: &Path) -> bool {
+    let mut folders = vec![folder.to_path_buf()];
+    while let Some(current) = folders.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(kind) if kind.is_symlink() => return true,
+                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 /// What an operation did, to undo it.
@@ -981,6 +1052,94 @@ mod tests {
             WIN32_ERROR(ERROR_ALREADY_EXISTS as u32).to_hresult().0 as u32
         );
         assert_eq!(run_encoded("%zz"), E_INVALIDARG.0 as u32);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn elevated_work_reaches_only_where_game_managers_own_work_goes() {
+        use windows::Win32::ERROR_BAD_PATHNAME;
+        let dir = temp_dir("vet");
+        let game = dir.join("Game");
+        let shaders = dir.join("Shaders");
+        fs::create_dir_all(game.join("bin")).unwrap();
+        fs::create_dir_all(shaders.join("inner")).unwrap();
+        fs::write(shaders.join(r"inner\a.fx"), b"fx").unwrap();
+        fs::write(dir.join("dxgi.dll"), b"MZ").unwrap();
+        let sid = security::current_user_sid().unwrap();
+        let code = |error: i32| WIN32_ERROR(error as u32).to_hresult().0 as u32;
+        let encoded = |ops: &[FileOp]| percent_encode(&serde_json::to_string(ops).unwrap());
+
+        // A mod's ordinary work passes.
+        let ordinary = [
+            FileOp::Copy {
+                from: dir.join("dxgi.dll"),
+                to: game.join(r"bin\dxgi.dll"),
+            },
+            FileOp::CopyTree {
+                from: shaders.clone(),
+                to: game.join("reshade-shaders"),
+            },
+            FileOp::Writable {
+                path: game.join(r"bin\reshade.ini"),
+                sid: sid.clone(),
+            },
+            FileOp::DeleteFiles {
+                folder: game.join("reshade-shaders"),
+                names: vec![r"inner\a.fx".to_owned()],
+            },
+        ];
+        assert!(vet(&ordinary).is_ok());
+
+        // Opening another file to the user, a name that climbs out, Windows' folder.
+        let other = [FileOp::Writable {
+            path: game.join(r"bin\dxgi.dll"),
+            sid,
+        }];
+        assert_eq!(run_encoded(&encoded(&other)), code(ERROR_NOT_SUPPORTED));
+        let climbs = [FileOp::DeleteFiles {
+            folder: game.clone(),
+            names: vec![r"..\..\dxgi.dll".to_owned()],
+        }];
+        assert_eq!(run_encoded(&encoded(&climbs)), code(ERROR_BAD_PATHNAME));
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let into_windows = [FileOp::Copy {
+            from: dir.join("dxgi.dll"),
+            to: system.join(r"System32\gm-test.dll"),
+        }];
+        assert_eq!(
+            run_encoded(&encoded(&into_windows)),
+            code(ERROR_BAD_PATHNAME)
+        );
+
+        // A junction a standard user made, on the way to a game or inside a tree to copy.
+        if !security::is_elevated() {
+            let link = dir.join("Linked");
+            security::junction(&link, &game);
+            let through = [
+                FileOp::Copy {
+                    from: dir.join("dxgi.dll"),
+                    to: game.join("first.dll"),
+                },
+                FileOp::Copy {
+                    from: dir.join("dxgi.dll"),
+                    to: link.join("dxgi.dll"),
+                },
+            ];
+            let reparse = code(ERROR_REPARSE_POINT_ENCOUNTERED);
+            assert_eq!(run_encoded(&encoded(&through)), reparse);
+            // Nothing ran: not even the operation before it.
+            assert!(!game.join("first.dll").exists());
+            let inside = shaders.join("linked");
+            security::junction(&inside, &game);
+            let tree = [FileOp::CopyTree {
+                from: shaders.clone(),
+                to: game.join("reshade-shaders"),
+            }];
+            assert_eq!(run_encoded(&encoded(&tree)), reparse);
+            assert!(!game.join("reshade-shaders").exists());
+            fs::remove_dir(&inside).unwrap();
+            fs::remove_dir(&link).unwrap();
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }
