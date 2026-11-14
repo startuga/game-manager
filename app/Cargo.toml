@@ -20,14 +20,15 @@ windows-window = { workspace = true }
 # shellapi for dropped files), the text boxes' IME (imm), the Open dialog (shobjidl_core, shtypes,
 # combaseapi, objbase), pictures and clipping (d2d, dcommon; d3d11 to trim GPU memory), UI Automation
 # (uiautomationcore, uiautomationcoreapi, uiautomationclient, oleauto), efficiency mode
-# (processthreadsapi, memoryapi) and the start error (winerror). No GDI (wingdi): everything is
-# drawn with Direct2D, and pictures are decoded in pure Rust (`gm_core::picture`).
+# (processthreadsapi, memoryapi), one window per copy (synchapi, minwinbase, handleapi) and the
+# start error (winerror). No GDI (wingdi): everything is drawn with Direct2D, and pictures are
+# decoded in pure Rust (`gm_core::picture`).
 windows = { workspace = true, features = [
     "winuser", "dwmapi", "shellapi", "uxtheme",
     "imm",
     "shobjidl_core", "shtypes", "combaseapi", "objbase", "objidl", "objidlbase", "wtypesbase",
     "d2d", "dcommon", "d3d11",
     "uiautomationcore", "uiautomationcoreapi", "uiautomationclient", "oleauto", "oaidl", "propidl", "shared", "winnt", "wtypes",
-    "processthreadsapi", "memoryapi", "winbase",
+    "processthreadsapi", "memoryapi", "winbase", "synchapi", "minwinbase", "handleapi",
     "winerror", "windef", "minwindef",
 ] }

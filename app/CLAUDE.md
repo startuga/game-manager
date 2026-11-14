@@ -57,7 +57,9 @@ samples in `crates/samples/`) instead of guessing.
 - `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
   frame, DPI), `text_input.rs` (text boxes' keys, characters, clicks, clipboard, caret blink,
   menu and IME), `ctx.rs` (background work, effects), `dialogs.rs` (Open dialog, start error),
-  `efficiency.rs`.
+  `efficiency.rs`, `instance.rs` (one window per copy of the app: a second start of the same
+  `app.exe` brings the first's window forward and ends; the agent's `target\agent` build is
+  another copy, so it runs beside the user's).
 
 ## Toolkit rules
 - **Elm style**: every `Message` rebuilds the view and lays it out; hover and the like only

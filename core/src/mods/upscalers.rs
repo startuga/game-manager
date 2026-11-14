@@ -20,7 +20,8 @@
 //!     requests an hour, and are kept for a day in `cache\upscaler-versions.json`.
 //! - **Cache**: `%LOCALAPPDATA%\Game Manager\mods\upscalers\<kind>\<version>\`, its DLLs as the
 //!   vendor names them (lowercase), with a `.source` file naming the repository and tag. Every DLL
-//!   is checked before it is kept: a valid Authenticode signature (`signature`) and 64-bit.
+//!   is checked before it is kept: 64-bit, with a valid Authenticode signature by the kind's
+//!   vendor (`signature::signer`, the catalog's `signer`), not merely by someone Windows trusts.
 //! - **Detection** (`scan`): the kinds' first files in the game's folder and below, each place a
 //!   `Found`, with the DLL's own fixed file version (`310.9.16`). Files set aside by mods
 //!   (`.gm-backup`, `.gm-delete`) are not looked at.
@@ -83,6 +84,9 @@ pub struct Kind {
     pub id: String,
     pub name: String,
     pub vendor: String,
+    /// The name on the vendor's code-signing certificate ("NVIDIA Corporation"): every DLL must
+    /// be signed by it (`signature::signer`), whatever else signed it.
+    signer: String,
     /// The first is looked for in games; with `set`, every file of its folder that matches one of
     /// them goes with it (`*` matches any text).
     pub files: Vec<String>,
@@ -662,7 +666,7 @@ fn ensure(kind: &Kind, available: &Available, names: &[String]) -> Result<PathBu
     Ok(dir)
 }
 
-/// Rejects a downloaded file that is not a signed 64-bit Windows DLL.
+/// Rejects a downloaded file that is not a 64-bit Windows DLL signed by the kind's vendor.
 fn check(file: &Path, kind: &Kind, available: &Available) -> Result<()> {
     let name = name_of(file);
     let from = || format!("{name} of {} {}", kind.name, available.version);
@@ -672,13 +676,18 @@ fn check(file: &Path, kind: &Kind, available: &Available) -> Result<()> {
             from()
         )));
     }
-    if !signature::is_signed(file) {
-        return Err(Error::NotInstallable(format!(
+    match signature::signer(file) {
+        Some(signer) if signature::is_signer(&signer, &kind.signer) => Ok(()),
+        Some(signer) => Err(Error::NotInstallable(format!(
+            "{} is signed by {signer}, not {}, so it was not kept.",
+            from(),
+            kind.signer
+        ))),
+        None => Err(Error::NotInstallable(format!(
             "{} has no valid signature, so it was not kept.",
             from()
-        )));
+        ))),
     }
-    Ok(())
 }
 
 /// A kind's DLLs found in a game's folder.
@@ -1039,7 +1048,34 @@ mod tests {
                 .filter(|other| other.id == kind.id)
                 .count();
             assert_eq!(ids, 1, "{} is listed once", kind.id);
+            assert!(
+                !kind.signer.trim().is_empty(),
+                "{} names its signer",
+                kind.id
+            );
         }
+    }
+
+    #[test]
+    fn a_dll_signed_by_another_company_is_not_kept() {
+        // Windows' Visual C++ runtime: a valid 64-bit DLL, but Microsoft's, not NVIDIA's.
+        let runtime = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join(r"System32\vcruntime140.dll");
+        if !runtime.is_file() {
+            return;
+        }
+        let catalog = shipped();
+        let dlss = catalog.kind("dlss").unwrap();
+        let available = Available {
+            version: Version::parse("310.9.16").unwrap(),
+            tag: "v310.9.16".to_owned(),
+            asset: None,
+        };
+        let error = check(&runtime, dlss, &available).unwrap_err().to_string();
+        assert!(
+            error.contains("is signed by Microsoft") && error.contains("not NVIDIA Corporation"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1351,7 +1387,12 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{} {}: {error}", kind.id, available.version));
             for name in &names {
                 let file = find_in(&dir, name).unwrap();
-                assert!(signature::is_signed(&file), "{}", file.display());
+                let signer = signature::signer(&file).unwrap_or_default();
+                assert!(
+                    signature::is_signer(&signer, &kind.signer),
+                    "{} is signed by {signer:?}",
+                    file.display()
+                );
                 assert_eq!(pe::architecture(&file), Some(Arch::X64));
                 println!(
                     "{} {}: {name} {}",

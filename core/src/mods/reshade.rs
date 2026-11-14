@@ -7,7 +7,8 @@
 //! - **No Addons**: the plain setup from the same page, `ReShade_Setup_<version>.exe`. Its build
 //!   (`RESHADE_ADDON=1`) loads no add-ons, which some online games' anti-cheat requires.
 //! - **Development**: the latest build of `main` by crosire/reshade's `build.yml` workflow, its
-//!   "ReShade Setup" artifact through nightly.link (as for DXVK). It is built with
+//!   "ReShade Setup" artifact through nightly.link, checked against the SHA-256 GitHub lists for it
+//!   (as for DXVK). It is built with
 //!   `RESHADE_ADDON=2`, full add-on support. Artifacts expire after 90 days.
 //!
 //! Every setup carries the DLLs in a ZIP appended to the program, whose offsets count from the
@@ -49,8 +50,9 @@ use super::reshade_layer::{self, LAYER_FILES, LayerChange, LayerStatus};
 use super::reshade_settings::{Part, ReshadeSettings};
 use super::shader_packs::{Catalog, Selection};
 use super::{
-    BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, files_under, folder_writable,
-    get_json, latest_run, plan, reshade_settings, run_then, shader_packs, update, with_suffix,
+    BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, SourceHashes, check_download,
+    files_under, folder_writable, get_json, latest_run, plan, reshade_settings, run_artifact,
+    run_then, shader_packs, update, with_suffix,
 };
 use crate::graphics::GraphicsApi;
 use crate::text::{percent_decode, percent_encode};
@@ -58,7 +60,6 @@ use crate::{
     Arch, Error, Game, Result, elevate, http, json_file, security, seven_zip, version_info,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -386,6 +387,7 @@ pub fn latest(variant: ReshadeVariant) -> Result<Build> {
                 version,
                 page: RELEASES_PAGE.to_owned(),
                 file_name,
+                sha256: None,
             })
         }
         ReshadeVariant::Development => {
@@ -395,9 +397,9 @@ pub fn latest(variant: ReshadeVariant) -> Result<Build> {
             );
             let (run, commit) = latest_run(&get_json(&url)?).ok_or(Error::NoRelease { url })?;
             let url = format!("{API_URL}/actions/runs/{run}/artifacts");
-            if !has_artifact(&get_json(&url)?, SETUP_ARTIFACT) {
-                return Err(Error::NoRelease { url });
-            }
+            let (_, digest) = run_artifact(&get_json(&url)?, |name| name == SETUP_ARTIFACT)
+                .ok_or(Error::NoRelease { url: url.clone() })?;
+            let sha256 = Some(digest.ok_or(Error::NoDigest { url })?);
             Ok(Build {
                 version: format!("main-{}", commit.get(..7).unwrap_or(&commit)),
                 page: format!("https://github.com/crosire/reshade/commit/{commit}"),
@@ -406,6 +408,7 @@ pub fn latest(variant: ReshadeVariant) -> Result<Build> {
                     SETUP_ARTIFACT.replace(' ', "%20")
                 ),
                 file_name: format!("{SETUP_ARTIFACT}.zip"),
+                sha256,
             })
         }
     }
@@ -425,16 +428,6 @@ fn setup_version(page: &str, add_ons: bool) -> Option<String> {
             && version.chars().all(|c| c.is_ascii_digit() || c == '.')
             && version.chars().next().is_some_and(|c| c.is_ascii_digit());
         valid.then(|| version.to_owned())
-    })
-}
-
-/// The run lists an artifact called `name` that has not expired.
-fn has_artifact(artifacts: &Value, name: &str) -> bool {
-    artifacts["artifacts"].as_array().is_some_and(|list| {
-        list.iter().any(|artifact| {
-            artifact["name"].as_str() == Some(name)
-                && !artifact["expired"].as_bool().unwrap_or(false)
-        })
     })
 }
 
@@ -493,6 +486,7 @@ pub(crate) fn cached_build(variant: ReshadeVariant, build: &Build) -> Result<Pat
     fs::create_dir_all(&work).map_err(Error::io(&work))?;
     let download = work.join(&build.file_name);
     http::download(&build.url, &download)?;
+    check_download(build, &download)?;
     // A development build comes as a ZIP holding the setup.
     let setup = if build.file_name.to_ascii_lowercase().ends_with(".zip") {
         let artifact = work.join("artifact");
@@ -570,6 +564,10 @@ pub(crate) struct ReshadeJob {
     ops: Vec<FileOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layer: Option<LayerChange>,
+    /// The SHA-256 of every file the job copies, the layer's DLLs too: filled in before asking
+    /// for administrator rights (see `super::SourceHashes`).
+    #[serde(default)]
+    sources: SourceHashes,
 }
 
 /// Runs `job`: here when it needs no rights Game Manager lacks, else in a copy of Game Manager
@@ -578,12 +576,19 @@ fn run_job(job: &ReshadeJob) -> Result<()> {
     match &job.layer {
         None => super::apply(&job.ops),
         Some(change) if security::is_elevated() => {
-            run_then(&job.ops, || reshade_layer::apply(change))
+            run_then(&job.ops, || reshade_layer::apply(change, None))
         }
-        Some(_) => {
+        Some(change) => {
             // Said here, with the folder's name; the copy as administrator checks it again.
             reshade_layer::check_system_folder()?;
-            let json = serde_json::to_string(job).map_err(Error::json("ReShade's changes"))?;
+            let mut job = job.clone();
+            job.sources = SourceHashes::of(&job.ops)?;
+            if let Some(build) = &change.install_from {
+                for name in reshade_layer::LAYER_FILES {
+                    job.sources.add(&build.join(name))?;
+                }
+            }
+            let json = serde_json::to_string(&job).map_err(Error::json("ReShade's changes"))?;
             elevate::run(RESHADE_OPS_ARG, &percent_encode(&json))
         }
     }
@@ -612,9 +617,10 @@ pub fn run_encoded(encoded: &str) -> u32 {
         }
         None => Ok(()),
     });
+    let sources = Some(&job.sources);
     super::exit_code(vetted.and_then(|()| {
-        run_then(&job.ops, || match &job.layer {
-            Some(change) => reshade_layer::apply(change),
+        super::run_with(&job.ops, sources, || match &job.layer {
+            Some(change) => reshade_layer::apply(change, sources),
             None => Ok(()),
         })
     }))
@@ -799,6 +805,7 @@ fn prepare(
         job: ReshadeJob {
             ops,
             layer: changes_layer.then_some(change),
+            sources: SourceHashes::default(),
         },
         installed: Installed {
             version: build.version.clone(),
@@ -867,7 +874,11 @@ fn removal(state: &ReshadeState) -> Result<ReshadeJob> {
             remove_app: Some(layer.program.clone()),
             ..LayerChange::default()
         });
-    Ok(ReshadeJob { ops, layer })
+    Ok(ReshadeJob {
+        ops,
+        layer,
+        sources: SourceHashes::default(),
+    })
 }
 
 fn state(game: &Game) -> Result<(ModsFile, ReshadeState)> {
@@ -1094,7 +1105,8 @@ fn deploy_targets(mods: &ModsFile, settings: &ReshadeSettings, to: &DeployTo) ->
 /// directly, the protected ones together as administrator (one UAC prompt). `games` names them in
 /// messages and gives their bitness (a game not among them keeps its add-ons). Blocking:
 /// downloads, 7-Zip and file copies. What could not be done is named in an `Error::Incomplete`,
-/// after the rest was saved.
+/// after the rest was saved: a game whose choice can't be laid out (a disk error) fails alone, and
+/// every game changed is recorded, so `mods.json` always says what each folder holds.
 pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
     let mods = super::load()?;
     let settings = reshade_settings::load()?;
@@ -1110,6 +1122,7 @@ pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
     /// and the add-ons' files.
     type LaidOut<'a> = (Selection, &'a [String], PathBuf, Vec<(Addon, PathBuf)>);
     let mut choices: Vec<LaidOut> = Vec::new();
+    let mut laid_out = 0;
     let name = |id: &str| {
         games
             .iter()
@@ -1135,8 +1148,18 @@ pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
         {
             Some(index) => index,
             None => {
-                let tree = staging.join(choices.len().to_string());
-                let chosen = stage_choice(&tree, &catalog, &selection, addon_ids, &list)?;
+                // A folder of its own each time: a failed layout leaves its files behind.
+                let tree = staging.join(format!("choice-{laid_out}"));
+                laid_out += 1;
+                // Games before this one may be changed already: a choice that can't be laid out
+                // fails this game alone, so theirs are still recorded below.
+                let chosen = match stage_choice(&tree, &catalog, &selection, addon_ids, &list) {
+                    Ok(chosen) => chosen,
+                    Err(error) => {
+                        failed.push(format!("{}: {error}", name(id)));
+                        continue;
+                    }
+                };
                 for what in chosen.failed {
                     if !failed.contains(&what) {
                         failed.push(what);
@@ -1202,9 +1225,10 @@ pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
         }
     }
     let _ = fs::remove_dir_all(&staging);
+    // Every game changed is recorded, even when another one's record can't be saved.
     let mut saved = mods;
     for (id, (effects, addons)) in done {
-        saved = update(&id, |mods| {
+        let recorded = update(&id, |mods| {
             if let Some(reshade) = &mut mods.reshade {
                 // An earlier version's list of effect files is replaced by the folder's record.
                 if let Some(installed) = &mut reshade.installed {
@@ -1215,7 +1239,11 @@ pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
                     reshade.addons = addons;
                 }
             }
-        })?;
+        });
+        match recorded {
+            Ok(mods) => saved = mods,
+            Err(error) => failed.push(format!("{}: {error}", name(&id))),
+        }
     }
     if failed.is_empty() {
         Ok(saved)
@@ -1377,15 +1405,19 @@ mod tests {
         assert_eq!(setup_version(addon_only, false), None);
         assert_eq!(setup_version("ReShade_Setup_latest.exe", false), None);
 
-        let artifacts: Value = serde_json::from_str(
+        let artifacts: serde_json::Value = serde_json::from_str(
             r#"{ "artifacts": [ { "name": "ReShade (64-bit)", "expired": false },
                                 { "name": "ReShade Setup", "expired": false } ] }"#,
         )
         .unwrap();
-        assert!(has_artifact(&artifacts, SETUP_ARTIFACT));
+        let setup = |name: &str| name == SETUP_ARTIFACT;
+        assert_eq!(
+            run_artifact(&artifacts, setup),
+            Some((SETUP_ARTIFACT.to_owned(), None))
+        );
         let expired =
             serde_json::json!({ "artifacts": [ { "name": "ReShade Setup", "expired": true } ] });
-        assert!(!has_artifact(&expired, SETUP_ARTIFACT));
+        assert_eq!(run_artifact(&expired, setup), None);
     }
 
     #[test]
@@ -1472,6 +1504,7 @@ mod tests {
             page: RELEASES_PAGE.into(),
             url: String::new(),
             file_name: String::new(),
+            sha256: None,
         };
         let install = |previous: &ReshadeState| {
             let (build_dir, effects, staging) = sources(&dir.join("sources"));
@@ -1614,6 +1647,7 @@ mod tests {
             page: String::new(),
             url: String::new(),
             file_name: String::new(),
+            sha256: None,
         };
         let (build_dir, effects, staging) = sources(&dir.join("sources"));
         let sources = Sources {

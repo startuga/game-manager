@@ -5,7 +5,9 @@
 //! - **Development**: the latest successful build of master by the `artifacts.yml` workflow.
 //!   GitHub gives workflow artifacts only to signed-in users, so it is downloaded through
 //!   nightly.link (`/actions/runs/<run>/<artifact>.zip`); the artifact is named after the commit,
-//!   so GitHub's API is asked for the run and its artifact first.
+//!   so GitHub's API is asked for the run and its artifact first. nightly.link is a third party,
+//!   so the ZIP must have the SHA-256 GitHub lists for the artifact (`digest`) before it is
+//!   unpacked (`check_download`); a run that lists none offers no build.
 //! - **HDR-mod**: the latest release of EndlesslyFlowering's fork
 //!   (https://github.com/EndlesslyFlowering/dxvk), which can upgrade render targets and the swap
 //!   chain for HDR: `dxvk_v<dxvk>-HDR-mod-v<mod>.7z` (not the `-gplasync` builds some releases
@@ -25,7 +27,10 @@
 //! Settings go into `dxvk.conf` next to the program, which DXVK reads from the game's working
 //! directory: the program's folder for nearly every launch.
 
-use super::{Build, Installed, ModsFile, apply, get_json, latest_run, plan, reshade, update};
+use super::{
+    Build, Installed, ModsFile, apply, check_download, get_json, latest_run, plan, reshade,
+    run_artifact, update,
+};
 use crate::graphics::GraphicsApi;
 use crate::nvidia::{self, NvidiaChoice, NvidiaOriginal};
 use crate::{Arch, Error, Game, Result, http, json_file, seven_zip};
@@ -241,7 +246,9 @@ pub fn latest(variant: DxvkVariant) -> Result<Build> {
             );
             let (run, commit) = latest_run(&get_json(&url)?).ok_or(Error::NoRelease { url })?;
             let url = format!("{API_URL}/actions/runs/{run}/artifacts");
-            let artifact = artifact_name(&get_json(&url)?).ok_or(Error::NoRelease { url })?;
+            let (artifact, digest) = run_artifact(&get_json(&url)?, is_build_artifact)
+                .ok_or(Error::NoRelease { url: url.clone() })?;
+            let sha256 = Some(digest.ok_or(Error::NoDigest { url })?);
             Ok(Build {
                 version: format!("master-{}", commit.get(..7).unwrap_or(&commit)),
                 page: format!("https://github.com/doitsujin/dxvk/commit/{commit}"),
@@ -249,6 +256,7 @@ pub fn latest(variant: DxvkVariant) -> Result<Build> {
                     "https://nightly.link/doitsujin/dxvk/actions/runs/{run}/{artifact}.zip"
                 ),
                 file_name: format!("{artifact}.zip"),
+                sha256,
             })
         }
     }
@@ -278,18 +286,13 @@ fn release_build(release: &Value, is_asset: fn(&str, &str) -> bool) -> Option<Bu
         page: release["html_url"].as_str()?.to_owned(),
         url: asset["browser_download_url"].as_str()?.to_owned(),
         file_name: asset["name"].as_str()?.to_owned(),
+        sha256: None,
     })
 }
 
-/// The run's DXVK artifact, `dxvk-master-<commit>`.
-fn artifact_name(artifacts: &Value) -> Option<String> {
-    artifacts["artifacts"]
-        .as_array()?
-        .iter()
-        .filter(|artifact| !artifact["expired"].as_bool().unwrap_or(false))
-        .filter_map(|artifact| artifact["name"].as_str())
-        .find(|name| name.starts_with("dxvk-") && !name.starts_with("dxvk-native"))
-        .map(str::to_owned)
+/// The run's DXVK artifact, `dxvk-master-<commit>`, not the Linux `dxvk-native-…`.
+fn is_build_artifact(name: &str) -> bool {
+    name.starts_with("dxvk-") && !name.starts_with("dxvk-native")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -667,6 +670,7 @@ fn cached_build(build: &Build) -> Result<PathBuf> {
     fs::create_dir_all(&work).map_err(Error::io(&work))?;
     let archive = work.join(&build.file_name);
     http::download(&build.url, &archive)?;
+    check_download(build, &archive)?;
     let unpacked = work.join("unpacked");
     seven_zip::extract(&archive, &unpacked)?;
     // Only the DLLs of each build folder are kept; moved into place last, so the cache never
@@ -850,6 +854,7 @@ mod tests {
                 url: "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz"
                     .into(),
                 file_name: "dxvk-3.1.1.tar.gz".into(),
+                sha256: None,
             })
         );
         assert_eq!(
@@ -888,17 +893,40 @@ mod tests {
                 "0cfe0898289fb11e3d8d0e1c62cd344b825b7d57".to_owned()
             ))
         );
-        let artifacts: Value = serde_json::from_str(
-            r#"{ "total_count": 2, "artifacts": [
-                 { "name": "dxvk-native-master-0cfe089", "expired": false },
-                 { "name": "dxvk-master-0cfe0898289fb11e3d8d0e1c62cd344b825b7d57", "expired": false } ] }"#,
-        )
+        let digest = "608a43d57bd8e98a9c29a9cb408b504e0e5b4a98eee7a3fe37292159dc0519da";
+        let artifacts: Value = serde_json::from_str(&format!(
+            r#"{{ "total_count": 2, "artifacts": [
+                 {{ "name": "dxvk-native-master-0cfe089", "expired": false,
+                   "digest": "sha256:{}" }},
+                 {{ "name": "dxvk-master-0cfe0898289fb11e3d8d0e1c62cd344b825b7d57", "expired": false,
+                   "digest": "sha256:{}" }} ] }}"#,
+            "0".repeat(64),
+            digest.to_ascii_uppercase()
+        ))
         .unwrap();
         assert_eq!(
-            artifact_name(&artifacts).as_deref(),
-            Some("dxvk-master-0cfe0898289fb11e3d8d0e1c62cd344b825b7d57")
+            run_artifact(&artifacts, is_build_artifact),
+            Some((
+                "dxvk-master-0cfe0898289fb11e3d8d0e1c62cd344b825b7d57".to_owned(),
+                Some(digest.to_owned())
+            ))
         );
-        assert_eq!(artifact_name(&serde_json::json!({ "artifacts": [] })), None);
+        // No digest listed, or one that isn't a SHA-256: none to check, so no build is offered.
+        for listed in [serde_json::json!(null), serde_json::json!("md5:abc")] {
+            let artifacts = serde_json::json!({ "artifacts": [
+                { "name": "dxvk-master-1", "expired": false, "digest": listed } ] });
+            assert_eq!(
+                run_artifact(&artifacts, is_build_artifact),
+                Some(("dxvk-master-1".to_owned(), None))
+            );
+        }
+        let expired = serde_json::json!({ "artifacts": [
+            { "name": "dxvk-master-1", "expired": true, "digest": format!("sha256:{digest}") } ] });
+        assert_eq!(run_artifact(&expired, is_build_artifact), None);
+        assert_eq!(
+            run_artifact(&serde_json::json!({ "artifacts": [] }), is_build_artifact),
+            None
+        );
     }
 
     #[test]

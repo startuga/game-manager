@@ -28,6 +28,7 @@
 //! needs administrator rights (`HKLM`, `ProgramData`): it runs in the copy of Game Manager
 //! started with `--reshade-ops` (see `reshade`).
 
+use super::SourceHashes;
 use crate::{Error, Result, security, version_info};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -145,12 +146,13 @@ fn status_at(place: &Place) -> LayerStatus {
     }
 }
 
-/// Makes `change` to the layer on this computer, once its folder is checked. Needs administrator
-/// rights.
-pub(crate) fn apply(change: &LayerChange) -> Result<()> {
+/// Makes `change` to the layer on this computer, once its folder is checked; with `sources` (as
+/// administrator), its DLLs are copied only when they still have their SHA-256. Needs
+/// administrator rights.
+pub(crate) fn apply(change: &LayerChange, sources: Option<&SourceHashes>) -> Result<()> {
     let place = Place::system()?;
     check_folder(&place.folder)?;
-    apply_at(&place, change)
+    apply_at(&place, change, sources)
 }
 
 /// `check_folder` for the layer on this computer.
@@ -193,9 +195,9 @@ fn check_folder(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-fn apply_at(place: &Place, change: &LayerChange) -> Result<()> {
+fn apply_at(place: &Place, change: &LayerChange, sources: Option<&SourceHashes>) -> Result<()> {
     if let Some(build) = &change.install_from {
-        install(place, build)?;
+        install(place, build, sources)?;
     }
     if change.add_app.is_none() && change.remove_app.is_none() {
         return Ok(());
@@ -220,7 +222,7 @@ fn apply_at(place: &Place, change: &LayerChange) -> Result<()> {
     fs::write(&file, text).map_err(Error::io(&file))
 }
 
-fn install(place: &Place, build: &Path) -> Result<()> {
+fn install(place: &Place, build: &Path, sources: Option<&SourceHashes>) -> Result<()> {
     if !place.folder.exists() {
         fs::create_dir_all(&place.folder).map_err(Error::io(&place.folder))?;
         security::grant(
@@ -232,7 +234,7 @@ fn install(place: &Place, build: &Path) -> Result<()> {
     for name in LAYER_FILES {
         let (from, to) = (build.join(name), place.folder.join(name));
         // A running Vulkan program holds the DLL: the error names it.
-        fs::copy(&from, &to).map_err(Error::io(&to))?;
+        super::copy_file(&from, &to, sources)?;
     }
     for (manifest, key) in place.manifests() {
         place
@@ -397,6 +399,7 @@ mod tests {
                 add_app: Some(game.clone()),
                 remove_app: None,
             },
+            None,
         )
         .unwrap();
         let status = status_at(&place);
@@ -413,12 +416,12 @@ mod tests {
             add_app: Some(other.clone()),
             ..LayerChange::default()
         };
-        apply_at(&place, &add_other).unwrap();
+        apply_at(&place, &add_other, None).unwrap();
         let remove_game = LayerChange {
             remove_app: Some(game.clone()),
             ..LayerChange::default()
         };
-        apply_at(&place, &remove_game).unwrap();
+        apply_at(&place, &remove_game, None).unwrap();
         let status = status_at(&place);
         assert!(status.installed && !status.lists(&game) && status.lists(&other));
 
@@ -427,10 +430,48 @@ mod tests {
             remove_app: Some(other),
             ..LayerChange::default()
         };
-        apply_at(&place, &remove_other).unwrap();
+        apply_at(&place, &remove_other, None).unwrap();
         assert!(!status_at(&place).installed);
         assert!(!place.folder.exists());
         let _ = windows_registry::CURRENT_USER.remove_tree(r"Software\Game Manager Tests");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn as_administrator_the_layer_is_installed_only_from_unchanged_files() {
+        let dir = std::env::temp_dir().join(format!("GM-Layer-Checked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let build = dir.join("build");
+        fs::create_dir_all(&build).unwrap();
+        let mut hashes = SourceHashes::default();
+        for name in LAYER_FILES {
+            fs::write(build.join(name), name).unwrap();
+            hashes.add(&build.join(name)).unwrap();
+        }
+        let place = Place {
+            folder: dir.join("ReShade"),
+            root: windows_registry::CURRENT_USER,
+            key_64: r"Software\Game Manager Tests Checked\Layers64",
+            key_32: r"Software\Game Manager Tests Checked\Layers32",
+        };
+        let change = LayerChange {
+            install_from: Some(build.clone()),
+            add_app: Some(PathBuf::from(r"C:\Games\Test\game.exe")),
+            remove_app: None,
+        };
+        // A DLL swapped after it was noted: refused, and the layer isn't registered.
+        fs::write(build.join("ReShade64.dll"), b"not ReShade").unwrap();
+        let error = apply_at(&place, &change, Some(&hashes)).unwrap_err();
+        assert!(
+            matches!(&error, Error::Io { source, .. } if source.raw_os_error() == Some(323)),
+            "{error}"
+        );
+        assert!(!status_at(&place).installed);
+        // As noted, it is installed.
+        fs::write(build.join("ReShade64.dll"), "ReShade64.dll").unwrap();
+        apply_at(&place, &change, Some(&hashes)).unwrap();
+        assert!(status_at(&place).installed);
+        let _ = windows_registry::CURRENT_USER.remove_tree(r"Software\Game Manager Tests Checked");
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -4,6 +4,7 @@ pub mod clipboard;
 mod com;
 pub mod config;
 pub mod covers;
+mod crypto;
 pub mod custom;
 mod data_module;
 pub mod ea;

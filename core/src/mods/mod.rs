@@ -17,6 +17,12 @@
 //! `CopyTree`'s source may hold no junction or symbolic link; and `Writable` opens only
 //! ReShade's own saved files (`ReShade.ini`, `ReShadePreset.ini`, `ReShade.log`) to the user.
 //! Anything else and nothing runs: the exit code says why.
+//!
+//! **What it copies** is what Game Manager planned: the sources (the caches and staging in
+//! `%LOCALAPPDATA%`, which a standard user can change) travel with their SHA-256, read before the
+//! UAC prompt (`SourceHashes`). As administrator each source is read once and written from those
+//! bytes only when they still have it, so a file swapped while Windows asked is copied nowhere:
+//! that copy fails with `ERROR_DATA_CHECKSUM_ERROR` and the run is undone.
 
 pub mod dlss_override;
 pub mod dxvk;
@@ -30,7 +36,7 @@ pub mod upscalers;
 
 pub use crate::elevate::FILE_OPS_ARG;
 use crate::text::{fnv1a, percent_decode, percent_encode};
-use crate::{Error, Result, elevate, http, json_file, security};
+use crate::{Error, Result, crypto, elevate, http, json_file, security};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
@@ -39,7 +45,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use windows::Win32::{
-    E_FAIL, E_INVALIDARG, ERROR_ALREADY_EXISTS, ERROR_NOT_SUPPORTED,
+    E_FAIL, E_INVALIDARG, ERROR_ALREADY_EXISTS, ERROR_DATA_CHECKSUM_ERROR, ERROR_NOT_SUPPORTED,
     ERROR_REPARSE_POINT_ENCOUNTERED,
 };
 use windows::core::WIN32_ERROR;
@@ -188,6 +194,45 @@ pub struct Build {
     pub page: String,
     pub url: String,
     pub file_name: String,
+    /// For a development build (a CI run's artifact, through nightly.link): the SHA-256 GitHub
+    /// lists for it, which the download must have (`check_download`).
+    pub sha256: Option<String>,
+}
+
+/// A run's artifact that has not expired and whose name `wanted` takes: its name and the
+/// SHA-256 GitHub lists for it (`digest`, `sha256:<hex>`; `None` when it lists none).
+fn run_artifact(
+    artifacts: &serde_json::Value,
+    wanted: impl Fn(&str) -> bool,
+) -> Option<(String, Option<String>)> {
+    artifacts["artifacts"]
+        .as_array()?
+        .iter()
+        .filter(|artifact| !artifact["expired"].as_bool().unwrap_or(false))
+        .find(|artifact| artifact["name"].as_str().is_some_and(&wanted))
+        .map(|artifact| {
+            let digest = artifact["digest"]
+                .as_str()
+                .and_then(|digest| digest.strip_prefix("sha256:"))
+                .filter(|hex| crypto::is_sha256(hex))
+                .map(str::to_ascii_lowercase);
+            (
+                artifact["name"].as_str().unwrap_or_default().to_owned(),
+                digest,
+            )
+        })
+}
+
+/// Refuses a downloaded `file` that is not the one `build` names: a development build whose
+/// SHA-256 isn't the one GitHub lists. Releases come from their projects' own servers over HTTPS.
+/// Blocking: reads the file.
+fn check_download(build: &Build, file: &Path) -> Result<()> {
+    match &build.sha256 {
+        Some(expected) if crypto::sha256_file(file)? != *expected => Err(Error::DigestMismatch {
+            url: build.url.clone(),
+        }),
+        _ => Ok(()),
+    }
 }
 
 /// `GET url` as JSON (GitHub's API).
@@ -360,13 +405,79 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Runs `ops`: here, or as administrator when Game Manager may not write in one of the folders
-/// they change.
+/// they change, with their sources' SHA-256 (see the module's doc).
 pub(crate) fn apply(ops: &[FileOp]) -> Result<()> {
     if all_writable(ops)? {
         run(ops)
     } else {
-        let json = serde_json::to_string(ops).map_err(Error::json("file operations"))?;
+        let work = ElevatedOps {
+            ops: ops.to_vec(),
+            sources: SourceHashes::of(ops)?,
+        };
+        let json = serde_json::to_string(&work).map_err(Error::json("file operations"))?;
         elevate::run(FILE_OPS_ARG, &percent_encode(&json))
+    }
+}
+
+/// Operations run as administrator (`--file-ops`), with the SHA-256 of every file they copy.
+#[derive(Debug, Serialize, Deserialize)]
+struct ElevatedOps {
+    ops: Vec<FileOp>,
+    sources: SourceHashes,
+}
+
+/// The SHA-256 (hex) of each file operations copy, by its path, as Game Manager read them before
+/// asking for administrator rights (see the module's doc).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct SourceHashes(BTreeMap<PathBuf, String>);
+
+impl SourceHashes {
+    /// The sources of `ops`: each `Copy`'s, and every file under each `CopyTree`'s. Blocking:
+    /// reads them.
+    pub(crate) fn of(ops: &[FileOp]) -> Result<Self> {
+        let mut sources = Self::default();
+        for op in ops {
+            match op {
+                FileOp::Copy { from, .. } => sources.add(from)?,
+                FileOp::CopyTree { from, .. } => {
+                    for relative in files_under(from)? {
+                        sources.add(&from.join(relative))?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(sources)
+    }
+
+    /// Notes `file`'s SHA-256. Blocking: reads it.
+    pub(crate) fn add(&mut self, file: &Path) -> Result<()> {
+        let digest = crypto::sha256_file(file)?;
+        self.0.insert(file.to_path_buf(), digest);
+        Ok(())
+    }
+
+    /// Writes `from`'s bytes as `to` (replacing it), read once and only when they have the
+    /// SHA-256 noted for `from`. A source not noted, or changed since, is refused with
+    /// `ERROR_DATA_CHECKSUM_ERROR` and nothing is written.
+    fn copy(&self, from: &Path, to: &Path) -> Result<()> {
+        let changed = || Error::io(from)(io::Error::from_raw_os_error(ERROR_DATA_CHECKSUM_ERROR));
+        let expected = self.0.get(from).ok_or_else(changed)?;
+        let bytes = fs::read(from).map_err(Error::io(from))?;
+        if crypto::hex(&crypto::sha256(&bytes)?) != *expected {
+            return Err(changed());
+        }
+        fs::write(to, &bytes).map_err(Error::io(to))
+    }
+}
+
+/// Copies `from` to `to`, replacing it: as it is, or with `sources` (as administrator) only when
+/// it still has the SHA-256 noted for it.
+pub(crate) fn copy_file(from: &Path, to: &Path, sources: Option<&SourceHashes>) -> Result<()> {
+    match sources {
+        Some(sources) => sources.copy(from, to),
+        None => fs::copy(from, to).map(drop).map_err(Error::io(to)),
     }
 }
 
@@ -427,15 +538,16 @@ fn can_write(folder: &Path) -> Result<bool> {
     }
 }
 
-/// Runs the operations passed with `--file-ops` (see `elevate`), once `vet` has checked them.
-/// The result is the program's exit code: 0, or the HRESULT of what failed or was refused.
+/// Runs the operations passed with `--file-ops` (see `elevate`), once `vet` has checked them,
+/// copying only sources that still have their SHA-256. The result is the program's exit code: 0,
+/// or the HRESULT of what failed or was refused.
 pub fn run_encoded(encoded: &str) -> u32 {
-    let ops =
-        percent_decode(encoded).and_then(|json| serde_json::from_str::<Vec<FileOp>>(&json).ok());
-    let Some(ops) = ops else {
+    let work =
+        percent_decode(encoded).and_then(|json| serde_json::from_str::<ElevatedOps>(&json).ok());
+    let Some(work) = work else {
         return E_INVALIDARG.0 as u32;
     };
-    exit_code(vet(&ops).and_then(|()| run(&ops)))
+    exit_code(vet(&work.ops).and_then(|()| run_with(&work.ops, Some(&work.sources), || Ok(()))))
 }
 
 /// Checks, as administrator and before any of them runs, that `ops` reach only what Game
@@ -534,10 +646,19 @@ pub(crate) fn run(ops: &[FileOp]) -> Result<()> {
 
 /// Runs `ops` like `run`, then `then`; when `then` fails, the operations are undone too.
 pub(crate) fn run_then(ops: &[FileOp], then: impl FnOnce() -> Result<()>) -> Result<()> {
+    run_with(ops, None, then)
+}
+
+/// `run_then`, copying with `sources` when given (as administrator: see `SourceHashes`).
+pub(crate) fn run_with(
+    ops: &[FileOp],
+    sources: Option<&SourceHashes>,
+    then: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let mut done = Vec::new();
     let mut outcome = Ok(());
     for op in ops {
-        match step(op) {
+        match step(op, sources) {
             Ok(step) => done.push(step),
             Err(error) => {
                 outcome = Err(error);
@@ -620,7 +741,7 @@ fn files_under(folder: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<Done> {
+fn copy_tree(from: &Path, to: &Path, sources: Option<&SourceHashes>) -> Result<Done> {
     let mut files = Vec::new();
     let mut folders = Vec::new();
     let mut copy = || -> Result<()> {
@@ -639,8 +760,9 @@ fn copy_tree(from: &Path, to: &Path) -> Result<Done> {
                 }
             }
             let source = from.join(&relative);
-            fs::copy(&source, &target).map_err(Error::io(&target))?;
-            files.push(target);
+            // Noted first: it didn't exist, so a copy that fails half way is removed on undo.
+            files.push(target.clone());
+            copy_file(&source, &target, sources)?;
         }
         Ok(())
     };
@@ -712,11 +834,15 @@ fn make_writable(path: &Path, sid: &str) -> Result<Done> {
     }
 }
 
-fn step(op: &FileOp) -> Result<Done> {
+fn step(op: &FileOp, sources: Option<&SourceHashes>) -> Result<Done> {
     match op {
         FileOp::Copy { from, to } => {
             free(to)?;
-            fs::copy(from, to).map_err(Error::io(to))?;
+            if let Err(error) = copy_file(from, to, sources) {
+                // It didn't exist: what a failed copy left goes.
+                let _ = fs::remove_file(to);
+                return Err(error);
+            }
             Ok(Done::Copied(to.clone()))
         }
         FileOp::Move { from, to } => {
@@ -732,7 +858,7 @@ fn step(op: &FileOp) -> Result<Done> {
             path: path.clone(),
             aside: set_aside(path)?,
         }),
-        FileOp::CopyTree { from, to } => copy_tree(from, to),
+        FileOp::CopyTree { from, to } => copy_tree(from, to, sources),
         FileOp::DeleteFiles { folder, names } => delete_files(folder, names),
         FileOp::Writable { path, sid } => make_writable(path, sid),
     }
@@ -1035,6 +1161,15 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// `ops` as `apply` passes them to the copy running as administrator.
+    fn elevated(ops: &[FileOp]) -> String {
+        let work = ElevatedOps {
+            ops: ops.to_vec(),
+            sources: SourceHashes::of(ops).unwrap(),
+        };
+        percent_encode(&serde_json::to_string(&work).unwrap())
+    }
+
     #[test]
     fn encoded_operations_run_as_passed() {
         let dir = temp_dir("encoded");
@@ -1043,7 +1178,7 @@ mod tests {
             from: dir.join("a.txt"),
             to: dir.join("b c.txt"),
         }];
-        let encoded = percent_encode(&serde_json::to_string(&ops).unwrap());
+        let encoded = elevated(&ops);
         assert_eq!(run_encoded(&encoded), 0);
         assert_eq!(fs::read(dir.join("b c.txt")).unwrap(), b"a");
         // Again: the target exists now.
@@ -1052,6 +1187,119 @@ mod tests {
             WIN32_ERROR(ERROR_ALREADY_EXISTS as u32).to_hresult().0 as u32
         );
         assert_eq!(run_encoded("%zz"), E_INVALIDARG.0 as u32);
+        // Operations without their sources' hashes (an older plan's form) are refused.
+        let bare = percent_encode(&serde_json::to_string(&ops).unwrap());
+        assert_eq!(run_encoded(&bare), E_INVALIDARG.0 as u32);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn as_administrator_only_sources_with_their_noted_hash_are_copied() {
+        let dir = temp_dir("sources");
+        let shaders = dir.join("staged");
+        fs::create_dir_all(shaders.join(r"reshade-shaders\Shaders")).unwrap();
+        fs::write(shaders.join(r"reshade-shaders\Shaders\a.fx"), b"fx").unwrap();
+        fs::write(dir.join("dxgi.dll"), b"ReShade").unwrap();
+        fs::write(dir.join("d3d9.dll"), b"ReShade 9").unwrap();
+        let game = dir.join("Game");
+        fs::create_dir(&game).unwrap();
+        let ops = vec![
+            FileOp::Copy {
+                from: dir.join("dxgi.dll"),
+                to: game.join("dxgi.dll"),
+            },
+            FileOp::CopyTree {
+                from: shaders.clone(),
+                to: game.clone(),
+            },
+            FileOp::Copy {
+                from: dir.join("d3d9.dll"),
+                to: game.join("d3d9.dll"),
+            },
+        ];
+        let checksum = WIN32_ERROR(ERROR_DATA_CHECKSUM_ERROR as u32).to_hresult().0 as u32;
+        // Noted, then swapped (as during the UAC prompt): that copy fails and the run is undone.
+        let encoded = elevated(&ops);
+        fs::write(dir.join("d3d9.dll"), b"something else").unwrap();
+        assert_eq!(run_encoded(&encoded), checksum);
+        assert!(
+            fs::read_dir(&game).unwrap().next().is_none(),
+            "nothing is left"
+        );
+        // A file added to the tree after it was noted.
+        let encoded = elevated(&ops);
+        fs::write(shaders.join(r"reshade-shaders\Shaders\b.fx"), b"added").unwrap();
+        assert_eq!(run_encoded(&encoded), checksum);
+        assert!(fs::read_dir(&game).unwrap().next().is_none());
+        // As they were noted, everything is copied.
+        let encoded = elevated(&ops);
+        assert_eq!(run_encoded(&encoded), 0);
+        assert_eq!(fs::read(game.join("d3d9.dll")).unwrap(), b"something else");
+        assert_eq!(
+            fs::read(game.join(r"reshade-shaders\Shaders\b.fx")).unwrap(),
+            b"added"
+        );
+        // Not as administrator: copied as they are.
+        let mut hashes = SourceHashes::default();
+        hashes.add(&dir.join("dxgi.dll")).unwrap();
+        let copy = dir.join("copy.dll");
+        copy_file(&dir.join("dxgi.dll"), &copy, Some(&hashes)).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"ReShade");
+        assert!(
+            copy_file(&dir.join("d3d9.dll"), &copy, Some(&hashes)).is_err(),
+            "not noted"
+        );
+        copy_file(&dir.join("d3d9.dll"), &copy, None).unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"something else");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "downloads DXVK's and ReShade's latest development builds (about 45 MB)"]
+    fn live_development_builds_have_the_digest_github_lists() {
+        let dir = temp_dir("live-digest");
+        let builds = [
+            dxvk::latest(dxvk::DxvkVariant::Development).unwrap(),
+            reshade::latest(reshade::ReshadeVariant::Development).unwrap(),
+        ];
+        for build in builds {
+            assert!(
+                build.sha256.as_deref().is_some_and(crypto::is_sha256),
+                "{build:?}"
+            );
+            let file = dir.join(&build.file_name);
+            http::download(&build.url, &file).unwrap();
+            check_download(&build, &file).unwrap_or_else(|error| panic!("{error}"));
+            println!(
+                "{} {}: {}",
+                build.version,
+                build.file_name,
+                build.sha256.unwrap()
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_development_build_must_have_the_digest_github_lists() {
+        let dir = temp_dir("digest");
+        let file = dir.join("build.zip");
+        fs::write(&file, b"abc").unwrap();
+        let build = |sha256: Option<&str>| Build {
+            version: "master-0cfe089".into(),
+            page: String::new(),
+            url: "https://nightly.link/x/y.zip".into(),
+            file_name: "build.zip".into(),
+            sha256: sha256.map(str::to_owned),
+        };
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(check_download(&build(Some(abc)), &file).is_ok());
+        assert!(matches!(
+            check_download(&build(Some(&"0".repeat(64))), &file),
+            Err(Error::DigestMismatch { .. })
+        ));
+        // A release has no digest to check.
+        assert!(check_download(&build(None), &file).is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1067,7 +1315,7 @@ mod tests {
         fs::write(dir.join("dxgi.dll"), b"MZ").unwrap();
         let sid = security::current_user_sid().unwrap();
         let code = |error: i32| WIN32_ERROR(error as u32).to_hresult().0 as u32;
-        let encoded = |ops: &[FileOp]| percent_encode(&serde_json::to_string(ops).unwrap());
+        let encoded = |ops: &[FileOp]| elevated(ops);
 
         // A mod's ordinary work passes.
         let ordinary = [

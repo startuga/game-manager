@@ -24,6 +24,7 @@
 //! `ERROR_REPARSE_POINT_ENCOUNTERED` for a junction, `ERROR_DATA_CHECKSUM_ERROR` for a work file
 //! that changed.
 
+use crate::crypto::{hex, random, sha256};
 use crate::text::{percent_decode, percent_encode};
 use crate::{Error, Result, json_file, security};
 use std::collections::HashSet;
@@ -32,13 +33,12 @@ use std::io::{self, Read, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf, Prefix};
 use windows::Win32::{
-    BCRYPT_SHA256_ALG_HANDLE, BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom, BCryptHash,
     CloseHandle, E_FAIL, E_INVALIDARG, ERROR_BAD_PATHNAME, ERROR_CANCELLED,
     ERROR_DATA_CHECKSUM_ERROR, ERROR_REPARSE_POINT_ENCOUNTERED, FILE_FLAG_OPEN_REPARSE_POINT,
     GetExitCodeProcess, HANDLE, INFINITE, SECURITY_IDENTIFICATION, SEE_MASK_NOASYNC,
     SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, SW_HIDE, ShellExecuteExW, WaitForSingleObject,
 };
-use windows::core::{HSTRING, NTSTATUS, PCWSTR, WIN32_ERROR, w};
+use windows::core::{HSTRING, PCWSTR, WIN32_ERROR, w};
 
 /// The argument that makes `app.exe` run file operations instead of its window.
 pub const FILE_OPS_ARG: &str = "--file-ops";
@@ -233,60 +233,6 @@ pub(crate) fn check_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Resu
     Ok(())
 }
 
-/// SHA-256 of `bytes`, from Windows' CNG.
-fn sha256(bytes: &[u8]) -> Result<[u8; 32]> {
-    let length = u32::try_from(bytes.len()).map_err(|_| cng_error("SHA-256", NTSTATUS(-1)))?;
-    let mut digest = [0u8; 32];
-    // SAFETY: the SHA-256 pseudo-handle needs no opening; `bytes` and `digest` live for the call
-    // with the lengths given, and the input is only read.
-    let status = unsafe {
-        BCryptHash(
-            BCRYPT_SHA256_ALG_HANDLE,
-            None,
-            0,
-            bytes.as_ptr().cast_mut(),
-            length,
-            digest.as_mut_ptr(),
-            digest.len() as u32,
-        )
-    };
-    if status.is_ok() {
-        Ok(digest)
-    } else {
-        Err(cng_error("SHA-256", status))
-    }
-}
-
-/// Sixteen random bytes from the system's generator, for a name no other program can guess.
-fn random() -> Result<[u8; 16]> {
-    let mut bytes = [0u8; 16];
-    // SAFETY: `bytes` is writable for the length given; the system's generator needs no handle.
-    let status = unsafe {
-        BCryptGenRandom(
-            None,
-            bytes.as_mut_ptr(),
-            bytes.len() as u32,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG as u32,
-        )
-    };
-    if status.is_ok() {
-        Ok(bytes)
-    } else {
-        Err(cng_error("random numbers", status))
-    }
-}
-
-fn cng_error(what: &str, status: NTSTATUS) -> Error {
-    Error::Windows {
-        context: what.to_owned(),
-        source: status.to_hresult().into(),
-    }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// A process or token handle, closed when dropped.
 pub(crate) struct OwnedHandle(pub(crate) HANDLE);
 
@@ -419,14 +365,5 @@ mod tests {
         assert_eq!(refusal(&target.join(r"Game\ReShade.ini")), None);
         fs::remove_dir(&link).unwrap();
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn hashes_are_sha256() {
-        assert_eq!(
-            hex(&sha256(b"abc").unwrap()),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_ne!(random().unwrap(), random().unwrap());
     }
 }

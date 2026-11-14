@@ -10,8 +10,12 @@
 //!     Older builds answer only `GET_ADVANCED_COLOR_INFO`, whose "advanced colour" is HDR unless
 //!     wide colour is enforced.
 //!   - Modes: `EnumDisplaySettingsW` (32-bit colour, 640 wide and up), largest and fastest first.
-//! - **Mode**: `ChangeDisplaySettingsExW`, tested with `CDS_TEST` first, then saved like Settings
-//!   does (`CDS_UPDATEREGISTRY`). The page asks to keep it and goes back otherwise.
+//! - **Mode**: `ChangeDisplaySettingsExW`, tested with `CDS_TEST` first, then tried
+//!   (`try_mode`): applied but not saved, so the registry still holds the mode before it. The page
+//!   asks to keep it; Keep saves it (`keep_mode`, `CDS_UPDATEREGISTRY | CDS_NORESET`, which
+//!   writes the mode without switching again), and Go back or no answer tries the old one. A mode
+//!   the display can't show is never saved: if the app ends or Windows restarts during the trial,
+//!   the old mode comes back.
 //! - **HDR**: `SET_HDR_STATE` where the newer packet exists, else `SET_ADVANCED_COLOR_STATE`
 //!   (which, on 24H2, would switch wide colour too).
 //! - **Colour profiles**: Windows 11's per-display associations in `mscms.dll`
@@ -32,7 +36,7 @@ use std::cmp::Reverse;
 use std::ptr;
 use std::sync::{Mutex, PoisonError};
 use windows::Win32::{
-    CDS_TEST, CDS_UPDATEREGISTRY, COLORPROFILESUBTYPE, COLORPROFILETYPE,
+    CDS_NORESET, CDS_TEST, CDS_UPDATEREGISTRY, COLORPROFILESUBTYPE, COLORPROFILETYPE,
     CPST_EXTENDED_DISPLAY_COLOR_MODE, CPST_STANDARD_DISPLAY_COLOR_MODE, CPT_ICC,
     ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE_RESTART, DISP_CHANGE_SUCCESSFUL,
     DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR, DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
@@ -358,8 +362,19 @@ pub(crate) fn sorted(mut modes: Vec<DisplayMode>) -> Vec<DisplayMode> {
     modes
 }
 
-/// Switches the display to `mode`, saved as Settings saves it.
-pub fn set_mode(display: &Display, mode: DisplayMode) -> Result<()> {
+/// Switches the display to `mode` without saving it (see the module's doc): `keep_mode` saves it.
+pub fn try_mode(display: &Display, mode: DisplayMode) -> Result<()> {
+    change_mode(display, mode, 0)
+}
+
+/// Saves `mode`, the one the display shows after `try_mode`, as Settings saves it, without
+/// switching again.
+pub fn keep_mode(display: &Display, mode: DisplayMode) -> Result<()> {
+    change_mode(display, mode, (CDS_UPDATEREGISTRY | CDS_NORESET) as u32)
+}
+
+/// `ChangeDisplaySettingsExW` with `mode` and `flags`, once `CDS_TEST` says the display takes it.
+fn change_mode(display: &Display, mode: DisplayMode, flags: u32) -> Result<()> {
     let name = HSTRING::from(display.gdi_name.as_str());
     let mut devmode = devmode();
     // SAFETY: a null-terminated device name and a DEVMODEW with its size set.
@@ -384,9 +399,7 @@ pub fn set_mode(display: &Display, mode: DisplayMode) -> Result<()> {
         return Err(refused(test));
     }
     // SAFETY: as above.
-    let result = unsafe {
-        ChangeDisplaySettingsExW(&name, Some(&devmode), None, CDS_UPDATEREGISTRY as u32, None)
-    };
+    let result = unsafe { ChangeDisplaySettingsExW(&name, Some(&devmode), None, flags, None) };
     match result {
         DISP_CHANGE_SUCCESSFUL => Ok(()),
         DISP_CHANGE_RESTART => Err(Error::DisplayModeNeedsRestart(display.name.clone())),

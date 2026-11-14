@@ -357,6 +357,9 @@ struct GameManager {
     my_pc: MyPcState,
 }
 
+/// The window's title, by which a second start finds it.
+const TITLE: &str = "Game Manager";
+
 fn main() -> ExitCode {
     // Started as administrator to change a protected game folder, ReShade's Vulkan layer or
     // NVIDIA driver settings: do that, show no window, and exit with the result (0, or a code
@@ -377,8 +380,12 @@ fn main() -> ExitCode {
         };
         std::process::exit(code as i32);
     }
+    // A second start of this program shows the first one's window instead (see `instance`).
+    let Some(_instance) = shell::instance::first(TITLE) else {
+        return ExitCode::SUCCESS;
+    };
     let options = shell::Options {
-        title: "Game Manager".to_owned(),
+        title: TITLE.to_owned(),
         size: (1200.0, 760.0),
         min_size: (860.0, 520.0),
     };

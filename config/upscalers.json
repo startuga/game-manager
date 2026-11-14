@@ -1,10 +1,11 @@
 {
-  "_doc": "The upscaler DLLs Game Manager swaps in games (core/src/mods/upscalers.rs): technologies, never games. Each kind: its id, name and vendor; files, the first being the one looked for in a game, and with set every file of that folder matching one of them is swapped together (* matches any text), download naming what the library fetches for a set without a game, and sameMajor when only versions of the game's own major version work in it (Streamline 1 games can't load Streamline 2); the GitHub repository with the vendor's own signed DLLs; source, files (each DLL is in folder at the tag) or release (inside the release's asset, {version} standing for the version, in folder); and layouts, the tags (since, and until when the layout changed) that hold the files at folder.",
+  "_doc": "The upscaler DLLs Game Manager swaps in games (core/src/mods/upscalers.rs): technologies, never games. Each kind: its id, name and vendor, and signer, the name on the vendor's code-signing certificate (every DLL must carry it); files, the first being the one looked for in a game, and with set every file of that folder matching one of them is swapped together (* matches any text), download naming what the library fetches for a set without a game, and sameMajor when only versions of the game's own major version work in it (Streamline 1 games can't load Streamline 2); the GitHub repository with the vendor's own signed DLLs; source, files (each DLL is in folder at the tag) or release (inside the release's asset, {version} standing for the version, in folder); and layouts, the tags (since, and until when the layout changed) that hold the files at folder.",
   "kinds": [
     {
       "id": "dlss",
       "name": "DLSS Super Resolution",
       "vendor": "NVIDIA",
+      "signer": "NVIDIA Corporation",
       "files": ["nvngx_dlss.dll"],
       "repo": "NVIDIA/DLSS",
       "layouts": [{ "since": "2.2.1", "folder": "lib/Windows_x86_64/rel" }]
@@ -13,6 +14,7 @@
       "id": "dlss_rr",
       "name": "DLSS Ray Reconstruction",
       "vendor": "NVIDIA",
+      "signer": "NVIDIA Corporation",
       "files": ["nvngx_dlssd.dll"],
       "repo": "NVIDIA/DLSS",
       "layouts": [{ "since": "310.1.0", "folder": "lib/Windows_x86_64/rel" }]
@@ -21,6 +23,7 @@
       "id": "dlss_fg",
       "name": "DLSS Frame Generation",
       "vendor": "NVIDIA",
+      "signer": "NVIDIA Corporation",
       "files": ["nvngx_dlssg.dll"],
       "repo": "NVIDIA/DLSS",
       "layouts": [{ "since": "310.4.0", "folder": "lib/Windows_x86_64/rel" }]
@@ -29,6 +32,7 @@
       "id": "streamline",
       "name": "NVIDIA Streamline",
       "vendor": "NVIDIA",
+      "signer": "NVIDIA Corporation",
       "files": ["sl.interposer.dll", "sl.*.dll"],
       "set": true,
       "sameMajor": true,
@@ -41,6 +45,7 @@
       "id": "fsr_dx12",
       "name": "FSR 3.1 (DirectX 12)",
       "vendor": "AMD",
+      "signer": "Advanced Micro Devices",
       "files": ["amd_fidelityfx_dx12.dll"],
       "repo": "GPUOpen-LibrariesAndSDKs/FidelityFX-SDK",
       "layouts": [{ "since": "1.1.0", "until": "1.1.4", "folder": "PrebuiltSignedDLL" }]
@@ -49,6 +54,7 @@
       "id": "fsr_vk",
       "name": "FSR 3.1 (Vulkan)",
       "vendor": "AMD",
+      "signer": "Advanced Micro Devices",
       "files": ["amd_fidelityfx_vk.dll"],
       "repo": "GPUOpen-LibrariesAndSDKs/FidelityFX-SDK",
       "layouts": [{ "since": "1.1.0", "until": "1.1.4", "folder": "PrebuiltSignedDLL" }]
@@ -57,6 +63,7 @@
       "id": "fsr_sdk2",
       "name": "FSR (FidelityFX SDK 2)",
       "vendor": "AMD",
+      "signer": "Advanced Micro Devices",
       "files": ["amd_fidelityfx_loader_dx12.dll", "amd_fidelityfx_*_dx12.dll"],
       "set": true,
       "download": [
@@ -71,6 +78,7 @@
       "id": "xess",
       "name": "XeSS Super Resolution",
       "vendor": "Intel",
+      "signer": "Intel Corporation",
       "files": ["libxess.dll"],
       "repo": "intel/xess",
       "layouts": [{ "since": "1.2.0", "folder": "bin" }]
@@ -79,6 +87,7 @@
       "id": "xess_dx11",
       "name": "XeSS Super Resolution (DirectX 11)",
       "vendor": "Intel",
+      "signer": "Intel Corporation",
       "files": ["libxess_dx11.dll"],
       "repo": "intel/xess",
       "layouts": [{ "since": "2.0.1", "folder": "bin" }]
@@ -87,6 +96,7 @@
       "id": "xess_fg",
       "name": "XeSS Frame Generation",
       "vendor": "Intel",
+      "signer": "Intel Corporation",
       "files": ["libxess_fg.dll"],
       "repo": "intel/xess",
       "layouts": [{ "since": "2.0.1", "folder": "bin" }]
@@ -95,6 +105,7 @@
       "id": "xell",
       "name": "Xe Low Latency",
       "vendor": "Intel",
+      "signer": "Intel Corporation",
       "files": ["libxell.dll"],
       "repo": "intel/xess",
       "layouts": [{ "since": "2.0.1", "folder": "bin" }]

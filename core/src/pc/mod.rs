@@ -19,7 +19,8 @@ mod smbios;
 mod switches;
 
 pub use displays::{
-    Display, DisplayMode, brightness, set_brightness, set_color_profile, set_hdr, set_mode,
+    Display, DisplayMode, brightness, keep_mode, set_brightness, set_color_profile, set_hdr,
+    try_mode,
 };
 pub use hardware::{Cpu, Drive, Gpu, GpuVendor, Memory, System};
 pub use smbios::MemoryModule;

@@ -39,6 +39,7 @@
 pub mod ctx;
 pub mod dialogs;
 pub mod efficiency;
+pub mod instance;
 mod text_input;
 pub mod window;
 

@@ -55,7 +55,8 @@ holds the rules and facts that span them.
     `config/reshade-addons.json` and the user's own; the add-on cache).
   - `mods/upscalers.rs` (DLSS, Streamline, FSR 3.1+, XeSS DLLs: the shipped
     `config/upscalers.json`, the vendors' versions, the cache, `scan`, `swap`, `restore`; swaps
-    are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`).
+    are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`, and
+    the signer's name, which must be the kind's vendor).
   - `seven_zip.rs` (the shipped 7-Zip).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops` /
     `--gpu-scheduling`; long work in a file checked by its SHA-256; `check_paths`, where work
@@ -68,10 +69,12 @@ holds the rules and facts that span them.
   - `pc/mod.rs` (`Snapshot`, each part read on its own).
   - `pc/hardware.rs` (processor, graphics cards, memory, Windows, board, drives).
   - `pc/smbios.rs` (memory modules from the SMBIOS table).
-  - `pc/displays.rs` (displays, modes, HDR, colour profiles, DDC/CI brightness, and changing them).
+  - `pc/displays.rs` (displays, modes, HDR, colour profiles, DDC/CI brightness, and changing them;
+    a new mode is tried unsaved, `try_mode`, and saved only when kept, `keep_mode`).
   - `pc/switches.rs` (GPU scheduling, Game Mode, windowed optimizations, Auto HDR).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
+  - `crypto.rs` (SHA-256 and random bytes from Windows' CNG).
   - `json_file.rs` (where files live, load/save, `write_whole` through a temporary file of its
     own).
   - `security.rs` (the user's SID, whether elevated, granting file rights, `owner_is_admin`).
@@ -237,6 +240,15 @@ holds the rules and facts that span them.
     `CopyTree`'s source, and `Writable` only for ReShade's saved files. Otherwise nothing runs,
     and the exit code says why (`ERROR_BAD_PATHNAME`, `ERROR_REPARSE_POINT_ENCOUNTERED`,
     `ERROR_NOT_SUPPORTED`, `ERROR_DATA_CHECKSUM_ERROR`).
+  - **What it copies is what was planned** (`mods::SourceHashes`): every source (the caches and
+    staging in `%LOCALAPPDATA%`, the Vulkan layer's DLLs too) travels with its SHA-256, read
+    before the UAC prompt. As administrator a source is read once and written from those bytes
+    only when they still have it; a file swapped meanwhile fails with `ERROR_DATA_CHECKSUM_ERROR`
+    and the run is undone.
+- **Development builds** (DXVK's master, ReShade's CI) come from GitHub Actions through
+  nightly.link, a third party: the ZIP must have the SHA-256 GitHub's API lists for the artifact
+  (`digest`) before it is unpacked, and a run that lists none offers no build. nightly.link's
+  ZIP is the artifact byte for byte (checked on ReShade's "ReShade Setup").
 - **NVAPI**: `nvapi64.dll` (System32 only) exports just `nvapi_QueryInterface`; functions are
   fetched by the ids in NVIDIA's `nvapi_interface.h`.
   - **Struct packing**: `NVDRS_SETTING_V1` is inside `#pragma pack(4)` in `nvapi.h`. Its value
@@ -291,6 +303,9 @@ holds the rules and facts that span them.
     downloads is enough. `live_addons` downloads every add-on. A No Addons build gets none.
 - **Upscalers**:
   - **Sources**: only the vendors' own signed DLLs, from their GitHub repositories at each tag.
+    Each kind names its `signer` in `config/upscalers.json` (NVIDIA Corporation, Advanced Micro
+    Devices, Intel Corporation, as their certificates say; DLSS 2.2.1's reads "Nvidia
+    Corporation", so case is ignored): a DLL signed by anyone else is not kept.
     - NVIDIA/DLSS `lib/Windows_x86_64/rel` (SR since 2.2.1, RR 310.1.0, FG 310.4.0).
     - intel/xess `bin` (SR since 1.2.0, as 1.0 and 1.1 need more DLLs; DX11, FG, XeLL 2.0.1).
     - FidelityFX-SDK `PrebuiltSignedDLL` (1.1.x) and `Kits/FidelityFX/signedbin` (2.x).

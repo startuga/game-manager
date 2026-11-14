@@ -7,9 +7,10 @@
 //! - **Changes** (a switch, HDR, a colour profile, brightness) run in the background, one at a
 //!   time (`busy`). Then the snapshot is read again, so the page shows what Windows now holds.
 //!   HDR waits 1.5 s first: the display takes a moment to switch.
-//! - **A new mode** (resolution or refresh rate) is a trial. Once Windows applied it, a dialog asks
-//!   to keep it and counts down from `TRIAL_SECONDS`; no answer, Go back or Escape put the old
-//!   mode back. The countdown is a one-second background tick carrying the trial's token, so a
+//! - **A new mode** (resolution or refresh rate) is a trial: Windows applies it without saving it
+//!   (`pc::try_mode`). Once it has, a dialog asks to keep it and counts down from
+//!   `TRIAL_SECONDS`; Keep saves it (`pc::keep_mode`), and no answer, Go back or Escape put the old
+//!   mode back. Unsaved, it can't outlive the app or a restart. The countdown is a one-second background tick carrying the trial's token, so a
 //!   tick of an earlier trial does nothing.
 //! - **GPU scheduling** asks for administrator rights (`gm_core::pc::set_gpu_scheduling`) and
 //!   applies after a restart, which the page says.
@@ -163,7 +164,7 @@ impl GameManager {
                 });
                 context.spawn_background(move |_cancel| {
                     MyPcMessage::ModeApplied(
-                        pc::set_mode(&display, after).map_err(|e| e.to_string()),
+                        pc::try_mode(&display, after).map_err(|e| e.to_string()),
                     )
                     .into()
                 });
@@ -194,8 +195,16 @@ impl GameManager {
                 }
             }
             MyPcMessage::KeepMode => {
-                state.trial = None;
-                self.handle_my_pc(MyPcMessage::Refresh, context);
+                // Not while the new mode is still being applied (Keep is disabled then).
+                if state.busy {
+                    return;
+                }
+                let Some(trial) = state.trial.take() else {
+                    return;
+                };
+                change(state, context, Duration::ZERO, move || {
+                    pc::keep_mode(&trial.display, trial.after)
+                });
             }
             MyPcMessage::RevertMode => {
                 // Not while the new mode is still being applied: the countdown starts once it is,
@@ -207,7 +216,7 @@ impl GameManager {
                     return;
                 };
                 change(state, context, Duration::ZERO, move || {
-                    pc::set_mode(&trial.display, trial.before)
+                    pc::try_mode(&trial.display, trial.before)
                 });
             }
             MyPcMessage::Hdr(name, on) => {

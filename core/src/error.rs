@@ -78,6 +78,13 @@ pub enum Error {
     /// A release list or build list answered with nothing to download.
     #[error("{url} lists no build to download")]
     NoRelease { url: String },
+    /// GitHub lists no SHA-256 for a development build, so it can't be checked and isn't
+    /// downloaded.
+    #[error("GitHub lists no SHA-256 for {url}, so it was not downloaded")]
+    NoDigest { url: String },
+    /// A download is not the file GitHub lists: its SHA-256 differs, so it isn't used.
+    #[error("{url} did not download as GitHub lists it (its SHA-256 differs), so it was not used")]
+    DigestMismatch { url: String },
     /// A downloaded mod has no build for Windows in it.
     #[error("{} holds no 32 or 64-bit Windows build", .0.display())]
     NoModBuild(PathBuf),

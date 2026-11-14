@@ -23,7 +23,7 @@ zune-jpeg = { workspace = true }
 # Management_Deployment, ApplicationModel, System), mod files as administrator and 7-Zip (synchapi,
 # processthreadsapi, handleapi, winbase, winerror) with long work's hash and file name (bcrypt),
 # who runs it and file permissions (winnt, securitybaseapi, sddl, aclapi, accctrl), the
-# signatures of upscaler DLLs (wintrust), and My PC:
+# signatures of upscaler DLLs and their signers (wintrust, mscat, mssip, wincrypt, shared), and My PC:
 # hardware, memory modules and drives (sysinfoapi, fileapi), displays (wingdi) and their colour
 # profiles (icm).
 windows = { workspace = true, features = [
@@ -36,7 +36,7 @@ windows = { workspace = true, features = [
     "Management_Deployment", "ApplicationModel", "System",
     "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror", "bcrypt",
     "winnt", "securitybaseapi", "sddl", "aclapi", "accctrl",
-    "wintrust",
+    "wintrust", "mscat", "mssip", "wincrypt", "shared",
     "sysinfoapi", "fileapi", "wingdi", "icm",
 ] }
 windows-registry = { workspace = true }
