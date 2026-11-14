@@ -257,12 +257,7 @@ pub(crate) struct Launcher {
 impl Launcher {
     /// Ubisoft Connect's folder from the registry; `None` when it isn't installed.
     pub(crate) fn find() -> Option<Self> {
-        let dir = LOCAL_MACHINE
-            .open(LAUNCHER_KEY)
-            .and_then(|key| key.get_string("InstallDir"))
-            .ok()
-            .and_then(|dir| install_dir(&dir))
-            .filter(|dir| dir.is_dir())?;
+        let dir = Self::folder()?;
         let configurations = fs::read(dir.join(r"cache\configuration\configurations"))
             .map(|bytes| parse_cache(&bytes))
             .unwrap_or_default();
@@ -270,6 +265,17 @@ impl Launcher {
             dir,
             configurations,
         })
+    }
+
+    /// Ubisoft Connect's folder from the registry, without reading its cache; `None` when it isn't
+    /// installed.
+    pub(crate) fn folder() -> Option<PathBuf> {
+        LOCAL_MACHINE
+            .open(LAUNCHER_KEY)
+            .and_then(|key| key.get_string("InstallDir"))
+            .ok()
+            .and_then(|dir| install_dir(&dir))
+            .filter(|dir| dir.is_dir())
     }
 
     fn configuration(&self, install_id: &str) -> Option<Configuration> {

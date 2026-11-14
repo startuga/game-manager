@@ -37,7 +37,10 @@ holds the rules and facts that span them.
   - `picture.rs` (pictures in pure Rust: JPEG, PNG and WebP through their crates, BMP and icon
     bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, the capture's PNG; no
     Windows API).
-  - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
+  - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links, a game's page found by id or
+    by full-text search and kept ten minutes, its `Game data` paths) and `game_data.rs` (a game's
+    saves and config folders on this PC: the wiki's paths cached a month, their `{{p|…}}`
+    placeholders filled in, the first folder on disk in the store's then Windows' order).
   - `nexus_mods.rs` (a game's Nexus Mods page: its domain from `games.json`'s `nexusMods`, else
     by name in Nexus's public list of games, cached a week; else Nexus's games search).
   - `http.rs` (WinHTTP `get`/`download`/`etag`, on one session for the process).
@@ -87,7 +90,7 @@ holds the rules and facts that span them.
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v` (with each game's uninstall route and Nexus Mods
   page), `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source,
-  read only).
+  read only), `--saves` (each game's saves and config folders from PCGamingWiki).
 
 ## Scanning
 - `scan_all` runs these steps in order:
@@ -147,6 +150,14 @@ holds the rules and facts that span them.
     `GetProcAddress`: an import would stop `app.exe` from starting on older Windows.
 
 ## Facts learned the hard way
+- **Saves and config folders** (`game_data.rs`): PCGamingWiki's `GameData` table needs a
+  bot-password login since August 2026, so the paths come from the page's
+  `{{Game data/saves|<platform>|<path>|…}}` and `{{Game data/config|…}}` templates. Paths use
+  `Template:Path`'s placeholders (`{{p|userprofile\Documents}}`, `{{p|game}}`, `{{p|uid}}`…, also
+  written `{{path|…}}`); Documents and Saved Games are the known folders, wherever the user moved
+  them. On 38 games: 31 pages (27 with the prefix search), the saves folder on disk for 24, the
+  config folder for 18, 6 configs only in the registry (named, never opened), and Hogwarts
+  Legacy's config path wrong on the wiki ("Hogwarts Legacy" for "HogwartsLegacy").
 - **Graphics APIs**: PCGamingWiki first, because files alone mislead. On 37 games:
   - GTA V imports only `d3d9.dll` but runs Direct3D 11.
   - Every Unreal game imports `d3d9.dll`/`opengl32.dll`.

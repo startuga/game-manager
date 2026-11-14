@@ -43,6 +43,7 @@ use edit::{EditChoice, EditDraft, EditField};
 use filter_menu::{FilterMessage, FilterState};
 use game_menu::{MenuMessage, MenuState};
 use gm_core::custom::NewGame;
+use gm_core::game_data::{Folder, FolderKind, GameFolders};
 use gm_core::graphics::{GraphicsApi, GraphicsInfo};
 use gm_core::mods::laa::{self, Laa};
 use gm_core::mods::reshade::{self, ReshadeStatus, ReshadeVariant};
@@ -163,6 +164,10 @@ enum Message {
     OpenNexusMods(String),
     /// The address of the Nexus Mods page asked for, to open.
     NexusModsFound(String),
+    /// A game's saves and config folders, from its PCGamingWiki page (`gm_core::game_data`).
+    GameFoldersLoaded(String, Result<GameFolders, String>),
+    /// Opens the game's saves or config folder in File Explorer, looked up first when it isn't yet.
+    OpenGameFolder(String, FolderKind),
     /// A Game settings field of the selected game changed.
     EditField(EditField, String),
     /// An item of a Game settings drop-down was picked; `None` keeps the choice.
@@ -320,6 +325,12 @@ struct GameManager {
     graphics: HashMap<String, Option<GraphicsInfo>>,
     /// Games whose graphics APIs are being looked up.
     graphics_pending: HashSet<String>,
+    /// Games' saves and config folders, once looked up (`Err`: the wiki couldn't be reached).
+    game_folders: HashMap<String, Result<GameFolders, String>>,
+    /// Games whose folders are being looked up.
+    game_folders_pending: HashSet<String>,
+    /// A folder the game menu asked to open before it was looked up: opened once it is.
+    open_after_lookup: Option<(String, FolderKind)>,
     scanning: bool,
     error: Option<String>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
@@ -410,8 +421,12 @@ impl App for GameManager {
 
     fn update(&mut self, message: Message, ctx: &Ctx<Message>) {
         self.handle(message, ctx);
-        // Whatever selected a game (a click, a scan, a game added), its APIs are looked up.
+        // Whatever selected a game (a click, a scan, a game added), its APIs are looked up, and
+        // its saves and config folders.
         self.request_graphics(ctx);
+        if let Some(id) = self.selected.clone() {
+            self.request_game_folders(&id, ctx);
+        }
         // Whatever showed HDR-mod in DXVK settings, its configs are listed.
         self.request_hdr_mod_configs(ctx);
         // A 32-bit game's LAA status, whenever it is unknown.
@@ -499,6 +514,9 @@ impl GameManager {
             covers: CoverState::default(),
             graphics: HashMap::new(),
             graphics_pending: HashSet::new(),
+            game_folders: HashMap::new(),
+            game_folders_pending: HashSet::new(),
+            open_after_lookup: None,
             scanning: false,
             error: None,
             picking: false,
@@ -607,6 +625,10 @@ impl GameManager {
         if self.selected.as_deref() != Some(id.as_str()) {
             self.leave_reshade_view(context);
         }
+        // Looked up again as the page shows: a game started since may have made its folders.
+        if !self.game_folders_pending.contains(&id) {
+            self.game_folders.remove(&id);
+        }
         self.selected = Some(id);
         self.go_to(Page::Game, context);
     }
@@ -654,6 +676,63 @@ impl GameManager {
     }
 }
 
+impl GameManager {
+    /// Looks up a game's saves and config folders in the background, unless they are known or
+    /// being looked up. Reads the wiki (cached for a month) and the disk.
+    fn request_game_folders(&mut self, id: &str, context: &Ctx<Message>) {
+        if self.game_folders.contains_key(id) || self.game_folders_pending.contains(id) {
+            return;
+        }
+        let Some(game) = self.games.iter().find(|game| game.id == id).cloned() else {
+            return;
+        };
+        self.game_folders_pending.insert(game.id.clone());
+        context.spawn_background(move |_cancel| {
+            let folders = gm_core::game_data::folders(&game).map_err(|e| e.to_string());
+            Message::GameFoldersLoaded(game.id, folders)
+        });
+    }
+
+    /// Opens a game's saves or config folder, or says why it can't.
+    fn open_game_folder(&mut self, id: &str, kind: FolderKind) {
+        let name = self
+            .games
+            .iter()
+            .find(|game| game.id == id)
+            .map_or_else(|| id.to_owned(), |game| game.name.clone());
+        self.error = match self.game_folders.get(id) {
+            Some(Ok(folders)) => match folders.get(kind) {
+                Folder::Found(path) => gm_core::open_folder(path, None)
+                    .err()
+                    .map(|e| e.to_string()),
+                other => Some(format!(
+                    "{name}: {}",
+                    folder_tooltip(kind, Some(&Ok(other.clone())))
+                )),
+            },
+            Some(Err(error)) => Some(format!("{name}: PCGamingWiki couldn't be reached: {error}")),
+            None => None,
+        };
+    }
+}
+
+/// What a Saves or Config button says about its folder: where it is, or why it can't be opened.
+/// `state` is the folder as looked up (`None`: being looked up).
+pub(crate) fn folder_tooltip(kind: FolderKind, state: Option<&Result<Folder, String>>) -> String {
+    match state {
+        None => "Looking it up on PCGamingWiki…".to_owned(),
+        Some(Err(error)) => format!("PCGamingWiki couldn't be reached: {error}"),
+        Some(Ok(Folder::Found(path))) => path.display().to_string(),
+        Some(Ok(Folder::Missing(path))) => {
+            format!("Not on this PC yet (start the game once): {path}")
+        }
+        Some(Ok(Folder::Registry(key))) => format!("Kept in the registry: {key}"),
+        Some(Ok(Folder::Unlisted)) => {
+            format!("PCGamingWiki lists no {} for this game", kind.noun())
+        }
+    }
+}
+
 /// "DirectX 11, DirectX 12".
 fn api_list(apis: &[GraphicsApi]) -> String {
     apis.iter()
@@ -669,14 +748,32 @@ impl GameManager {
                 self.graphics_pending.remove(&id);
                 self.graphics.insert(id, info);
             }
+            Message::GameFoldersLoaded(id, folders) => {
+                self.game_folders_pending.remove(&id);
+                self.game_folders.insert(id.clone(), folders);
+                if let Some((_, kind)) = self.open_after_lookup.take_if(|(wanted, _)| *wanted == id)
+                {
+                    self.open_game_folder(&id, kind);
+                }
+            }
+            Message::OpenGameFolder(id, kind) => {
+                if self.game_folders.contains_key(&id) {
+                    self.open_game_folder(&id, kind);
+                } else {
+                    self.open_after_lookup = Some((id.clone(), kind));
+                    self.request_game_folders(&id, context);
+                }
+            }
             Message::Scan => self.start_scan(context),
             Message::Scanned(games, errors) => {
                 self.scanning = false;
                 self.games = games;
-                // A program may have changed (an update, or another one chosen).
+                // A program may have changed (an update, or another one chosen), and a game may
+                // have made its saves folder since.
                 self.laa.clear();
                 self.reshade.clear();
                 self.upscalers.found.clear();
+                self.game_folders.clear();
                 self.error = (!errors.is_empty()).then(|| errors.join("\n"));
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.tidy_view();

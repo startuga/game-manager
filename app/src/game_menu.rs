@@ -6,7 +6,9 @@
 //!
 //! - **What it holds**: a header with the game's
 //!   icon, name and store; Pin to quick access (or Unpin), Play and its alternative launches
-//!   ("Skip launcher"); Open folder, PCGamingWiki, Nexus Mods (as the game page's button);
+//!   ("Skip launcher"); Open folder, PCGamingWiki, Nexus Mods, Saves folder and Config folder (as
+//!   the game page's buttons; a folder not looked up yet is looked up, then opened or the error
+//!   bar says why not);
 //!   Rename…, Choose cover… (and Reset cover for a game with the user's own, `covers.rs`), Hide
 //!   from the list (or Show in the list);
 //!   Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups are
@@ -27,6 +29,7 @@
 //!   over to Steam, the game's uninstaller or the store's app, which asks before anything goes.
 
 use gm_core::Store;
+use gm_core::game_data::FolderKind;
 use gm_core::uninstall::Route;
 
 use crate::app_view::dialog;
@@ -58,6 +61,8 @@ pub(crate) enum MenuAction {
     Folder,
     Wiki,
     NexusMods,
+    /// Opens its saves or config folder, as PCGamingWiki names it (looked up first if need be).
+    GameFolder(FolderKind),
     Rename,
     /// A picture of the user's as the game's cover (`covers.rs`), or back to the store's.
     ChooseCover,
@@ -285,6 +290,18 @@ impl GameManager {
             "Nexus Mods",
             format!("{} on Nexus Mods", game.name),
             MenuAction::NexusMods,
+        );
+        rows.item(
+            g::SAVE,
+            "Saves folder",
+            format!("Open the saves folder of {}", game.name),
+            MenuAction::GameFolder(FolderKind::Saves),
+        );
+        rows.item(
+            g::SETTINGS,
+            "Config folder",
+            format!("Open the config folder of {}", game.name),
+            MenuAction::GameFolder(FolderKind::Config),
         );
         rows.separator();
 
@@ -515,6 +532,7 @@ impl GameManager {
             MenuAction::Folder => self.handle(Message::OpenFolder(id), context),
             MenuAction::Wiki => self.handle(Message::OpenWiki(id), context),
             MenuAction::NexusMods => self.handle(Message::OpenNexusMods(id), context),
+            MenuAction::GameFolder(kind) => self.handle(Message::OpenGameFolder(id, kind), context),
             MenuAction::Rename => {
                 let name = game.name.clone();
                 self.menu.renaming = Some(Rename { id, name });

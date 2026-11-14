@@ -5,18 +5,32 @@
 //!   the wiki does not know shows "No such AppID"). Other games use the wiki search, which opens
 //!   the article when the name is its title and the results otherwise, behind Cloudflare's
 //!   "confirm you are human" check in a fresh browser.
-//! - **The API table** (`{{API}}`: Direct3D, OpenGL and Vulkan versions) is read through the
-//!   wiki's API without an account: `idlookup`, `opensearch` and `parse&prop=wikitext`. Requests
-//!   carry a descriptive User-Agent and are spaced one second apart, as the wiki asks (at most 60
-//!   a minute; HTTP 429 blocks for a minute). The wiki's structured data (`cargoquery`) needs a
-//!   bot-password login since August 2026, hence the wikitext.
+//! - **A game's page** (`page`) is read through the wiki's API without an account: `idlookup` by
+//!   Steam or GOG id, else the wiki's full-text search (`list=search`, five results) by name, then
+//!   `parse&prop=wikitext`. The wiki's structured data (`cargoquery`, its `GameData` table of save
+//!   and config paths too) needs a bot-password login since August 2026, hence the wikitext.
+//!   Requests carry a descriptive User-Agent and are spaced one second apart, as the wiki asks (at
+//!   most 60 a minute; HTTP 429 blocks for a minute). The pages read in the last ten minutes are
+//!   kept in memory, so the graphics API and the game's folders, looked up together when a game is
+//!   shown, cost one page.
+//! - **By name**: the search is fuzzy, so a title counts only when its letters (ignoring case,
+//!   spaces and punctuation, `&` read as "and") are the game's name or begin it, and the longest
+//!   such title wins ("Ghostbusters: Spirits Unleashed" over "Ghostbusters"). Names are searched
+//!   with plain apostrophes ("Assassin’s" finds nothing), and a name ending in "Edition" again
+//!   without it ("… Ecto Edition"). The prefix search (`opensearch`) found 27 of 38 games on the PC
+//!   this was written on, the full-text search 31: "Ghostwire Tokyo" is "GhostWire: Tokyo".
+//! - **The API table** (`{{API}}`: Direct3D, OpenGL and Vulkan versions): `api_table`.
+//! - **Game data** (`game_data`): the paths of the `{{Game data/saves|<platform>|<path>|…}}` and
+//!   `{{Game data/config|…}}` templates as the wiki writes them, with their `{{p|…}}` placeholders
+//!   (`game_data.rs` fills them in for this PC).
 
 use crate::graphics::{GraphicsApi, GraphicsInfo, GraphicsSource};
 use crate::text::{percent_encode, search_name};
 use crate::{Error, Game, Result, Store, http};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 const SITE: &str = "https://www.pcgamingwiki.com";
@@ -25,29 +39,76 @@ const REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 /// When the last request was made, shared by every thread.
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// How long a page read is kept in memory (`page`).
+const PAGE_LIFE: Duration = Duration::from_secs(10 * 60);
+/// The pages read lately, by game.
+static PAGES: Mutex<Vec<Remembered>> = Mutex::new(Vec::new());
+
+/// A page read lately for a game (`None`: the wiki has none for it).
+struct Remembered {
+    game_id: String,
+    at: Instant,
+    page: Option<Page>,
+}
+
+/// A game's page on the wiki: its title and its wikitext.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Page {
+    pub title: String,
+    pub wikitext: String,
+}
+
 /// The APIs in the game's API table on the wiki; `None` when the wiki has no page for the game, or
 /// its page lists no API. A page found by name may be another game of the same name (Dead Space,
 /// 2008, for the 2023 remake): the user can choose the right API in the game's settings.
-/// Blocking: up to three web requests.
+/// Blocking: up to five web requests (`page`).
 pub fn api_table(game: &Game) -> Result<Option<GraphicsInfo>> {
-    let Some(page) = find_page(game)? else {
+    let Some(page) = page(game)? else {
+        return Ok(None);
+    };
+    let apis = parse_api_table(&page.wikitext);
+    Ok((!apis.is_empty()).then_some(GraphicsInfo {
+        apis,
+        source: GraphicsSource::PcGamingWiki { page: page.title },
+    }))
+}
+
+/// The game's page (see the module's doc); `None` when the wiki has none. One lookup at a time, so
+/// a second one for the same game meanwhile gets the page the first read. Blocking: up to five
+/// web requests (an id lookup, three searches, the page), none for a page read in the last ten
+/// minutes.
+pub(crate) fn page(game: &Game) -> Result<Option<Page>> {
+    let mut pages = PAGES.lock().unwrap_or_else(PoisonError::into_inner);
+    pages.retain(|remembered| remembered.at.elapsed() < PAGE_LIFE);
+    if let Some(remembered) = pages
+        .iter()
+        .find(|remembered| remembered.game_id == game.id)
+    {
+        return Ok(remembered.page.clone());
+    }
+    let page = read_page(game, &pages)?;
+    pages.push(Remembered {
+        game_id: game.id.clone(),
+        at: Instant::now(),
+        page: page.clone(),
+    });
+    Ok(page)
+}
+
+/// Reads the game's page from the wiki; `_held` is the memo's lock, held meanwhile.
+fn read_page(game: &Game, _held: &MutexGuard<'_, Vec<Remembered>>) -> Result<Option<Page>> {
+    let Some(title) = find_page(game)? else {
         return Ok(None);
     };
     let path = format!(
         "/w/api.php?action=parse&page={}&prop=wikitext&redirects=1&format=json&formatversion=2",
-        percent_encode(&page)
+        percent_encode(&title)
     );
-    let apis = wikitext(&request(&path)?)
-        .map(|text| parse_api_table(&text))
-        .unwrap_or_default();
-    Ok((!apis.is_empty()).then_some(GraphicsInfo {
-        apis,
-        source: GraphicsSource::PcGamingWiki { page },
-    }))
+    Ok(wikitext(&request(&path)?).map(|wikitext| Page { title, wikitext }))
 }
 
 /// The title of the game's page: by store id for Steam and GOG, else (or when the wiki does not
-/// know the id) by name.
+/// know the id) by name, searched as it is and, ending in "Edition", without it.
 fn find_page(game: &Game) -> Result<Option<String>> {
     let field = match game.store {
         Store::Steam => Some("steamappid"),
@@ -60,12 +121,69 @@ fn find_page(game: &Game) -> Result<Option<String>> {
             return Ok(Some(page));
         }
     }
-    let name = search_name(&game.name);
-    let path = format!(
-        "/w/api.php?action=opensearch&search={}&limit=1&namespace=0&redirects=resolve&format=json",
-        percent_encode(&name)
-    );
-    Ok(opensearch_title(&request(&path)?).filter(|title| same_game(title, &name)))
+    let name = wiki_name(&game.name);
+    for search in search_names(&name) {
+        let path = format!(
+            "/w/api.php?action=query&list=search&srsearch={}&srlimit=5&srnamespace=0&srprop=\
+             &format=json&formatversion=2",
+            percent_encode(&search)
+        );
+        if let Some(title) = best_title(&search_titles(&request(&path)?), &name) {
+            return Ok(Some(title));
+        }
+    }
+    Ok(None)
+}
+
+/// A game's name as the wiki writes it: without ™ ® ©, with plain apostrophes.
+fn wiki_name(name: &str) -> String {
+    search_name(name).replace(['’', '‘'], "'")
+}
+
+/// What to search for: the name, then, when it ends in "Edition", the name without its last two
+/// words ("Spirits Unleashed Ecto Edition") and the name before its last `:` or ` - `.
+fn search_names(name: &str) -> Vec<String> {
+    let mut names = vec![name.to_owned()];
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let edition = words
+        .last()
+        .is_some_and(|word| word.eq_ignore_ascii_case("edition"));
+    if edition && words.len() > 2 {
+        let shorter = words[..words.len() - 2].join(" ");
+        names.push(shorter.trim_end_matches([':', '-', '–', ' ']).to_owned());
+        let cut = [": ", " - ", " – "]
+            .iter()
+            .filter_map(|separator| name.rfind(separator))
+            .max();
+        if let Some(cut) = cut {
+            names.push(name[..cut].trim().to_owned());
+        }
+    }
+    names.retain(|name| !name.is_empty());
+    names.dedup();
+    names
+}
+
+/// `{"query":{"search":[{"title":"…"}, …]}}`: the titles found, best first.
+fn search_titles(answer: &Value) -> Vec<String> {
+    answer["query"]["search"]
+        .as_array()
+        .map(|results| {
+            results
+                .iter()
+                .filter_map(|result| result["title"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The longest of `titles` that is the game called `name` (`same_game`).
+fn best_title(titles: &[String], name: &str) -> Option<String> {
+    titles
+        .iter()
+        .filter(|title| same_game(title, name))
+        .max_by_key(|title| letters(title).len())
+        .cloned()
 }
 
 /// A request to the wiki's API, at most one a second, answered with JSON.
@@ -91,11 +209,6 @@ fn idlookup_page(answer: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// `[query, [titles], [descriptions], [urls]]`: the first title found.
-fn opensearch_title(answer: &Value) -> Option<String> {
-    answer[1][0].as_str().map(str::to_owned)
-}
-
 /// `{"parse":{"wikitext":"…"}}`; an error object when the page does not exist.
 fn wikitext(answer: &Value) -> Option<String> {
     answer["parse"]["wikitext"].as_str().map(str::to_owned)
@@ -105,14 +218,92 @@ fn wikitext(answer: &Value) -> Option<String> {
 /// only when, ignoring case, spaces and punctuation, it is the game's name or begins it ("Tomb
 /// Raider I–III Remastered" for "Tomb Raider I-III Remastered Starring Lara Croft").
 fn same_game(title: &str, name: &str) -> bool {
-    let letters = |text: &str| -> String {
-        text.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
     let (title, name) = (letters(title), letters(name));
     !title.is_empty() && name.starts_with(&title)
+}
+
+/// A name's letters and digits in lower case, `&` read as "and" ("Beyond Good & Evil").
+fn letters(text: &str) -> String {
+    text.replace('&', "and")
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// A path the wiki gives for a game's saves or settings, as written (`{{p|…}}` placeholders, notes
+/// and all), and the platform it is for ("Windows", "Steam", "GOG.com", "Microsoft Store"…).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikiPath {
+    pub platform: String,
+    pub path: String,
+}
+
+/// The paths of a page's `{{Game data/saves|…}}` and `{{Game data/config|…}}` templates, in the
+/// page's order: `(saves, config)`.
+pub(crate) fn game_data(wikitext: &str) -> (Vec<WikiPath>, Vec<WikiPath>) {
+    (
+        game_data_paths(wikitext, "saves"),
+        game_data_paths(wikitext, "config"),
+    )
+}
+
+/// Every `{{Game data/<kind>|<platform>|<path>|…}}`'s paths: its arguments split at the `|`s of its
+/// own level, so the placeholders inside (`{{p|game}}`) stay whole.
+fn game_data_paths(wikitext: &str, kind: &str) -> Vec<WikiPath> {
+    let open = format!("{{{{Game data/{kind}|");
+    let mut paths = Vec::new();
+    let mut rest = wikitext;
+    while let Some(at) = rest.find(&open) {
+        let (arguments, after) = template_arguments(&rest[at + open.len()..]);
+        rest = after;
+        let mut arguments = arguments
+            .into_iter()
+            .map(|argument| argument.trim().to_owned());
+        let Some(platform) = arguments.next() else {
+            continue;
+        };
+        paths.extend(
+            arguments
+                .filter(|path| !path.is_empty())
+                .map(|path| WikiPath {
+                    platform: platform.clone(),
+                    path,
+                }),
+        );
+    }
+    paths
+}
+
+/// The `|`-separated arguments of a template whose name and first `|` are already read, up to its
+/// closing `}}`, and the text after it (none when it is never closed).
+fn template_arguments(text: &str) -> (Vec<String>, &str) {
+    let mut arguments = vec![String::new()];
+    let mut depth = 0usize;
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let current = arguments.len() - 1;
+        if rest.starts_with("{{") {
+            depth += 1;
+            arguments[current].push_str("{{");
+            rest = &rest[2..];
+        } else if rest.starts_with("}}") {
+            if depth == 0 {
+                return (arguments, &rest[2..]);
+            }
+            depth -= 1;
+            arguments[current].push_str("}}");
+            rest = &rest[2..];
+        } else {
+            if c == '|' && depth == 0 {
+                arguments.push(String::new());
+            } else {
+                arguments[current].push(c);
+            }
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    (arguments, "")
 }
 
 /// The APIs in a page's `{{API}}` template: each `direct3d versions` entry's major version (`9.0c`,
@@ -287,12 +478,16 @@ mod tests {
         assert_eq!(idlookup_page(&unknown), None);
 
         let search: Value = serde_json::from_str(
-            r#"["Alan Wake 2",["Alan Wake II"],[""],["https://www.pcgamingwiki.com/wiki/Alan_Wake_II"]]"#,
+            r#"{"batchcomplete":true,"query":{"search":[{"ns":0,"title":"GhostWire: Tokyo"},
+                {"ns":0,"title":"Ghostwire: Tokyo - Prelude"}]}}"#,
         )
         .unwrap();
-        assert_eq!(opensearch_title(&search).as_deref(), Some("Alan Wake II"));
-        let nothing: Value = serde_json::from_str(r#"["YUR",[],[],[]]"#).unwrap();
-        assert_eq!(opensearch_title(&nothing), None);
+        assert_eq!(
+            search_titles(&search),
+            ["GhostWire: Tokyo", "Ghostwire: Tokyo - Prelude"]
+        );
+        let nothing: Value = serde_json::from_str(r#"{"query":{"search":[]}}"#).unwrap();
+        assert!(search_titles(&nothing).is_empty());
 
         let page: Value =
             serde_json::from_str(r#"{"parse":{"title":"X","wikitext":"{{API}}"}}"#).unwrap();
@@ -312,5 +507,95 @@ mod tests {
         assert!(!same_game("VR Karts SteamVR", "SteamVR"));
         assert!(!same_game("Alan Wake II", "Alan Wake 2"));
         assert!(!same_game("", "Anything"));
+        assert!(same_game("Beyond Good & Evil", "Beyond Good and Evil"));
+        // The longest title that is the game wins.
+        let titles = [
+            "Ghostbusters",
+            "Ghostbusters: Spirits Unleashed",
+            "Ghostbusters II",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            best_title(&titles, "Ghostbusters: Spirits Unleashed Ecto Edition").as_deref(),
+            Some("Ghostbusters: Spirits Unleashed")
+        );
+        assert_eq!(best_title(&titles, "SteamVR"), None);
+    }
+
+    #[test]
+    fn names_are_searched_as_the_wiki_writes_them() {
+        assert_eq!(
+            wiki_name("Assassin’s Creed® Chronicles Russia"),
+            "Assassin's Creed Chronicles Russia"
+        );
+        assert_eq!(search_names("Cyberpunk 2077"), ["Cyberpunk 2077"]);
+        assert_eq!(
+            search_names("Ghostbusters: Spirits Unleashed Ecto Edition"),
+            [
+                "Ghostbusters: Spirits Unleashed Ecto Edition",
+                "Ghostbusters: Spirits Unleashed",
+                "Ghostbusters"
+            ]
+        );
+        assert_eq!(
+            search_names("The Witcher 3: Wild Hunt - Game of the Year Edition"),
+            [
+                "The Witcher 3: Wild Hunt - Game of the Year Edition",
+                "The Witcher 3: Wild Hunt - Game of the",
+                "The Witcher 3: Wild Hunt"
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_the_game_data_templates() {
+        // As The Witcher 3's page writes them, with a Steam path and a note added.
+        let page = concat!(
+            "==Game data==\n===Configuration file(s) location===\n{{Game data|\n",
+            r"{{Game data/config|Windows|{{p|userprofile\Documents}}\The Witcher 3\*.settings}}",
+            "\n}}\n===Save game data location===\n{{Game data|\n",
+            r"{{Game data/saves|Windows|{{p|userprofile\Documents}}\The Witcher 3\gamesaves\*.png|",
+            r"{{p|userprofile\Documents}}\The Witcher 3\gamesaves\*.sav}}",
+            "\n",
+            r"{{Game data/saves|Steam|{{p|steam}}\userdata\{{p|uid}}\292030\remote{{Note|Cloud.}}}}",
+            "\n}}"
+        );
+        let (saves, config) = game_data(page);
+        let path = |platform: &str, path: &str| WikiPath {
+            platform: platform.into(),
+            path: path.into(),
+        };
+        assert_eq!(
+            config,
+            [path(
+                "Windows",
+                r"{{p|userprofile\Documents}}\The Witcher 3\*.settings"
+            )]
+        );
+        assert_eq!(
+            saves,
+            [
+                path(
+                    "Windows",
+                    r"{{p|userprofile\Documents}}\The Witcher 3\gamesaves\*.png"
+                ),
+                path(
+                    "Windows",
+                    r"{{p|userprofile\Documents}}\The Witcher 3\gamesaves\*.sav"
+                ),
+                path(
+                    "Steam",
+                    r"{{p|steam}}\userdata\{{p|uid}}\292030\remote{{Note|Cloud.}}"
+                ),
+            ]
+        );
+        // An empty path, no template, a template never closed.
+        let none = (Vec::new(), Vec::new());
+        assert_eq!(game_data("{{Game data/saves|Windows|}}"), none);
+        assert_eq!(game_data("no data"), none);
+        assert_eq!(
+            game_data(r"{{Game data/saves|Windows|{{p|game}}\save"),
+            (vec![path("Windows", r"{{p|game}}\save")], Vec::new())
+        );
     }
 }

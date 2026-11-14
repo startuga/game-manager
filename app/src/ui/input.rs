@@ -8,7 +8,8 @@
 //! first: an open drop-down's list, then the tree from its last layer down. A `modal` element (a
 //! dialog's backdrop) stops the search, so nothing under a dialog reacts; an `opaque` one (a
 //! menu's panel) stops it too, without being a layer of its own. Disabled elements and everything
-//! inside them don't react either.
+//! inside them don't react either, but a disabled control still shows its tooltip, which can say
+//! why it is disabled (`Frame::tooltip_at`).
 //!
 //! A modal element with an `on_click` is a light-dismiss backdrop (a menu's): a left-click sends
 //! it, and a right-click sends the `on_context` of what is under it instead (a new menu, which
@@ -358,6 +359,15 @@ impl<M: Clone> Frame<M> {
         }
     }
 
+    /// The control under a point whose tooltip shows there: enabled or not (a disabled button's
+    /// tooltip says why it is), unless a dialog or a menu covers it.
+    pub fn tooltip_at(&self, x: f32, y: f32) -> Option<Hit<'_, M>> {
+        match tooltip_hit(&self.root, &self.placed, x, y) {
+            Found::Hit(hit) => Some(hit),
+            Found::Blocked | Found::Miss => None,
+        }
+    }
+
     /// The interactive element under a point once the element `skip` (a menu's backdrop) is
     /// taken away: what a right-click outside a menu reaches.
     fn hit_beneath(&self, skip: u64, x: f32, y: f32) -> Option<Hit<'_, M>> {
@@ -543,6 +553,28 @@ fn hit<'a, M>(
     }
 }
 
+/// `hit` for tooltips: the innermost control with a tooltip, disabled ones and those in disabled
+/// containers too; layers above still block it.
+fn tooltip_hit<'a, M>(el: &'a El<M>, placed: &'a Placed, x: f32, y: f32) -> Found<'a, M> {
+    if !placed.clip.contains(x, y) {
+        return Found::Miss;
+    }
+    for (child, child_placed) in el.children.iter().zip(&placed.children).rev() {
+        match tooltip_hit(child, child_placed, x, y) {
+            Found::Miss => {}
+            found => return found,
+        }
+    }
+    if el.is_interactive() && el.tooltip.is_some() {
+        Found::Hit(Hit { el, placed })
+    } else if el.modal || el.opaque || el.is_interactive() {
+        // A control without a tooltip hides those beneath it, as it takes the pointer.
+        Found::Blocked
+    } else {
+        Found::Miss
+    }
+}
+
 fn find<'a, M>(el: &'a El<M>, placed: &'a Placed, id: u64) -> Option<Hit<'a, M>> {
     if placed.id == id {
         return Some(Hit { el, placed });
@@ -662,9 +694,17 @@ impl UiState {
         if hover != self.hover {
             self.set_hover(hover);
             changed = true;
-            // A new element under the pointer: its tooltip waits for the delay again.
+        }
+        // A new control under the pointer (a disabled one too): its tooltip waits for the delay
+        // again.
+        let tip = if bar.is_some() {
+            None
+        } else {
+            frame.tooltip_at(x, y)
+        };
+        if tip.as_ref().map(|hit| hit.placed.id) != self.tooltip.as_ref().map(|tip| tip.id) {
             let shown = self.tooltip.as_ref().is_some_and(|tip| tip.shown);
-            self.tooltip = hover.and_then(|id| frame.find(id)).and_then(|hit| {
+            self.tooltip = tip.and_then(|hit| {
                 hit.el.tooltip.clone().map(|text| Tooltip {
                     id: hit.placed.id,
                     text,
@@ -1255,6 +1295,45 @@ mod tests {
     ) -> Option<&'static str> {
         ui.pointer_down(frame, x, y, Button::Left);
         ui.pointer_up(frame, x, y, Button::Left).1
+    }
+
+    #[test]
+    fn disabled_controls_show_their_tooltip_unless_a_layer_covers_them() {
+        let root = |dialog: bool| -> El<&'static str> {
+            let page = col([
+                text("off")
+                    .size(60.0, 20.0)
+                    .tooltip("not on this PC")
+                    .on_click("off")
+                    .enabled(false),
+                text("on")
+                    .size(60.0, 20.0)
+                    .tooltip("opens it")
+                    .on_click("on"),
+                text("plain").size(60.0, 20.0).tooltip("no control"),
+            ]);
+            let mut children = vec![page];
+            if dialog {
+                children.push(col([]).grow().modal().on_click("close"));
+            }
+            layers(children)
+        };
+        let mut ui = ui();
+        let tip = |ui: &UiState| ui.tooltip.as_ref().map(|tip| tip.text.clone());
+        let page = frame(root(false), &ui);
+        // The disabled one: no hover, but its tooltip.
+        ui.pointer_move(&page, 10.0, 10.0);
+        assert_eq!(ui.hover, None);
+        assert_eq!(tip(&ui).as_deref(), Some("not on this PC"));
+        ui.pointer_move(&page, 10.0, 30.0);
+        assert_eq!(tip(&ui).as_deref(), Some("opens it"));
+        // Text that isn't a control shows none, as before.
+        ui.pointer_move(&page, 10.0, 50.0);
+        assert_eq!(tip(&ui), None);
+        // Under a dialog's backdrop, none.
+        let covered = frame(root(true), &ui);
+        ui.pointer_move(&covered, 10.0, 10.0);
+        assert_eq!(tip(&ui), None);
     }
 
     #[test]

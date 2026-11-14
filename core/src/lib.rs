@@ -11,6 +11,7 @@ pub mod ea;
 mod elevate;
 pub mod epic;
 mod error;
+pub mod game_data;
 pub mod gog;
 pub mod graphics;
 mod http;

@@ -31,7 +31,10 @@ samples in `crates/samples/`) instead of guessing.
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
     scroll position). The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
     one in the background (`OpenNexusMods`, then `NexusModsFound` opens it), as finding it reads
-    the game's folder and may download Nexus's list. The game menu has both too.
+    the game's folder and may download Nexus's list. Saves and Config open the folders
+    PCGamingWiki names (`gm_core::game_data`, `request_game_folders`, `GameFoldersLoaded`), looked
+    up again whenever the game is selected or a scan ends; when the folder isn't there they are
+    disabled and their tooltip says why. The game menu has all four too.
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA
@@ -92,6 +95,8 @@ samples in `crates/samples/`) instead of guessing.
     Select all, a toolkit popup (`input::EditMenu`) like the drop-down's list.
 - **Search** (`widgets::search_box`, `library::matches`, tested): the matching rules are in
   `library.rs`'s `//!` doc.
+- **Tooltips** (`.tooltip`) show after `TOOLTIP_DELAY_MS` on controls, disabled ones too (the
+  tooltip can say why), never through a dialog or menu (`Frame::tooltip_at`).
 - **Layers** (menus, dialogs): a `modal` element stops hit-testing and scopes Tab to its layer;
   Enter, Space and the Menu key don't reach a focused element under it. Escape goes to
   `App::escape`. A dialog's body scrolls (`app_view::dialog`), so a tall one fits the window. A

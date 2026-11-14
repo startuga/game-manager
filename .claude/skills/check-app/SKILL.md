@@ -91,6 +91,13 @@ rebuild `app.exe`: build again before checking a change, or you'll be checking a
 - **No input desktop**: drag and drop from Explorer and the UAC prompt can't be done (the cursor
   reads 0,0 and there is no foreground window). Ask the user to try them on a build they run.
   ReShade's Vulkan layer always needs the UAC prompt, so the user tests it.
+  - **Tooltips and hover fills** don't show: `Send-GmHover`'s posted `WM_MOUSEMOVE` is ended at
+    once by `WM_MOUSELEAVE`, as the real cursor isn't over the window (on 2026-11-14 the Nexus
+    Mods button showed neither). Check them in `input.rs`'s tests (`UiState::pointer_move` sets
+    `tooltip`), and ask the user to look.
+  - **A folder opened in File Explorer** (Folder, Saves, Config) is checked and closed through
+    `Shell.Application`'s `Windows()`: note the `LocationURL`s before, find the new one, and
+    `Quit()` only that window.
   - With computer use turned on in the Claude app, Game Manager can get full control: real
     clicks, typing, dragging and keys, with screenshots shrunk to about 1400 px wide (pixel checks
     still use `Save-GmScreen`). UAC runs on a separate secure desktop, which it isn't expected to

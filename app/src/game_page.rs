@@ -4,7 +4,10 @@
 //! The game page: a header with the icon, the name in the title
 //! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan), a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
-//! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), then
+//! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
+//! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
+//! each time the game is selected; disabled, the tooltip saying where the folder would be, that the
+//! game keeps it in the registry, or that the wiki lists none), then
 //! the tabs and the open tab's cards. A game added by hand is removed from its menu (`game_menu.rs`,
 //! Remove from Game Manager), not from here.
 //!
@@ -14,6 +17,7 @@
 //! `upscaler_versions.rs`), and NVIDIA overrides (`dlss_override_view.rs`), listed only once an
 //! NVIDIA driver was found.
 
+use gm_core::game_data::{Folder, FolderKind};
 use gm_core::graphics::GraphicsSource;
 use gm_core::mods::dxvk;
 use gm_core::{Game, Launch, Store};
@@ -28,7 +32,7 @@ use crate::ui::widgets::{
     PlayState, Tab, accent_button, button, card, card_header, chip, heading, hint,
     icon_text_button, play_button, tabs, text_box,
 };
-use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list};
+use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list, folder_tooltip};
 
 /// The widest the page's content grows.
 pub(crate) const PAGE_MAX_WIDTH: f32 = 1180.0;
@@ -252,6 +256,27 @@ impl GameManager {
                 .enabled(!self.finding_nexus_mods)
                 .on_click(Message::OpenNexusMods(game.id.clone())),
         );
+        // Where PCGamingWiki says the game keeps its saves and settings; disabled, with the path
+        // or the reason in the tooltip, when it isn't there.
+        for (kind, glyph) in [
+            (FolderKind::Saves, g::SAVE),
+            (FolderKind::Config, g::SETTINGS),
+        ] {
+            let state = self.game_folders.get(&game.id).map(|folders| {
+                folders
+                    .as_ref()
+                    .map(|folders| folders.get(kind).clone())
+                    .map_err(Clone::clone)
+            });
+            let found = matches!(state, Some(Ok(Folder::Found(_))));
+            items.push(
+                icon_text_button(glyph, kind.label())
+                    .name(format!("Open the {} of {}", kind.noun(), game.name))
+                    .tooltip(folder_tooltip(kind, state.as_ref()))
+                    .enabled(found)
+                    .on_click(Message::OpenGameFolder(game.id.clone(), kind)),
+            );
+        }
         row(items).gap(8.0)
     }
 

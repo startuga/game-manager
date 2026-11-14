@@ -15,6 +15,8 @@
 //! profiles, DDC/CI brightness and the Windows switches (read only).
 //! `--covers` prints where each game's cover comes from, or would be looked for (read only:
 //! nothing is downloaded or cached).
+//! `--saves` prints each game's saves and config folders from PCGamingWiki, as the game page's
+//! buttons open them (the wiki is asked about once a second for games not in its cache).
 
 #![allow(
     clippy::expect_used,
@@ -87,6 +89,18 @@ fn main() {
     if args.iter().any(|arg| arg == "--covers") {
         for game in &report.games {
             println!("{:<50} {}", game.name, gm_core::covers::describe(game));
+        }
+    }
+
+    if args.iter().any(|arg| arg == "--saves") {
+        for game in &report.games {
+            match gm_core::game_data::folders(game) {
+                Ok(folders) => println!(
+                    "{}\n           saves:  {:?}\n           config: {:?}",
+                    game.name, folders.saves, folders.config
+                ),
+                Err(error) => println!("{}: {error}", game.name),
+            }
         }
     }
 
