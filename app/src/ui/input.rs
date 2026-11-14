@@ -734,10 +734,11 @@ impl UiState {
         changed
     }
 
-    /// The tooltip's delay ran out. Returns whether one appeared.
+    /// The tooltip's delay ran out. Returns whether one appeared. It is the control's under the
+    /// pointer (`pointer_move` keeps it so), which needn't be `hover`: a disabled one never is.
     pub fn show_tooltip(&mut self) -> bool {
         match &mut self.tooltip {
-            Some(tip) if !tip.shown && self.hover == Some(tip.id) && self.pressed.is_none() => {
+            Some(tip) if !tip.shown && self.pressed.is_none() => {
                 tip.shown = true;
                 true
             }
@@ -1192,6 +1193,9 @@ impl UiState {
         }
         if !self.hover.as_ref().is_some_and(exists) {
             self.hover = None;
+        }
+        // The tooltip goes with its own control, which may be a disabled one, not `hover`.
+        if !self.tooltip.as_ref().is_some_and(|tip| exists(&tip.id)) {
             self.tooltip = None;
         }
     }
@@ -1321,12 +1325,20 @@ mod tests {
         let mut ui = ui();
         let tip = |ui: &UiState| ui.tooltip.as_ref().map(|tip| tip.text.clone());
         let page = frame(root(false), &ui);
-        // The disabled one: no hover, but its tooltip.
+        let shown = |ui: &UiState| ui.tooltip.as_ref().is_some_and(|tip| tip.shown);
+        // The disabled one: no hover, but its tooltip, shown once the delay runs out, and kept
+        // when the view is laid out again meanwhile.
         ui.pointer_move(&page, 10.0, 10.0);
         assert_eq!(ui.hover, None);
         assert_eq!(tip(&ui).as_deref(), Some("not on this PC"));
+        ui.forget_missing(&frame(root(false), &ui));
+        assert!(ui.show_tooltip() && shown(&ui));
+        ui.forget_missing(&frame(root(false), &ui));
+        assert!(shown(&ui), "kept through a new layout");
         ui.pointer_move(&page, 10.0, 30.0);
         assert_eq!(tip(&ui).as_deref(), Some("opens it"));
+        assert!(!shown(&ui), "a new control's waits for the delay again");
+        assert!(ui.show_tooltip() && shown(&ui));
         // Text that isn't a control shows none, as before.
         ui.pointer_move(&page, 10.0, 50.0);
         assert_eq!(tip(&ui), None);
