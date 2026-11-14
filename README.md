@@ -261,8 +261,8 @@ together. A running `app.exe` cannot be replaced: close it before rebuilding.
 ## Project layout
 
 - `app/` – the window (Win32, Direct2D and DirectWrite): the sidebar, the Library grid, the game
-  page and its tabs, and My PC. `app/assets` holds the Oxanium font used for titles (SIL Open
-  Font License, `Oxanium-OFL.txt`).
+  page and its tabs, and My PC. It draws only with Windows' own fonts (Segoe UI Variable, Segoe
+  Fluent Icons).
 - `core/` (crate `gm-core`) – store scanners, icon extraction and launching; no UI code.
 - `config/games.json` – per-game knowledge used by the scanners (no game-specific data in code).
 - `tools/7-Zip` – the 7-Zip command line (`7z.exe`, `7z.dll`) that unpacks downloaded mods.

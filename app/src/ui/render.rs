@@ -2,7 +2,7 @@
 //!
 //! - **`Text`** keeps DirectWrite formats and layouts, keyed by what they show, so measuring and
 //!   drawing the same text reuses one layout; entries unused for a few frames are dropped. It also
-//!   answers the layout's `Measure`. Oxanium, the page titles' font, is embedded and loaded once.
+//!   answers the layout's `Measure`. Every font is one Windows has (`theme`): none is embedded.
 //! - **`Renderer`** owns the GPU device and the window's swap chain, and keeps each picture's
 //!   bitmap by key (an `ID2D1Bitmap1` made through the device context, so pictures are drawn with
 //!   a chosen interpolation and source rectangle) while frames draw it: a bitmap the latest frame
@@ -46,9 +46,7 @@ use windows_canvas::{
     Vector2,
 };
 use windows_core::Interface;
-use windows_text::{
-    FontCollection, FontWeight, TextAlignment, TextFormat, TextLayout, Trimming, WordWrapping,
-};
+use windows_text::{FontWeight, TextAlignment, TextFormat, TextLayout, Trimming, WordWrapping};
 
 use super::el::{Edges, El, Font, Interaction, Kind, Rect, TextAlign, TextSpec};
 use super::image::Picture;
@@ -56,8 +54,6 @@ use super::input::{self, Frame, ITEM_HEIGHT, UiState};
 use super::layout::{Measure, Placed, item_spec};
 use super::theme;
 
-/// Oxanium (SIL Open Font License 1.1; `app/assets/Oxanium-OFL.txt`).
-const OXANIUM: &[u8] = include_bytes!("../../assets/Oxanium.ttf");
 /// "Unbounded" for DirectWrite, which needs a finite width.
 const UNBOUNDED: f32 = 100_000.0;
 /// Layouts unused for this many frames are dropped.
@@ -89,7 +85,6 @@ type Layouts = HashMap<(String, FormatKey, u32), (TextLayout, u64)>;
 
 /// DirectWrite formats and layouts, shared by layout and drawing.
 pub struct Text {
-    titles: Option<FontCollection>,
     formats: RefCell<HashMap<FormatKey, TextFormat>>,
     layouts: RefCell<Layouts>,
     frame: Cell<u64>,
@@ -104,7 +99,6 @@ impl Default for Text {
 impl Text {
     pub fn new() -> Self {
         Self {
-            titles: FontCollection::from_data([OXANIUM]).ok(),
             formats: RefCell::new(HashMap::new()),
             layouts: RefCell::new(HashMap::new()),
             frame: Cell::new(0),
@@ -118,8 +112,6 @@ impl Text {
         let family = match key.font {
             Font::Text => theme::FONT_TEXT,
             Font::Display => theme::FONT_DISPLAY,
-            Font::Title if self.titles.is_some() => theme::FONT_TITLE,
-            Font::Title => theme::FONT_DISPLAY,
             Font::Icons => theme::FONT_ICONS,
         };
         let mut format = TextFormat::new(family, f32::from_bits(key.size))
@@ -135,11 +127,6 @@ impl Text {
                 .with_word_wrapping(WordWrapping::NoWrap)
                 .with_trimming(Trimming::Character)
         };
-        if key.font == Font::Title
-            && let Some(titles) = &self.titles
-        {
-            format = format.with_collection(titles);
-        }
         self.formats.borrow_mut().insert(key, format.clone());
         format
     }

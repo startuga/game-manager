@@ -476,10 +476,10 @@ pub fn error_bar<M>(title: &str, message: &str, on_close: M) -> El<M> {
     .radius(6.0)
 }
 
-/// A page's title, in the title font.
+/// A page's title, in the display font.
 pub fn heading<M>(label: impl Into<String>) -> El<M> {
     text(label)
-        .font(Font::Title)
+        .font(Font::Display)
         .text_size(theme::TEXT_TITLE)
         .weight(600)
 }

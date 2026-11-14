@@ -119,11 +119,9 @@ pub const TEXT_SUBTITLE: f32 = 15.0;
 pub const TEXT_TITLE: f32 = 22.0;
 pub const ICON_SIZE: f32 = 14.0;
 
-/// Fonts: the UI's text, page titles and the icon glyphs.
+/// Fonts, all Windows' own: the UI's text, headings and page titles, and the icon glyphs.
 pub const FONT_TEXT: &str = "Segoe UI Variable Text";
 pub const FONT_DISPLAY: &str = "Segoe UI Variable Display";
-/// Oxanium (SIL Open Font License, `app/assets/Oxanium-OFL.txt`), embedded in the exe.
-pub const FONT_TITLE: &str = "Oxanium";
 pub const FONT_ICONS: &str = "Segoe Fluent Icons";
 
 /// How long the pointer rests on something before its tooltip shows, in milliseconds.

@@ -157,10 +157,8 @@ impl Edges {
 pub enum Font {
     #[default]
     Text,
-    /// Large headings (Segoe UI Variable Display).
+    /// Headings and page titles (Segoe UI Variable Display).
     Display,
-    /// Page titles (Oxanium).
-    Title,
     /// Segoe Fluent Icons glyphs.
     Icons,
 }
