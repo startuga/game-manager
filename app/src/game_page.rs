@@ -3,8 +3,9 @@
 //!
 //! The game page: a header with the icon, the name in the title
 //! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan), a
-//! launch bar with the Play button, the alternative launches, Folder and PCGamingWiki, then the
-//! tabs and the open tab's cards. A game added by hand is removed from its menu (`game_menu.rs`,
+//! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
+//! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), then
+//! the tabs and the open tab's cards. A game added by hand is removed from its menu (`game_menu.rs`,
 //! Remove from Game Manager), not from here.
 //!
 //! The tabs: Overview (Game settings, the draft in `edit.rs`, beside the game's details), ReShade
@@ -243,6 +244,13 @@ impl GameManager {
                 .name(format!("Open {} on PCGamingWiki", game.name))
                 .tooltip("Fixes and settings for this game on PCGamingWiki")
                 .on_click(Message::OpenWiki(game.id.clone())),
+        );
+        items.push(
+            icon_text_button(g::LINK, "Nexus Mods")
+                .name(format!("Open {} on Nexus Mods", game.name))
+                .tooltip("Mods for this game on Nexus Mods")
+                .enabled(!self.finding_nexus_mods)
+                .on_click(Message::OpenNexusMods(game.id.clone())),
         );
         row(items).gap(8.0)
     }

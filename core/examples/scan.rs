@@ -1,8 +1,9 @@
 //! Prints every detected game: `cargo run -p gm-core --example scan [-- -v] [-- --icons <dir>]`
 //! Each line shows the game's bitness ("?" when unknown). `-v` also prints how each game is
 //! launched, where its icon comes from, which program the bitness was read from, the address of
-//! its PCGamingWiki page, how Uninstall… would hand it over (read only) and, for 32-bit games,
-//! their Large Address Aware status.
+//! its PCGamingWiki and Nexus Mods pages (Nexus's list of games is downloaded when the cached one
+//! is a week old), how Uninstall… would hand it over (read only) and, for 32-bit games, their
+//! Large Address Aware status.
 //! `--icons <dir>` saves each game's icon there as the app gets it: its best image as it is in the
 //! game's files, `<id>.png` or a one-image `<id>.ico`, or the picture file (`.png`, `.jpg`).
 //! `--graphics` prints each game's graphics APIs from PCGamingWiki and from its files, side by
@@ -57,6 +58,7 @@ fn main() {
             println!("           icon: {:?}", game.icon);
             println!("           program: {:?}", game.program);
             println!("           wiki: {}", gm_core::pcgamingwiki::page_url(game));
+            println!("           nexus: {}", gm_core::nexus_mods::page_url(game));
             match gm_core::uninstall::route(game) {
                 Some(route) => println!("           uninstall: {route:?}"),
                 None => println!("           uninstall: none (added by hand)"),

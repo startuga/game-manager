@@ -18,6 +18,7 @@ pub mod icon;
 mod json_file;
 mod launcher;
 pub mod mods;
+pub mod nexus_mods;
 pub mod nvidia;
 pub mod pc;
 pub mod pcgamingwiki;

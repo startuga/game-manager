@@ -38,6 +38,8 @@ holds the rules and facts that span them.
     bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, the capture's PNG; no
     Windows API).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links).
+  - `nexus_mods.rs` (a game's Nexus Mods page: its domain from `games.json`'s `nexusMods`, else
+    by name in Nexus's public list of games, cached a week; else Nexus's games search).
   - `http.rs` (WinHTTP `get`/`download`/`etag`, on one session for the process).
 - **Mods**:
   - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`; `CopyTree` and
@@ -83,8 +85,9 @@ holds the rules and facts that span them.
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
   - `text.rs`.
   - `com.rs` (`ComGuard`).
-- `examples/scan.rs` – headless check: `-v` (with each game's uninstall route), `--graphics`,
-  `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source, read only).
+- `examples/scan.rs` – headless check: `-v` (with each game's uninstall route and Nexus Mods
+  page), `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source,
+  read only).
 
 ## Scanning
 - `scan_all` runs these steps in order:
@@ -103,7 +106,8 @@ holds the rules and facts that span them.
   entry in `SCANNERS`.
 - **Game ids** are `<store>:<store id>` and stable: they key the list and the user's files.
 - **Program precedence**: the user's choice > the shipped `config/games.json` (recognised by the
-  game's binaries, never store ids) > the scanner's. A chosen bitness replaces `Game::arch`.
+  game's binaries, never store ids) > the scanner's. A chosen bitness replaces `Game::arch`. An
+  entry's `nexusMods` domain wins over Nexus's name for the game in the same way.
 
 ## Files
 - `json_file::user_file` → `%APPDATA%\Game Manager`: the user's `game-settings.json`,
@@ -132,6 +136,8 @@ holds the rules and facts that span them.
 - **Network goes through `http.rs`**, with a User-Agent that has contact details.
   - PCGamingWiki: one request a second.
   - GitHub's API: 60 anonymous requests an hour.
+  - Nexus Mods: only its public list of games (`data.nexusmods.com`, 1.8 MB), at most once a
+    week. Its v1 API needs a personal key, and its API policy forbids one in an app for others.
 - **windows-rs bindings**: Win32 features are named after C headers (`core/Cargo.toml`). The
   bindings come from windows-rs master and change shape between commits (constants' integer
   types, `Option` vs raw pointers): fix call sites to the new signatures.

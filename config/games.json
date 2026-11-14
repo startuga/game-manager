@@ -10,6 +10,24 @@
       "name": "The Witcher 3: Wild Hunt",
       "note": "Play starts REDprelauncher.exe; DirectX 12 build first, then DirectX 11",
       "programs": ["bin\\x64_dx12\\witcher3.exe", "bin\\x64\\witcher3.exe"]
+    },
+    {
+      "name": "Grand Theft Auto V Enhanced",
+      "note": "Before the Legacy edition, whose GTA5.exe its folder may hold too",
+      "programs": ["GTA5_Enhanced.exe"],
+      "nexusMods": "gta5enhanced"
+    },
+    {
+      "name": "Grand Theft Auto V Legacy",
+      "note": "PlayGTAV.exe only starts it; Nexus Mods calls it Grand Theft Auto V Legacy",
+      "programs": ["GTA5.exe"],
+      "nexusMods": "gta5"
+    },
+    {
+      "name": "Tomb Raider I-III Remastered",
+      "note": "GOG's name adds Starring Lara Croft",
+      "programs": ["tomb123.exe"],
+      "nexusMods": "tombraidertrilogyremastered"
     }
   ]
 }

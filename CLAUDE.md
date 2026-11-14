@@ -52,7 +52,7 @@ DLSS overrides in their driver profiles.
 ## Commands
 - `cargo build`; `cargo run -p app`.
 - `cargo run -p gm-core --example scan` checks the scanners without the UI.
-  - `-- -v` prints launch commands, icons, programs and wiki links.
+  - `-- -v` prints launch commands, icons, programs, and PCGamingWiki and Nexus Mods links.
   - `-- --graphics` prints the wiki's and the files' APIs, about 2 s a game.
   - `-- --icons <dir>` saves each icon as the app gets it (its best image, `.png` or `.ico`).
   - `-- --nvidia` prints the driver's version and DLLs, then each game's NVIDIA driver profile
