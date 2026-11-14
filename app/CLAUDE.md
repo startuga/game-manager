@@ -37,11 +37,13 @@ samples in `crates/samples/`) instead of guessing.
     PCGamingWiki names (`gm_core::game_data`, `request_game_folders`, `GameFoldersLoaded`), looked
     up again whenever the game is selected or a scan ends; when the folder isn't there they are
     disabled and their tooltip says why. The game menu has all four too.
+  - `settings_page.rs` (Settings: Appearance, how the window looks: theme, background, accent;
+    saved in `game-settings.json`, read before the window opens, following Windows' changes).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA
     overrides tab), `my_pc.rs` and `my_pc_page.rs` (My PC: its state and messages, and its view).
-- **Pages, tabs and views**: `Page` (Library, Game, My PC) is the sidebar's choice; `GameTab` the
+- **Pages, tabs and views**: `Page` (Library, Game, My PC, Settings) is the sidebar's choice; `GameTab` the
   game page's (NVIDIA overrides only with an NVIDIA driver, read at start); `ReshadeView` (ReShade,
   Shaders, Add-ons) the ReShade tab's, as `widgets::segmented` pills.
   - Change pages through `go_to` and games through `select`. Leaving the game page, the ReShade
@@ -73,6 +75,16 @@ samples in `crates/samples/`) instead of guessing.
   redraw. State a view can't know (hover, scroll offsets, focus, the open drop-down) is in
   `UiState`, keyed by element id: give an element a `key` when that state must follow it across
   frames (game rows, scroll views, text boxes, drop-downs).
+- **Themes**: `theme.rs` has a dark and a light `Palette`; the one in use (with Windows' accent or
+  Game Manager's red) is set by `settings_page::resolve`, and views read each colour as they are
+  built (`theme::text()`, `theme::accent()`), so a change shows at the next frame. A part that must
+  stay dark in either theme (the game page's art band) takes `theme::DARK`'s colours directly.
+- **Mica**: the renderer's swap chain is a composition one, shown through DirectComposition, and
+  the window has no GDI surface (`WS_EX_NOREDIRECTIONBITMAP`): where a frame is clear, Windows'
+  backdrop shows (`shell::window::set_look`). With Mica the frame clears to nothing and the page
+  has no fill of its own; layers, cards and controls are translucent over it. Text is then
+  antialiased in grayscale. Don't extend the frame into the client area: Windows then drew its own
+  caption buttons beside the view's.
 - **Design tokens only**: colours, sizes and fonts come from `theme.rs`; controls from
   `widgets.rs`.
 - **Layout**: `Size::Px`, `Auto` or `Fill(weight)` along a row or column; `halign`/`valign`

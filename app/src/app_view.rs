@@ -54,7 +54,7 @@ impl GameManager {
         } else {
             text(format!("{} games", self.games.len()))
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY)
+                .color(theme::text_tertiary())
         };
         let caption = |icon: &str, key: &str, name: &str, command: WindowCommand| {
             let face = glyph(icon, 10.0).text_align(TextAlign::Center).fill_width();
@@ -69,8 +69,8 @@ impl GameManager {
                     .pressed_bg(theme::argb(0xFFA0_2318))
             } else {
                 button
-                    .hover_bg(theme::SUBTLE_HOVER)
-                    .pressed_bg(theme::SUBTLE_PRESSED)
+                    .hover_bg(theme::subtle_hover())
+                    .pressed_bg(theme::subtle_pressed())
             }
         };
         let (max_icon, max_name) = if window.maximized {
@@ -79,7 +79,7 @@ impl GameManager {
             (g::MAXIMIZE, "Maximize")
         };
         row([
-            glyph(g::GAME, 16.0).color(theme::ACCENT),
+            glyph(g::GAME, 16.0).color(theme::accent()),
             text("GAME MANAGER")
                 .font(Font::Display)
                 .text_size(13.0)
@@ -101,7 +101,7 @@ impl GameManager {
         .gap(10.0)
         .padding(crate::ui::el::Edges::new(14.0, 0.0, 0.0, 0.0))
         .height(theme::TITLE_BAR_HEIGHT)
-        .bg(theme::LAYER)
+        .bg(theme::layer())
         .key(CAPTION_DRAG)
     }
 
@@ -132,7 +132,7 @@ impl GameManager {
             let has_name = !draft.name.trim().is_empty();
             let body = vec![
                 text(draft.program.display().to_string())
-                    .color(theme::TEXT_TERTIARY)
+                    .color(theme::text_tertiary())
                     .wrap(),
                 field_label("Name"),
                 text_box(
@@ -238,9 +238,9 @@ pub(crate) fn dialog_with(
     .gap(12.0)
     .pad(24.0)
     .width(520.0)
-    .bg(theme::FLYOUT)
-    .stroke(theme::FLYOUT_STROKE, 1.0)
+    .bg(theme::flyout())
+    .stroke(theme::flyout_stroke(), 1.0)
     .radius(theme::RADIUS_FLYOUT)
     .center();
-    layers([col([]).grow().bg(theme::SCRIM).modal(), card]).grow()
+    layers([col([]).grow().bg(theme::scrim()).modal(), card]).grow()
 }

@@ -30,8 +30,9 @@ DLSS overrides in their driver profiles.
   - **Adding another windows-rs crate** moves them all to the latest master, since they share
     one git source. Put them back with `cargo update -p windows --precise <the locked commit>`.
   - The first fetch downloads the whole repository (about 1.4 GB).
-- **No Windows App Runtime**: the window needs Windows 10 1703+ (DirectWrite, Direct2D 1.1) and
-  the Visual C++ runtime (`VCRUNTIME140.dll`, which most PCs already have).
+- **No Windows App Runtime**: the window needs Windows 10 1703+ (DirectWrite, Direct2D 1.1,
+  DirectComposition) and the Visual C++ runtime (`VCRUNTIME140.dll`, which most PCs already have).
+  Mica needs Windows 11 22H2; older Windows gets the theme's solid colour.
 - **7-Zip**: `tools/7-Zip` holds `7z.exe`, `7z.dll` (26.05 x64) and `License.txt`.
   - It is GNU LGPL, and the license file must ship with the binaries.
   - `core/build.rs` copies the folder next to `app.exe`, together with `games.json`.

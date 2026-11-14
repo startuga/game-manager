@@ -280,6 +280,9 @@ pub struct El<M> {
     pub key: Option<String>,
     /// The app hears whether this keyed element is near the screen (`El::watch`).
     pub watch: bool,
+    /// Drawn fading to nothing towards its bottom from this share of its height on, children
+    /// and all (`fade_out`).
+    pub fade_out: Option<f32>,
     pub on_click: Option<M>,
     /// A right-click, with the pointer's position in window DIPs.
     pub on_context: Option<OnValue<M, (f32, f32)>>,
@@ -328,6 +331,7 @@ impl<M> El<M> {
             children: Vec::new(),
             key: None,
             watch: false,
+            fade_out: None,
             on_click: None,
             on_context: None,
             on_drag: None,
@@ -453,6 +457,13 @@ impl<M> El<M> {
     /// only then.
     pub fn watch(mut self) -> Self {
         self.watch = true;
+        self
+    }
+    /// Fades the element and its children to nothing towards its bottom, fully drawn down to
+    /// `from` (a share of its height): the game page's art melts into whatever is behind it, Mica
+    /// included.
+    pub fn fade_out(mut self, from: f32) -> Self {
+        self.fade_out = Some(from);
         self
     }
     pub fn key(mut self, key: impl Into<String>) -> Self {
@@ -614,7 +625,7 @@ pub fn text<M>(text: impl Into<String>) -> El<M> {
         size: theme::TEXT_SIZE,
         weight: 400,
         font: Font::Text,
-        color: theme::TEXT,
+        color: theme::text(),
         wrap: false,
         align: TextAlign::Start,
     }))

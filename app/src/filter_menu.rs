@@ -124,7 +124,7 @@ impl Lines {
         let title = text(label.to_uppercase())
             .text_size(theme::TEXT_CAPTION)
             .weight(700)
-            .color(theme::TEXT_TERTIARY);
+            .color(theme::text_tertiary());
         self.push(
             row([title])
                 .padding(Edges::new(10.0, 4.0, 10.0, 0.0))
@@ -134,14 +134,14 @@ impl Lines {
     }
 
     fn separator(&mut self) {
-        let line = col([]).height(1.0).bg(theme::DIVIDER);
+        let line = col([]).height(1.0).bg(theme::divider());
         self.push(col([line]).pad_xy(6.0, 4.0), SEPARATOR_HEIGHT);
     }
 
     /// One choice of several: a tick while it is on.
     fn choice(&mut self, label: &str, count: Option<usize>, on: bool, message: FilterMessage) {
         // White on the line's selection fill.
-        let tick = glyph(if on { g::CHECK } else { "" }, 12.0).color(theme::TEXT);
+        let tick = glyph(if on { g::CHECK } else { "" }, 12.0).color(theme::text());
         let name = match count {
             Some(count) => format!("{label}, {}", library::games_label(count)),
             None => label.to_owned(),
@@ -188,15 +188,15 @@ fn line(
         parts.push(
             text(count.to_string())
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY),
+                .color(theme::text_tertiary()),
         );
     }
     row(parts)
         .gap(10.0)
         .pad_xy(10.0, 0.0)
         .height(ITEM_HEIGHT)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(role)
         .selected(on)
@@ -297,8 +297,8 @@ impl GameManager {
         .gap(10.0)
         .pad_xy(10.0, 0.0)
         .height(ITEM_HEIGHT)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
         .name("Clear all filters")
@@ -313,8 +313,8 @@ impl GameManager {
         let panel = col([scroll("filters", col(lines.lines).gap(GAP)).fill_height()])
             .pad(PADDING)
             .size(WIDTH, height)
-            .bg(theme::FLYOUT)
-            .stroke(theme::FLYOUT_STROKE, 1.0)
+            .bg(theme::flyout())
+            .stroke(theme::flyout_stroke(), 1.0)
             .radius(theme::RADIUS_FLYOUT)
             .role(Role::Group)
             .name(NAME)

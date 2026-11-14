@@ -164,7 +164,7 @@ impl Rows {
     }
 
     fn separator(&mut self) {
-        let line = col([]).height(1.0).bg(theme::DIVIDER);
+        let line = col([]).height(1.0).bg(theme::divider());
         self.push(col([line]).pad_xy(6.0, 4.0), SEPARATOR_HEIGHT);
     }
 }
@@ -174,15 +174,15 @@ fn item(icon: &str, label: &str, name: String, action: MenuAction, danger: bool)
     let mut face = glyph(icon, theme::ICON_SIZE).width(theme::ICON_SIZE);
     let mut label = text(label).fill_width();
     if danger {
-        face = face.color(theme::CRITICAL);
-        label = label.color(theme::CRITICAL);
+        face = face.color(theme::critical());
+        label = label.color(theme::critical());
     }
     row([face, label])
         .gap(10.0)
         .pad_xy(10.0, 0.0)
         .height(ITEM_HEIGHT)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::MenuItem)
         .name(name)
@@ -219,7 +219,7 @@ impl GameManager {
                 text(game.name.clone()).bold(),
                 text(game.store.name())
                     .text_size(theme::TEXT_CAPTION)
-                    .color(theme::TEXT_TERTIARY),
+                    .color(theme::text_tertiary()),
             ])
             .gap(2.0)
             .fill_width(),
@@ -363,8 +363,8 @@ impl GameManager {
             .gap(GAP)
             .pad(PADDING)
             .width(WIDTH)
-            .bg(theme::FLYOUT)
-            .stroke(theme::FLYOUT_STROKE, 1.0)
+            .bg(theme::flyout())
+            .stroke(theme::flyout_stroke(), 1.0)
             .radius(theme::RADIUS_FLYOUT)
             .role(Role::Group)
             .name(format!("{}'s menu", game.name))

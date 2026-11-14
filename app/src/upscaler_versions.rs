@@ -39,7 +39,7 @@ impl GameManager {
                 },
                 10.0,
             )
-            .color(theme::TEXT_SECONDARY)
+            .color(theme::text_secondary())
             .width(16.0),
             col([
                 text("Versions").text_size(theme::TEXT_SUBTITLE).bold(),
@@ -52,7 +52,7 @@ impl GameManager {
                     }
                 ))
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY),
+                .color(theme::text_tertiary()),
             ])
             .gap(2.0)
             .fill_width(),
@@ -60,7 +60,7 @@ impl GameManager {
         .gap(10.0)
         .pad_xy(4.0, 4.0)
         .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::SUBTLE_HOVER)
+        .hover_bg(theme::subtle_hover())
         .name("Versions")
         .on_click(UpscalerMessage::VersionsToggled.into());
         if !open {
@@ -134,7 +134,7 @@ impl GameManager {
         };
         let header = row([
             glyph(chevron, 10.0)
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::text_secondary())
                 .width(16.0),
             col([
                 text(kind.name.as_str())
@@ -146,7 +146,7 @@ impl GameManager {
                     versions.len()
                 ))
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY),
+                .color(theme::text_tertiary()),
             ])
             .gap(2.0)
             .fill_width(),
@@ -154,7 +154,7 @@ impl GameManager {
         .gap(10.0)
         .pad_xy(4.0, 4.0)
         .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::SUBTLE_HOVER)
+        .hover_bg(theme::subtle_hover())
         .name(kind.name.as_str())
         .on_click(UpscalerMessage::KindToggled(kind.id.clone()).into());
         let mut lines = vec![header];
@@ -222,7 +222,7 @@ impl GameManager {
             text(library.label(&kind.id, available)).fill_width(),
             text(status)
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY),
+                .color(theme::text_tertiary()),
             row([action]).width(140.0),
         ])
         .gap(12.0)

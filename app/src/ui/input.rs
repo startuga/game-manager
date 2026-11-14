@@ -1255,7 +1255,7 @@ pub fn fill_for<M>(el: &El<M>, hover: bool, pressed: bool) -> Option<windows_can
         && el.fill.is_none()
         && matches!(el.role, Role::ListItem | Role::Tab)
     {
-        return Some(theme::SELECTED);
+        return Some(theme::selected());
     }
     if el.enabled && pressed {
         el.pressed_fill.or(el.hover_fill).or(el.fill)

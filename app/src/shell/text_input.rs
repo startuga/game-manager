@@ -291,7 +291,7 @@ impl<A: App> Shell<A> {
             return;
         };
         let width = edit_inner(rect).w;
-        let spec = edit_spec(&shown, theme::TEXT);
+        let spec = edit_spec(&shown, theme::text());
         let (caret_x, end_x) = self.text.with_layout(&spec, f32::INFINITY, |layout| {
             (
                 caret_at(layout, &shown, caret).left,
@@ -325,7 +325,7 @@ impl<A: App> Shell<A> {
         let inner = edit_inner(rect);
         let scroll = self.ui.edits.get(&id)?.scroll;
         let (shown, caret) = self.shown_text(id)?;
-        let spec = edit_spec(&shown, theme::TEXT);
+        let spec = edit_spec(&shown, theme::text());
         let (bounds, height) = self.text.with_layout(&spec, f32::INFINITY, |layout| {
             (caret_at(layout, &shown, caret), layout.metrics().height)
         });
@@ -343,7 +343,7 @@ impl<A: App> Shell<A> {
         let rect = self.frame.as_ref()?.find(id)?.placed.rect;
         let state = self.ui.edits.get(&id)?;
         let inner = edit_inner(rect);
-        let spec = edit_spec(state.edit.text(), theme::TEXT);
+        let spec = edit_spec(state.edit.text(), theme::text());
         let point = Vector2::new(x - inner.x + state.scroll, 1.0);
         Some(self.text.with_layout(&spec, f32::INFINITY, |layout| {
             layout.hit_test_point(point).caret_position()

@@ -47,7 +47,7 @@ impl GameManager {
             })
             .text_size(theme::TEXT_CAPTION)
             .weight(700)
-            .color(theme::TEXT_TERTIARY),
+            .color(theme::text_tertiary()),
             heading(shown),
         ])
         .gap(4.0);
@@ -100,13 +100,13 @@ impl GameManager {
                 .radius(theme::RADIUS_CARD),
             None => row([self.icon(game, crate::icons::LARGE)])
                 .justify(Align::Center)
-                .bg(theme::CARD)
-                .stroke(theme::CARD_STROKE, 1.0)
+                .bg(theme::card())
+                .stroke(theme::card_stroke(), 1.0)
                 .radius(theme::RADIUS_CARD),
         };
         let mut cover = vec![art.size(COVER_WIDTH, COVER_HEIGHT)];
         if game.pinned.is_some() {
-            let chip = row([glyph(g::PIN, 11.0).color(theme::ACCENT)])
+            let chip = row([glyph(g::PIN, 11.0).color(theme::accent())])
                 .pad(6.0)
                 .bg(PIN_CHIP)
                 .radius(6.0);

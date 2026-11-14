@@ -30,6 +30,11 @@
 //! - **Display scaling**: `Ctx::scale` holds the window's (set before the first message, and at
 //!   `WM_DPICHANGED`, which also calls `App::scale_changed`), for pictures the app makes at the
 //!   window's pixel size (covers).
+//! - **The look**: `Options::look` is given to the window before it shows, and later through
+//!   `WindowCommand::Look`; the renderer leaves its frames clear while Windows' backdrop shows
+//!   (`window::set_look` says when). Windows' own colours and light or dark mode changing
+//!   (`WM_SETTINGCHANGE` naming "ImmersiveColorSet", `WM_DWMCOLORIZATIONCOLORCHANGED`) go to
+//!   `App::look_changed`.
 //! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`).
 //! - **UI Automation**: `WM_GETOBJECT` and the actions it posts (`ui::uia`).
 //!
@@ -60,11 +65,12 @@ use windows::Win32::{
     TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END,
     VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
     VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_CHAR, WM_CONTEXTMENU, WM_DPICHANGED, WM_DROPFILES,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
-    WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
-    WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_TIMER, WS_OVERLAPPEDWINDOW,
+    WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT,
+    WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION,
+    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
+    WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
+    WM_SIZE, WM_TIMER, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -75,7 +81,7 @@ use crate::ui::layout::{Layout, key_id};
 use crate::ui::render::{Renderer, Text};
 use crate::ui::theme;
 use crate::ui::uia::{self, Action, Uia, WM_UIA_ACTION};
-use ctx::{Ctx, Effect, WM_WAKE};
+use ctx::{Ctx, Effect, WM_WAKE, WindowCommand};
 use text_input::{CARET_TIMER, Clicks};
 use window::hwnd;
 
@@ -134,6 +140,10 @@ pub trait App: 'static {
     fn near_screen(&self, _keys: &HashSet<String>) -> Option<Self::Message> {
         None
     }
+    /// Windows' colours or its light or dark mode changed: the app reads them again.
+    fn look_changed(&self) -> Option<Self::Message> {
+        None
+    }
 }
 
 pub struct Options {
@@ -141,6 +151,8 @@ pub struct Options {
     /// The first client size, and the smallest, in DIPs.
     pub size: (f32, f32),
     pub min_size: (f32, f32),
+    /// How the window looks from its first frame (the app sets its palette before `run`).
+    pub look: window::Look,
 }
 
 type State<A> = Rc<RefCell<Option<Shell<A>>>>;
@@ -178,6 +190,9 @@ pub fn run<A: App>(
             (options.size.1 * scale) as i32,
         )
         .style(WS_OVERLAPPEDWINDOW as u32)
+        // Everything is drawn through DirectComposition: no GDI surface under it (it would show
+        // where frames are clear, in place of Mica).
+        .ex_style(WS_EX_NOREDIRECTIONBITMAP as u32)
         .visible(false)
         .on_message(move |hwnd, message, wparam, lparam| {
             route(&handler, hwnd as isize, message, wparam, lparam, min)
@@ -188,9 +203,12 @@ pub fn run<A: App>(
     // Before any message reaches `update`: the app sizes its pictures with it.
     ctx.set_scale(window::dpi(handle) as f32 / 96.0);
     window::setup(handle);
+    let transparent = window::set_look(handle, options.look);
     // SAFETY: our window accepts files dropped from Explorer.
     unsafe { DragAcceptFiles(hwnd(handle), true) };
-    *state.borrow_mut() = Some(Shell::new(app, Rc::clone(&ctx), receiver, handle));
+    let mut shell = Shell::new(app, Rc::clone(&ctx), receiver, handle);
+    shell.transparent = transparent;
+    *state.borrow_mut() = Some(shell);
     // SAFETY: shows our window.
     let _ = unsafe { ShowWindow(hwnd(handle), SW_SHOWNORMAL) };
 
@@ -202,6 +220,12 @@ pub fn run<A: App>(
                     let message = then(dialogs::pick_file(handle, &picker));
                     if let Some(shell) = state.borrow_mut().as_mut() {
                         shell.dispatch(message);
+                    }
+                }
+                Effect::Window(WindowCommand::Look(look)) => {
+                    let transparent = window::set_look(handle, look);
+                    if let Some(shell) = state.borrow_mut().as_mut() {
+                        shell.set_transparent(transparent);
                     }
                 }
                 Effect::Window(command) => window::command(handle, command),
@@ -287,6 +311,19 @@ struct Shell<A: App> {
     later: HashMap<usize, A::Message>,
     /// The next such timer's id.
     next_later: usize,
+    /// Windows' backdrop shows behind the window: frames leave it clear.
+    transparent: bool,
+}
+
+/// `WM_SETTINGCHANGE`'s setting is "ImmersiveColorSet": Windows' colours or light or dark mode.
+fn names_colors(lparam: isize) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    let name = windows_core::PCWSTR(lparam as *const u16);
+    // SAFETY: a non-null `lparam` of `WM_SETTINGCHANGE` is a null-terminated string Windows keeps
+    // for the message's handling.
+    unsafe { name.to_string() }.is_ok_and(|name| name == "ImmersiveColorSet")
 }
 
 fn low(value: isize) -> i32 {
@@ -327,6 +364,7 @@ impl<A: App> Shell<A> {
             high_surrogate: None,
             last_click: None,
             later: HashMap::new(),
+            transparent: false,
             next_later: FIRST_LATER_TIMER,
         }
     }
@@ -438,6 +476,15 @@ impl<A: App> Shell<A> {
         self.uia.update(tree);
     }
 
+    /// Whether Windows' backdrop shows behind the window now; the next frame is drawn so.
+    fn set_transparent(&mut self, transparent: bool) {
+        self.transparent = transparent;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_transparent(transparent);
+        }
+        self.redraw = true;
+    }
+
     /// Lays out and draws what changed. Returns whether to draw again at once (animation).
     fn render(&mut self) -> windows_core::Result<bool> {
         if self.minimized || self.size.0 == 0 || self.size.1 == 0 {
@@ -452,8 +499,15 @@ impl<A: App> Shell<A> {
         }
         if self.renderer.is_none() {
             // SAFETY: the shell, which owns the renderer, is dropped before the window (`run`).
-            let renderer =
-                unsafe { Renderer::new(self.hwnd, self.size.0, self.size.1, self.dpi as f32) }?;
+            let renderer = unsafe {
+                Renderer::new(
+                    self.hwnd,
+                    self.size.0,
+                    self.size.1,
+                    self.dpi as f32,
+                    self.transparent,
+                )
+            }?;
             self.renderer = Some(renderer);
         }
         let (Some(renderer), Some(frame)) = (self.renderer.as_mut(), self.frame.as_ref()) else {
@@ -506,6 +560,16 @@ impl<A: App> Shell<A> {
             WM_ACTIVATEAPP => {
                 efficiency::set(wparam == 0);
                 None
+            }
+            WM_SETTINGCHANGE if names_colors(lparam) => {
+                let message = self.app.look_changed();
+                self.dispatch_some(message);
+                Some(0)
+            }
+            WM_DWMCOLORIZATIONCOLORCHANGED => {
+                let message = self.app.look_changed();
+                self.dispatch_some(message);
+                Some(0)
             }
             WM_SETFOCUS | WM_KILLFOCUS => {
                 self.window_focused = message == WM_SETFOCUS;

@@ -53,6 +53,12 @@ impl GameManager {
                 self.page == Page::Library,
                 Message::Page(Page::Library),
             ),
+            nav_item(
+                g::SETTINGS,
+                "Settings",
+                self.page == Page::Settings,
+                Message::Page(Page::Settings),
+            ),
         ])
         .gap(2.0);
         let add = subtle_button(g::ADD, "Add a game")
@@ -70,7 +76,7 @@ impl GameManager {
                     n => format!("{n} of {}", library::games_label(total)),
                 })
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY)
+                .color(theme::text_tertiary())
                 .padding(crate::ui::el::Edges::new(4.0, 0.0, 0.0, 0.0)),
             );
         }
@@ -86,7 +92,7 @@ impl GameManager {
             .pad(10.0)
             .width(self.sidebar_width)
             .fill_height()
-            .bg(theme::LAYER)
+            .bg(theme::layer())
     }
 
     fn game_list(&self) -> El<Message> {
@@ -147,8 +153,8 @@ impl GameManager {
         .pad_xy(8.0, 0.0)
         .height(36.0)
         .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .role(crate::ui::el::Role::ListItem)
         .selected(selected)
         .key(format!("game:{}", game.id))
@@ -173,7 +179,7 @@ pub(crate) fn store_header(
     } else {
         g::CHEVRON_DOWN
     };
-    let lead = glyph(if foldable { chevron } else { "" }, 9.0).color(theme::TEXT_TERTIARY);
+    let lead = glyph(if foldable { chevron } else { "" }, 9.0).color(theme::text_tertiary());
     let header = group_header(lead, store.name(), count).key(format!("{key}:{}", store.name()));
     if !foldable {
         return header
@@ -181,7 +187,7 @@ pub(crate) fn store_header(
             .name(format!("{} games", store.name()));
     }
     header
-        .hover_bg(theme::SUBTLE_HOVER)
+        .hover_bg(theme::subtle_hover())
         .name(format!(
             "{} games, {}",
             store.name(),
@@ -192,7 +198,7 @@ pub(crate) fn store_header(
 
 /// The pinned games' header (quick access): a pin, PINNED and how many. It doesn't fold.
 pub(crate) fn pinned_header(key: &str, count: usize) -> El<Message> {
-    let pin = glyph(g::PIN, 11.0).color(theme::ACCENT);
+    let pin = glyph(g::PIN, 11.0).color(theme::accent());
     group_header(pin, "Pinned", count)
         .key(format!("{key}:pinned"))
         .role(Role::Group)
@@ -216,12 +222,12 @@ fn group_header(lead: El<Message>, label: &str, count: usize) -> El<Message> {
         text(label.to_uppercase())
             .text_size(theme::TEXT_CAPTION)
             .weight(700)
-            .color(theme::TEXT_SECONDARY),
+            .color(theme::text_secondary()),
         row([text(count.to_string())
             .text_size(theme::TEXT_CAPTION)
-            .color(theme::TEXT_TERTIARY)])
+            .color(theme::text_tertiary())])
         .pad_xy(6.0, 1.0)
-        .bg(theme::CONTROL)
+        .bg(theme::control())
         .radius(8.0),
     ])
     .gap(8.0)

@@ -18,7 +18,8 @@ windows-threading = { workspace = true }
 windows-window = { workspace = true }
 # Win32 features are named after C headers: the window's frame and messages (winuser, dwmapi,
 # shellapi for dropped files), the text boxes' IME (imm), the Open dialog (shobjidl_core, shtypes,
-# combaseapi, objbase), pictures and clipping (d2d, dcommon; d3d11 to trim GPU memory), UI Automation
+# combaseapi, objbase), pictures and clipping (d2d, dcommon; d3d11 to trim GPU memory), the swap
+# chain shown through DirectComposition so Mica shows behind it (dcomp, dxgi), UI Automation
 # (uiautomationcore, uiautomationcoreapi, uiautomationclient, oleauto), efficiency mode
 # (processthreadsapi, memoryapi), one window per copy (synchapi, minwinbase, handleapi) and the
 # start error (winerror). No GDI (wingdi): everything is drawn with Direct2D, and pictures are
@@ -27,7 +28,7 @@ windows = { workspace = true, features = [
     "winuser", "dwmapi", "shellapi", "uxtheme",
     "imm",
     "shobjidl_core", "shtypes", "combaseapi", "objbase", "objidl", "objidlbase", "wtypesbase",
-    "d2d", "dcommon", "d3d11",
+    "d2d", "dcommon", "d3d11", "dcomp", "dxgi",
     "uiautomationcore", "uiautomationcoreapi", "uiautomationclient", "oleauto", "oaidl", "propidl", "shared", "winnt", "wtypes",
     "processthreadsapi", "memoryapi", "winbase", "synchapi", "minwinbase", "handleapi",
     "winerror", "windef", "minwindef",

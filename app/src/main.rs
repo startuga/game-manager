@@ -5,7 +5,7 @@
 //!   the Library grid (`library_page.rs`, where the window opens), the selected game's header,
 //!   Play and tabs, or My PC; the game menu (`game_menu.rs`) and dialogs as layers over them
 //!   (`app_view.rs`).
-//! - **Pages, tabs and views**: `Page` (Library, Game, My PC), `GameTab` and the ReShade tab's
+//! - **Pages, tabs and views**: `Page` (Library, Game, My PC, Settings), `GameTab` and the ReShade tab's
 //!   `ReshadeView`. Leaving the game page, the ReShade tab, its view or the game leaves Shaders or
 //!   Add-ons (`leave_reshade_view`: Add-ons applies a change, Shaders drops its draft);
 //!   `open_reshade_view` opens the view's panel again, after a Deploy has finished.
@@ -33,6 +33,7 @@ mod my_pc;
 mod my_pc_page;
 mod page_art;
 mod reshade_panel;
+mod settings_page;
 mod shell;
 mod sidebar;
 mod ui;
@@ -43,6 +44,7 @@ use covers::{CoverMessage, CoverState};
 use edit::{EditChoice, EditDraft, EditField};
 use filter_menu::{FilterMessage, FilterState};
 use game_menu::{MenuMessage, MenuState};
+use gm_core::appearance::{Appearance, WindowsLook};
 use gm_core::custom::NewGame;
 use gm_core::game_data::{Folder, FolderKind, GameFolders};
 use gm_core::graphics::{GraphicsApi, GraphicsInfo};
@@ -57,6 +59,7 @@ use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
 use my_pc::{MyPcMessage, MyPcState};
 use page_art::{PageArtMessage, PageArtState};
 use reshade_panel::{AddonLibrary, ReshadePanel, ShaderLibrary};
+use settings_page::SettingsMessage;
 use shell::ctx::{Ctx, FilePicker, WindowCommand};
 use shell::{App, WindowInfo};
 use std::collections::{HashMap, HashSet};
@@ -85,6 +88,8 @@ pub(crate) enum Page {
     Game,
     /// The PC's hardware, displays and Windows' game switches.
     MyPc,
+    /// Game Manager's own settings: how the window looks (`settings_page.rs`).
+    Settings,
 }
 
 /// The game page's tabs.
@@ -139,6 +144,8 @@ enum Message {
     Cover(CoverMessage),
     /// The game page's background and logo (`page_art.rs`).
     PageArt(PageArtMessage),
+    /// The Settings page, and Windows' colours changing (`settings_page.rs`).
+    Settings(SettingsMessage),
     /// The title bar's minimize, maximize and close.
     Window(WindowCommand),
     /// A sidebar page.
@@ -328,6 +335,10 @@ struct GameManager {
     covers: CoverState,
     /// The selected game's background and logo for its page.
     page_art: PageArtState,
+    /// How the window looks, as chosen in Settings.
+    appearance: Appearance,
+    /// What Windows' personalization settings say (light or dark apps, accent, Mica).
+    windows_look: WindowsLook,
     /// Graphics APIs by game id, once looked up (`None`: none found).
     graphics: HashMap<String, Option<GraphicsInfo>>,
     /// Games whose graphics APIs are being looked up.
@@ -412,12 +423,16 @@ fn main() -> ExitCode {
     let Some(_instance) = shell::instance::first(TITLE) else {
         return ExitCode::SUCCESS;
     };
+    // The palette and the window's look before the window opens, so its first frame has them.
+    let (appearance, windows_look, look) = settings_page::starting_look();
     let options = shell::Options {
         title: TITLE.to_owned(),
         size: (1200.0, 760.0),
         min_size: (860.0, 520.0),
+        look,
     };
-    match shell::run(GameManager::create, options) {
+    let create = move |ctx: &Ctx<Message>| GameManager::create(ctx, appearance, windows_look);
+    match shell::run(create, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             shell::dialogs::show_start_error(&error.message());
@@ -472,7 +487,7 @@ impl App for GameManager {
             Some(Message::DraftClosed(DialogResult::Cancel))
         } else {
             match self.page {
-                Page::MyPc => Some(Message::Page(Page::Game)),
+                Page::MyPc | Page::Settings => Some(Message::Page(Page::Game)),
                 Page::Library => None,
                 Page::Game
                     if self.tab == GameTab::Reshade
@@ -483,6 +498,11 @@ impl App for GameManager {
                 Page::Game => None,
             }
         }
+    }
+
+    /// Windows' colours or its light or dark mode changed: read them again.
+    fn look_changed(&self) -> Option<Message> {
+        Some(SettingsMessage::WindowsChanged.into())
     }
 
     /// A game's program or its shortcut dropped anywhere on the window adds it.
@@ -507,7 +527,7 @@ impl App for GameManager {
 }
 
 impl GameManager {
-    fn create(ctx: &Ctx<Message>) -> Self {
+    fn create(ctx: &Ctx<Message>, appearance: Appearance, windows_look: WindowsLook) -> Self {
         let mut this = Self {
             games: Vec::new(),
             icons: icons::IconState::default(),
@@ -525,6 +545,8 @@ impl GameManager {
             menu: MenuState::default(),
             covers: CoverState::default(),
             page_art: PageArtState::default(),
+            appearance,
+            windows_look,
             graphics: HashMap::new(),
             graphics_pending: HashSet::new(),
             game_folders: HashMap::new(),
@@ -836,6 +858,7 @@ impl GameManager {
             Message::Menu(message) => self.handle_menu(message, context),
             Message::Cover(message) => self.handle_cover(message, context),
             Message::PageArt(message) => self.handle_page_art(message),
+            Message::Settings(message) => self.handle_settings(message, context),
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),
             Message::Tab(tab) => {

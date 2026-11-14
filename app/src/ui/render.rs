@@ -3,7 +3,9 @@
 //! - **`Text`** keeps DirectWrite formats and layouts, keyed by what they show, so measuring and
 //!   drawing the same text reuses one layout; entries unused for a few frames are dropped. It also
 //!   answers the layout's `Measure`. Every font is one Windows has (`theme`): none is embedded.
-//! - **`Renderer`** owns the GPU device and the window's swap chain, and keeps each picture's
+//! - **`Renderer`** owns the GPU device and the window's swap chain (a composition one, shown through
+//!   DirectComposition: it can be clear, so Windows' Mica shows behind a transparent frame, whose
+//!   text is then antialiased in grayscale), and keeps each picture's
 //!   bitmap by key (an `ID2D1Bitmap1` made through the device context, so pictures are drawn with
 //!   a chosen interpolation and source rectangle) while frames draw it: a bitmap the latest frame
 //!   didn't draw is dropped (`retain_drawn`), and its picture with it when nothing else holds it.
@@ -37,10 +39,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use windows::Win32::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_NONE,
-    D2D1_BITMAP_PROPERTIES1, D2D1_INTERPOLATION_MODE, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+    D2D1_BITMAP_PROPERTIES1, D2D1_COLOR_F, D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2,
+    D2D1_GRADIENT_STOP, D2D1_INTERPOLATION_MODE, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
     D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
-    D2D1_PIXEL_FORMAT, D2D1_RECT_F, D2D1_ROUNDED_RECT, D2D1_SIZE_U, DXGI_FORMAT_B8G8R8A8_UNORM,
-    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Layer, ID3D11Device, IDXGIDevice3,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_PIXEL_FORMAT, D2D1_RECT_F, D2D1_ROUNDED_RECT,
+    D2D1_SIZE_U, D2D1_TEXT_ANTIALIAS_MODE_DEFAULT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    DCompositionCreateDevice, DXGI_FORMAT_B8G8R8A8_UNORM, ID2D1Bitmap1, ID2D1Device,
+    ID2D1DeviceContext, ID2D1Layer, ID2D1RenderTarget, ID3D11Device, IDCompositionDevice,
+    IDCompositionTarget, IDCompositionVisual, IDXGIDevice, IDXGIDevice3, IDXGISwapChain1,
 };
 use windows_canvas::{
     Brush, ColorF, DrawingSession, Ellipse, GpuDevice, GradientStop, RoundedRect, SwapChain,
@@ -212,9 +218,58 @@ fn retain_drawn<A, B>(map: &mut HashMap<String, (A, B, u64)>, frame: u64) -> boo
     map.len() < before
 }
 
+/// DirectComposition showing the swap chain in the window. A composition swap chain can be
+/// transparent where an HWND one can't, so Windows' backdrop (Mica) shows where a frame leaves
+/// the window clear. Kept while the renderer lives.
+struct Composition {
+    _device: IDCompositionDevice,
+    _target: IDCompositionTarget,
+    _visual: IDCompositionVisual,
+}
+
+impl Composition {
+    /// `chain` as the one visual on top of `hwnd`'s client area.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must stay a live window for as long as the composition exists.
+    unsafe fn new(
+        hwnd: isize,
+        device: &GpuDevice,
+        chain: &SwapChain,
+    ) -> windows_core::Result<Self> {
+        let dxgi = device.d3d_device().cast::<IDXGIDevice>()?;
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: `raw` is a valid out-pointer for the interface the IID names.
+        unsafe { DCompositionCreateDevice(&dxgi, &IDCompositionDevice::IID, &mut raw) }.ok()?;
+        // SAFETY: on success `raw` holds a reference to an IDCompositionDevice, now owned here.
+        let composition = unsafe { IDCompositionDevice::from_raw(raw) };
+        // SAFETY: the caller keeps `hwnd` alive for the composition's life.
+        let target = unsafe { composition.CreateTargetForHwnd(hwnd as *mut _, true) }?;
+        // SAFETY: a plain call on the live device.
+        let visual = unsafe { composition.CreateVisual() }?;
+        let swap: &IDXGISwapChain1 = chain.as_interface();
+        // SAFETY: the visual takes its own reference to the swap chain.
+        unsafe { visual.SetContent(swap) }.ok()?;
+        // SAFETY: the target takes its own reference to the visual.
+        unsafe { target.SetRoot(&visual) }.ok()?;
+        // SAFETY: a plain call on the live device: shows what was set up.
+        unsafe { composition.Commit() }.ok()?;
+        Ok(Self {
+            _device: composition,
+            _target: target,
+            _visual: visual,
+        })
+    }
+}
+
 pub struct Renderer {
     _device: GpuDevice,
     chain: SwapChain,
+    _composition: Composition,
+    /// Windows' backdrop shows behind the window: frames clear to nothing, not the base colour,
+    /// and text is antialiased in grayscale (ClearType needs what is behind it to be opaque).
+    transparent: bool,
     /// Pixels per DIP, for drawing pictures on whole pixels.
     scale: f32,
     bitmaps: Bitmaps,
@@ -224,7 +279,8 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// A swap chain for the window's client area, `width` × `height` pixels at `dpi`.
+    /// A swap chain for the window's client area, `width` × `height` pixels at `dpi`, shown
+    /// through DirectComposition; `transparent` while Windows' backdrop shows behind it.
     ///
     /// # Safety
     ///
@@ -235,21 +291,28 @@ impl Renderer {
         width: u32,
         height: u32,
         dpi: f32,
+        transparent: bool,
     ) -> windows_core::Result<Self> {
         let device = GpuDevice::new_or_warp()?;
-        // SAFETY: the caller keeps `hwnd` alive for the renderer's life.
-        let mut chain = unsafe {
-            device.create_swap_chain_for_hwnd(hwnd as *mut _, width.max(1), height.max(1))
-        }?;
+        let mut chain = device.create_swap_chain(width.max(1), height.max(1))?;
         chain.set_dpi(dpi, dpi);
+        // SAFETY: the caller keeps `hwnd` alive for the renderer's life.
+        let composition = unsafe { Composition::new(hwnd, &device, &chain) }?;
         Ok(Self {
             _device: device,
             chain,
+            _composition: composition,
+            transparent,
             scale: dpi / 96.0,
             bitmaps: HashMap::new(),
             frames: 0,
             start: Instant::now(),
         })
+    }
+
+    /// Whether Windows' backdrop shows behind the window (see `transparent`).
+    pub fn set_transparent(&mut self, transparent: bool) {
+        self.transparent = transparent;
     }
 
     pub fn resize(&mut self, width: u32, height: u32, dpi: f32) -> windows_core::Result<()> {
@@ -269,7 +332,19 @@ impl Renderer {
     ) -> windows_core::Result<Drawn> {
         let elapsed = self.start.elapsed().as_secs_f32();
         let session = self.chain.begin_draw()?;
-        session.clear(theme::BASE);
+        let mode = if self.transparent {
+            session.clear(ColorF::new(0.0, 0.0, 0.0, 0.0));
+            D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE
+        } else {
+            session.clear(theme::base());
+            D2D1_TEXT_ANTIALIAS_MODE_DEFAULT
+        };
+        // SAFETY: a plain setting on the session's live device context.
+        unsafe {
+            session
+                .as_interface::<ID2D1DeviceContext>()
+                .SetTextAntialiasMode(mode)
+        };
         let brush = session.create_solid_brush(ColorF::WHITE)?;
         self.frames += 1;
         let mut painter = Painter {
@@ -343,7 +418,7 @@ impl Renderer {
         let drawn = self.frames;
         let bitmaps = &mut self.bitmaps;
         target.draw(|session| {
-            session.clear(theme::BASE);
+            session.clear(theme::base());
             let brush = session.create_solid_brush(ColorF::WHITE)?;
             let mut painter = Painter {
                 session,
@@ -662,6 +737,70 @@ impl Painter<'_> {
         }
     }
 
+    /// Fades what follows to nothing towards the bottom of `rect`: fully drawn down to `from` (a
+    /// share of its height), then less and less, until `pop_layer`. False when the layer couldn't
+    /// be pushed (nothing then fades).
+    fn push_fade(&self, rect: Rect, from: f32) -> bool {
+        let context = self.session.as_interface::<ID2D1DeviceContext>();
+        // The render target's simpler form; the device context's own takes colour spaces.
+        let target: &ID2D1RenderTarget = context;
+        let white = |a: f32| D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a,
+        };
+        let stops = [
+            D2D1_GRADIENT_STOP {
+                position: from.clamp(0.0, 1.0),
+                color: white(1.0),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 1.0,
+                color: white(0.0),
+            },
+        ];
+        // SAFETY: `stops` holds the two stops the count says and lives for the call.
+        let collection = unsafe {
+            target.CreateGradientStopCollection(
+                stops.as_ptr(),
+                stops.len() as u32,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )
+        };
+        let Ok(collection) = collection else {
+            return false;
+        };
+        let line = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+            startPoint: Vector2::new(rect.x, rect.y),
+            endPoint: Vector2::new(rect.x, rect.bottom()),
+        };
+        // SAFETY: `line` lives for the call; the collection was made on this context.
+        let Ok(brush) = (unsafe { target.CreateLinearGradientBrush(&line, None, &collection) })
+        else {
+            return false;
+        };
+        let mut parameters = D2D1_LAYER_PARAMETERS1 {
+            contentBounds: d2d_rect(rect),
+            geometricMask: ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Default::default(),
+            opacity: 1.0,
+            opacityBrush: ManuallyDrop::new(Some((*brush).clone())),
+            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+        };
+        // The identity: the brush is in the same coordinates as the drawing.
+        parameters.maskTransform.m11 = 1.0;
+        parameters.maskTransform.m22 = 1.0;
+        // SAFETY: `parameters` lives for the call, which takes its own reference to the brush; the
+        // session is between BeginDraw and EndDraw, and `pop_layer` follows.
+        unsafe { context.PushLayer(&parameters, None::<&ID2D1Layer>) };
+        // SAFETY: the brush's reference is released once, here; `parameters` isn't used after.
+        unsafe { ManuallyDrop::drop(&mut parameters.opacityBrush) };
+        true
+    }
+
     /// Clips what follows to `rect` with corners of `radius`, antialiased, until `pop_layer`.
     /// False when the layer couldn't be pushed (nothing is then clipped).
     fn push_rounded(&self, rect: Rect, radius: f32) -> bool {
@@ -747,7 +886,7 @@ impl Painter<'_> {
             let center = Vector2::new(cx + radius * angle.cos(), cy + radius * angle.sin());
             self.session.fill_ellipse(
                 &Ellipse::circle(center, dot),
-                self.paint(theme::with_alpha(theme::TEXT, (alpha * 255.0) as u8)),
+                self.paint(theme::with_alpha(theme::text(), (alpha * 255.0) as u8)),
             );
         }
     }
@@ -783,6 +922,7 @@ impl Painter<'_> {
                 super::theme::DISABLED_OPACITY
             };
         let rect = placed.rect;
+        let faded = el.fade_out.is_some_and(|from| self.push_fade(rect, from));
         let hover = ui.hover == Some(placed.id);
         let pressed = hover && ui.pressed == Some(placed.id);
         let fill = if pressed {
@@ -863,7 +1003,11 @@ impl Painter<'_> {
                 } else {
                     0x5C
                 };
-                self.fill_rounded(thumb, thumb.w / 2.0, theme::with_alpha(theme::TEXT, color));
+                self.fill_rounded(
+                    thumb,
+                    thumb.w / 2.0,
+                    theme::with_alpha(theme::text(), color),
+                );
             }
         } else {
             for (child, child_placed) in el.children.iter().zip(&placed.children) {
@@ -889,7 +1033,10 @@ impl Painter<'_> {
         if ui.focus_visible && ui.focus == Some(placed.id) && !matches!(el.kind, Kind::Edit { .. })
         {
             let ring = rect.inset(Edges::all(-2.0));
-            self.stroke_rounded(ring, el.radius + 2.0, theme::TEXT, 2.0);
+            self.stroke_rounded(ring, el.radius + 2.0, theme::text(), 2.0);
+        }
+        if faded {
+            self.pop_layer();
         }
         self.alpha = saved;
     }
@@ -910,7 +1057,7 @@ impl Painter<'_> {
         self.push_clip(inner.intersect(&placed.clip));
         if text.is_empty() && composing.is_none() {
             if !placeholder.is_empty() {
-                let spec = edit_spec(placeholder, theme::TEXT_TERTIARY);
+                let spec = edit_spec(placeholder, theme::text_tertiary());
                 self.text.with_layout(&spec, f32::INFINITY, |layout| {
                     let y = line_top(rect, layout);
                     self.session.draw_text_layout(
@@ -921,7 +1068,7 @@ impl Painter<'_> {
                 });
             }
             if focused && ui.caret_on {
-                let spec = edit_spec("", theme::TEXT);
+                let spec = edit_spec("", theme::text());
                 self.text.with_layout(&spec, f32::INFINITY, |layout| {
                     let caret = layout.caret_bounds(0, false);
                     let y = line_top(rect, layout);
@@ -939,7 +1086,7 @@ impl Painter<'_> {
             );
             let marked = selection.start..selection.start + composition.text.len();
             let caret = selection.start + composition.cursor.min(composition.text.len());
-            let spec = edit_spec(&shown, theme::TEXT);
+            let spec = edit_spec(&shown, theme::text());
             self.text.with_marked_layout(&spec, marked, |layout| {
                 let y = line_top(rect, layout);
                 self.session
@@ -950,14 +1097,14 @@ impl Painter<'_> {
                 }
             });
         } else {
-            let spec = edit_spec(text, theme::TEXT);
+            let spec = edit_spec(text, theme::text());
             self.text.with_layout(&spec, f32::INFINITY, |layout| {
                 let y = line_top(rect, layout);
                 if let Some(state) = state.filter(|state| focused && state.edit.has_selection()) {
                     for part in layout.range_bounds(state.edit.selection()) {
                         let mark =
                             Rect::new(x + part.left, y + part.top, part.width(), part.height());
-                        self.fill_rect(mark, theme::TEXT_SELECTION);
+                        self.fill_rect(mark, theme::text_selection());
                     }
                 }
                 self.session
@@ -980,14 +1127,14 @@ impl Painter<'_> {
                 rect.w - 2.0 * inset,
                 2.0,
             );
-            self.fill_rounded(line, 1.0, theme::ACCENT);
+            self.fill_rounded(line, 1.0, theme::accent());
         }
     }
 
     /// The text caret: a line one DIP wide.
     fn caret(&self, x: f32, y: f32, height: f32) {
         let x = x.round() + 0.5;
-        self.line((x, y), (x, y + height), theme::TEXT, 1.0);
+        self.line((x, y), (x, y + height), theme::text(), 1.0);
     }
 
     /// The text box menu: Cut, Copy, Paste and Select all with their shortcuts, greyed when they
@@ -1000,26 +1147,26 @@ impl Painter<'_> {
             theme::with_alpha(ColorF::BLACK, 0xFF),
             10.0,
         );
-        self.fill_rounded(rect, theme::RADIUS_FLYOUT, theme::FLYOUT);
+        self.fill_rounded(rect, theme::RADIUS_FLYOUT, theme::flyout());
         self.stroke_rounded(
             rect.inset(Edges::all(0.5)),
             theme::RADIUS_FLYOUT,
-            theme::FLYOUT_STROKE,
+            theme::flyout_stroke(),
             1.0,
         );
         for (index, command) in input::EditCommand::ALL.iter().enumerate() {
             let row = menu.row(index);
             let enabled = menu.enabled[index];
             if enabled && menu.hover == Some(index) {
-                self.fill_rounded(row, theme::RADIUS_CONTROL, theme::SUBTLE_HOVER);
+                self.fill_rounded(row, theme::RADIUS_CONTROL, theme::subtle_hover());
             }
             let mut label = item_spec(command.label());
             let mut keys = item_spec(command.shortcut());
             keys.size = theme::TEXT_SMALL;
-            keys.color = theme::TEXT_TERTIARY;
+            keys.color = theme::text_tertiary();
             if !enabled {
-                label.color = theme::with_alpha(theme::TEXT, 0x5C);
-                keys.color = theme::with_alpha(theme::TEXT, 0x40);
+                label.color = theme::with_alpha(theme::text(), 0x5C);
+                keys.color = theme::with_alpha(theme::text(), 0x40);
             }
             self.text(&label, Rect::new(row.x + 12.0, row.y, row.w - 24.0, row.h));
             let width = self.measure(&keys, row.w).0;
@@ -1041,31 +1188,31 @@ impl Painter<'_> {
         };
         let middle = rect.y + rect.h / 2.0;
         let bar = Rect::new(track.x, middle - 2.0, track.w, 4.0);
-        self.fill_rounded(bar, 2.0, theme::with_alpha(theme::TEXT, 0x5C));
+        self.fill_rounded(bar, 2.0, theme::with_alpha(theme::text(), 0x5C));
         self.fill_rounded(
             Rect::new(bar.x, bar.y, bar.w * ratio, bar.h),
             2.0,
-            theme::ACCENT,
+            theme::accent(),
         );
         let center = Vector2::new(track.x + track.w * ratio, middle);
         let thumb = input::SLIDER_THUMB / 2.0;
         self.session
-            .fill_ellipse(&Ellipse::circle(center, thumb), self.paint(theme::FLYOUT));
+            .fill_ellipse(&Ellipse::circle(center, thumb), self.paint(theme::flyout()));
         self.session.draw_ellipse(
             &Ellipse::circle(center, thumb - 0.5),
-            self.paint(theme::FLYOUT_STROKE),
+            self.paint(theme::flyout_stroke()),
             1.0,
         );
         self.session.fill_ellipse(
             &Ellipse::circle(center, if hot { 6.0 } else { 5.0 }),
-            self.paint(theme::ACCENT),
+            self.paint(theme::accent()),
         );
         let label = TextSpec {
             text: format!("{value}{unit}"),
             size: theme::TEXT_SIZE,
             weight: 600,
             font: Font::Text,
-            color: theme::TEXT,
+            color: theme::text(),
             wrap: false,
             align: TextAlign::Start,
         };
@@ -1089,11 +1236,11 @@ impl Painter<'_> {
         pressed: bool,
     ) {
         let fill = if pressed {
-            theme::CONTROL_PRESSED
+            theme::control_pressed()
         } else if hover {
-            theme::CONTROL_HOVER
+            theme::control_hover()
         } else {
-            theme::CONTROL
+            theme::control()
         };
         self.fill_rounded(rect, theme::RADIUS_CONTROL, fill);
         if let Some(label) = selected.and_then(|i| items.get(i)) {
@@ -1103,7 +1250,7 @@ impl Painter<'_> {
                 Rect::new(rect.x + 10.0, rect.y, rect.w - 40.0, rect.h),
             );
         }
-        let chevron = glyph_spec(theme::glyph::CHEVRON_DOWN, 10.0, theme::TEXT_SECONDARY);
+        let chevron = glyph_spec(theme::glyph::CHEVRON_DOWN, 10.0, theme::text_secondary());
         self.text(
             &chevron,
             Rect::new(rect.right() - 26.0, rect.y, 16.0, rect.h),
@@ -1118,11 +1265,11 @@ impl Painter<'_> {
                 theme::with_alpha(ColorF::BLACK, 0xFF),
                 10.0,
             );
-            self.fill_rounded(rect, theme::RADIUS_FLYOUT, theme::FLYOUT);
+            self.fill_rounded(rect, theme::RADIUS_FLYOUT, theme::flyout());
             self.stroke_rounded(
                 rect.inset(Edges::all(0.5)),
                 theme::RADIUS_FLYOUT,
-                theme::FLYOUT_STROKE,
+                theme::flyout_stroke(),
                 1.0,
             );
             self.push_clip(rect);
@@ -1134,11 +1281,11 @@ impl Painter<'_> {
                     ITEM_HEIGHT,
                 );
                 if ui.dropdown_hover == Some(i) {
-                    self.fill_rounded(row, theme::RADIUS_CONTROL, theme::SUBTLE_HOVER);
+                    self.fill_rounded(row, theme::RADIUS_CONTROL, theme::subtle_hover());
                 }
                 if selected == Some(i) {
                     let bar = Rect::new(row.x, row.y + 8.0, 3.0, row.h - 16.0);
-                    self.fill_rounded(bar, 1.5, theme::ACCENT);
+                    self.fill_rounded(bar, 1.5, theme::accent());
                 }
                 self.text(
                     &item_spec(item),
@@ -1156,11 +1303,11 @@ impl Painter<'_> {
             spec.wrap = true;
             let size = self.measure(&spec, 320.0);
             let rect = input::tooltip_rect(tip.at, size, ui.window);
-            self.fill_rounded(rect, theme::RADIUS_CONTROL, theme::TOOLTIP);
+            self.fill_rounded(rect, theme::RADIUS_CONTROL, theme::tooltip());
             self.stroke_rounded(
                 rect.inset(Edges::all(0.5)),
                 theme::RADIUS_CONTROL,
-                theme::FLYOUT_STROKE,
+                theme::flyout_stroke(),
                 1.0,
             );
             self.text(

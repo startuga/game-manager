@@ -107,7 +107,7 @@ fn changed_warning(state: &OverrideState, catalog: &Catalog) -> Option<El<Messag
             settings.join(", ")
         )
     };
-    Some(text(message).wrap().color(theme::AMBER))
+    Some(text(message).wrap().color(theme::amber()))
 }
 
 impl GameManager {
@@ -306,9 +306,9 @@ impl GameManager {
         };
         let header = mod_card(ModCard {
             icon: g::NVIDIA,
-            tint: theme::GREEN,
+            tint: theme::green(),
             title: "NVIDIA overrides",
-            status: text(status).color(theme::TEXT_SECONDARY),
+            status: text(status).color(theme::text_secondary()),
             actions: vec![
                 button("Info")
                     .enabled(!self.dialog_open())

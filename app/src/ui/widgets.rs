@@ -21,9 +21,9 @@ pub fn button<M>(label: impl Into<String>) -> El<M> {
     row([text(label)])
         .pad_xy(12.0, 0.0)
         .height(theme::CONTROL_HEIGHT)
-        .bg(theme::CONTROL)
-        .hover_bg(theme::CONTROL_HOVER)
-        .pressed_bg(theme::CONTROL_PRESSED)
+        .bg(theme::control())
+        .hover_bg(theme::control_hover())
+        .pressed_bg(theme::control_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
 }
@@ -34,21 +34,21 @@ pub fn icon_text_button<M>(icon: &str, label: impl Into<String>) -> El<M> {
         .gap(8.0)
         .pad_xy(12.0, 0.0)
         .height(theme::CONTROL_HEIGHT)
-        .bg(theme::CONTROL)
-        .hover_bg(theme::CONTROL_HOVER)
-        .pressed_bg(theme::CONTROL_PRESSED)
+        .bg(theme::control())
+        .hover_bg(theme::control_hover())
+        .pressed_bg(theme::control_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
 }
 
 /// The main action of a group, in the accent colour.
 pub fn accent_button<M>(label: impl Into<String>) -> El<M> {
-    row([text(label).bold()])
+    row([text(label).bold().color(theme::text_on_accent())])
         .pad_xy(14.0, 0.0)
         .height(theme::CONTROL_HEIGHT)
-        .bg(theme::ACCENT)
-        .hover_bg(lighten(theme::ACCENT, 0.10))
-        .pressed_bg(darken(theme::ACCENT, 0.12))
+        .bg(theme::accent())
+        .hover_bg(lighten(theme::accent(), 0.10))
+        .pressed_bg(darken(theme::accent(), 0.12))
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
 }
@@ -59,8 +59,8 @@ pub fn subtle_button<M>(icon: &str, label: impl Into<String>) -> El<M> {
         .gap(8.0)
         .pad_xy(10.0, 0.0)
         .height(theme::CONTROL_HEIGHT)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
 }
@@ -72,8 +72,8 @@ pub fn icon_button<M>(icon: &str, name: impl Into<String>) -> El<M> {
         .text_align(TextAlign::Center)
         .fill_width()])
     .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
-    .hover_bg(theme::SUBTLE_HOVER)
-    .pressed_bg(theme::SUBTLE_PRESSED)
+    .hover_bg(theme::subtle_hover())
+    .pressed_bg(theme::subtle_pressed())
     .radius(theme::RADIUS_CONTROL)
     .role(Role::Button)
     .tooltip(name.clone())
@@ -95,22 +95,22 @@ pub fn dropdown_button<M>(icon: &str, name: impl Into<String>, active: bool) -> 
             col([])
                 .size(6.0, 6.0)
                 .radius(3.0)
-                .bg(theme::ACCENT)
+                .bg(theme::accent())
                 .halign(Align::End)
                 .valign(Align::Start),
         );
     }
     row([
         layers(face).size(20.0, 20.0),
-        glyph(theme::glyph::CHEVRON_DOWN, 8.0).color(theme::TEXT_SECONDARY),
+        glyph(theme::glyph::CHEVRON_DOWN, 8.0).color(theme::text_secondary()),
     ])
     .gap(5.0)
     .pad_xy(8.0, 0.0)
     .height(theme::CONTROL_HEIGHT)
-    .bg(theme::CONTROL)
-    .stroke(theme::INPUT_STROKE, 1.0)
-    .hover_bg(theme::CONTROL_HOVER)
-    .pressed_bg(theme::CONTROL_PRESSED)
+    .bg(theme::control())
+    .stroke(theme::input_stroke(), 1.0)
+    .hover_bg(theme::control_hover())
+    .pressed_bg(theme::control_pressed())
     .radius(theme::RADIUS_CONTROL)
     .role(Role::Button)
     .tooltip(name.clone())
@@ -121,12 +121,12 @@ pub fn dropdown_button<M>(icon: &str, name: impl Into<String>, active: bool) -> 
 pub fn remove_button<M>(name: impl Into<String>) -> El<M> {
     let name = name.into();
     row([glyph(theme::glyph::CLOSE, 12.0)
-        .color(theme::CRITICAL)
+        .color(theme::critical())
         .text_align(TextAlign::Center)
         .fill_width()])
     .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
-    .hover_bg(theme::SUBTLE_HOVER)
-    .pressed_bg(theme::SUBTLE_PRESSED)
+    .hover_bg(theme::subtle_hover())
+    .pressed_bg(theme::subtle_pressed())
     .radius(theme::RADIUS_CONTROL)
     .role(Role::Button)
     .tooltip(name.clone())
@@ -143,8 +143,8 @@ pub fn text_box<M>(
     on_change: impl Fn(String) -> M + 'static,
 ) -> El<M> {
     super::el::edit(key, value, placeholder, on_change)
-        .bg(theme::INPUT)
-        .stroke(theme::INPUT_STROKE, 1.0)
+        .bg(theme::input())
+        .stroke(theme::input_stroke(), 1.0)
         .radius(theme::RADIUS_CONTROL)
         .name(name)
 }
@@ -161,7 +161,7 @@ pub fn search_box<M>(
 ) -> El<M> {
     let mut parts = vec![
         glyph(theme::glyph::SEARCH, theme::ICON_SIZE)
-            .color(theme::TEXT_TERTIARY)
+            .color(theme::text_tertiary())
             .padding(super::el::Edges::new(10.0, 0.0, 0.0, 0.0)),
         super::el::edit(key, value, placeholder, on_change)
             .on_enter(on_enter)
@@ -172,13 +172,13 @@ pub fn search_box<M>(
     if !value.is_empty() {
         parts.push(
             row([glyph(theme::glyph::CLOSE, 10.0)
-                .color(theme::TEXT_SECONDARY)
+                .color(theme::text_secondary())
                 .text_align(TextAlign::Center)
                 .fill_width()])
             .size(24.0, 24.0)
             .radius(theme::RADIUS_CONTROL)
-            .hover_bg(theme::SUBTLE_HOVER)
-            .pressed_bg(theme::SUBTLE_PRESSED)
+            .hover_bg(theme::subtle_hover())
+            .pressed_bg(theme::subtle_pressed())
             .role(Role::Button)
             .name("Clear the search")
             .tooltip("Clear the search (Escape)")
@@ -189,18 +189,18 @@ pub fn search_box<M>(
         .pad_xy(0.0, 0.0)
         .padding(super::el::Edges::new(0.0, 0.0, 3.0, 0.0))
         .height(theme::CONTROL_HEIGHT)
-        .bg(theme::INPUT)
-        .stroke(theme::INPUT_STROKE, 1.0)
+        .bg(theme::input())
+        .stroke(theme::input_stroke(), 1.0)
         .radius(theme::RADIUS_CONTROL)
 }
 
 /// A text link: a version that opens its download page, a web page.
 pub fn link<M>(label: impl Into<String>, message: M) -> El<M> {
-    row([text(label).color(theme::BLUE)])
+    row([text(label).color(theme::blue())])
         .pad_xy(4.0, 2.0)
         .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .role(Role::Button)
         .on_click(message)
 }
@@ -211,7 +211,7 @@ pub fn working_button<M>() -> El<M> {
         .gap(8.0)
         .pad_xy(14.0, 0.0)
         .height(theme::CONTROL_HEIGHT)
-        .bg(theme::CONTROL)
+        .bg(theme::control())
         .radius(theme::RADIUS_CONTROL)
         .enabled(false)
 }
@@ -230,14 +230,14 @@ pub fn radio_group<M>(
             move |painter: &mut Painter<'_>, rect: Rect, _: Interaction| {
                 let ring = Rect::new(rect.x, rect.y + (rect.h - 18.0) / 2.0, 18.0, 18.0);
                 if chosen {
-                    painter.fill_rounded(ring, 9.0, theme::ACCENT);
+                    painter.fill_rounded(ring, 9.0, theme::accent());
                     painter.fill_rounded(
                         Rect::new(ring.x + 5.0, ring.y + 5.0, 8.0, 8.0),
                         4.0,
-                        theme::TEXT,
+                        theme::text(),
                     );
                 } else {
-                    painter.stroke_rounded(ring, 9.0, theme::TEXT_TERTIARY, 1.0);
+                    painter.stroke_rounded(ring, 9.0, theme::text_tertiary(), 1.0);
                 }
             },
         )
@@ -247,7 +247,7 @@ pub fn radio_group<M>(
                 .gap(8.0)
                 .pad_xy(4.0, 3.0)
                 .radius(theme::RADIUS_CONTROL)
-                .hover_bg(theme::SUBTLE_HOVER)
+                .hover_bg(theme::subtle_hover())
                 .role(Role::ListItem)
                 .selected(chosen)
                 .name(item)
@@ -273,8 +273,8 @@ pub fn card<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {
     col(children)
         .gap(theme::GAP)
         .pad(16.0)
-        .bg(theme::CARD)
-        .stroke(theme::CARD_STROKE, 1.0)
+        .bg(theme::card())
+        .stroke(theme::card_stroke(), 1.0)
         .radius(theme::RADIUS_CARD)
         .role(Role::Group)
 }
@@ -303,7 +303,7 @@ pub fn card_header<M>(
         lines.push(
             text(subtitle)
                 .text_size(theme::TEXT_SMALL)
-                .color(theme::TEXT_TERTIARY)
+                .color(theme::text_tertiary())
                 .wrap(),
         );
     }
@@ -330,16 +330,16 @@ pub fn tabs<M>(tabs: Vec<Tab<M>>) -> El<M> {
             .text_size(13.5)
             .weight(if tab.selected { 600 } else { 400 })
             .color(if tab.selected {
-                theme::TEXT
+                theme::text()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             });
         let face = row([icon_square(tab.icon, tab.tint, 20.0), label])
             .gap(7.0)
             .padding(super::el::Edges::new(8.0, 5.0, 13.0, 6.0))
             .radius(theme::RADIUS_TAB)
-            .hover_bg(theme::SUBTLE_HOVER)
-            .pressed_bg(theme::SUBTLE_PRESSED)
+            .hover_bg(theme::subtle_hover())
+            .pressed_bg(theme::subtle_pressed())
             .role(Role::Tab)
             .selected(tab.selected)
             .name(tab.label)
@@ -350,7 +350,7 @@ pub fn tabs<M>(tabs: Vec<Tab<M>>) -> El<M> {
             .halign(Align::Center)
             .radius(1.0);
         let underline = if tab.selected {
-            underline.bg(theme::ACCENT)
+            underline.bg(theme::accent())
         } else {
             underline
         };
@@ -362,13 +362,17 @@ pub fn tabs<M>(tabs: Vec<Tab<M>>) -> El<M> {
 /// A sidebar page: glyph and label, selected with a fill and an accent bar.
 pub fn nav_item<M>(icon: &str, label: impl Into<String>, selected: bool, message: M) -> El<M> {
     let bar = col([]).size(3.0, 16.0).radius(1.5);
-    let bar = if selected { bar.bg(theme::ACCENT) } else { bar };
+    let bar = if selected {
+        bar.bg(theme::accent())
+    } else {
+        bar
+    };
     row([bar, glyph(icon, theme::ICON_SIZE), text(label).fill_width()])
         .gap(10.0)
         .padding(super::el::Edges::new(2.0, 0.0, 10.0, 0.0))
         .height(34.0)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::ListItem)
         .selected(selected)
@@ -383,21 +387,21 @@ pub fn check_square<M>(state: Option<bool>) -> El<M> {
             let square = Rect::new(rect.x, rect.y + (rect.h - 18.0) / 2.0, 18.0, 18.0);
             match state {
                 Some(true) => {
-                    painter.fill_rounded(square, 4.0, theme::ACCENT);
+                    painter.fill_rounded(square, 4.0, theme::accent());
                     painter.text(
-                        &super::render::glyph_spec(theme::glyph::CHECK, 11.0, theme::TEXT),
+                        &super::render::glyph_spec(theme::glyph::CHECK, 11.0, theme::text()),
                         square,
                     );
                 }
                 None => {
-                    painter.fill_rounded(square, 4.0, theme::ACCENT);
+                    painter.fill_rounded(square, 4.0, theme::accent());
                     painter.fill_rounded(
                         Rect::new(square.x + 4.0, square.y + 8.0, 10.0, 2.0),
                         1.0,
-                        theme::TEXT,
+                        theme::text(),
                     );
                 }
-                Some(false) => painter.stroke_rounded(square, 4.0, theme::TEXT_TERTIARY, 1.0),
+                Some(false) => painter.stroke_rounded(square, 4.0, theme::text_tertiary(), 1.0),
             }
         },
     )
@@ -409,7 +413,7 @@ pub fn checkbox<M>(label: impl Into<String>, checked: bool, message: M) -> El<M>
     row([check_square(Some(checked)), text(label).wrap().fill_width()])
         .gap(8.0)
         .pad_xy(4.0, 2.0)
-        .hover_bg(theme::SUBTLE_HOVER)
+        .hover_bg(theme::subtle_hover())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::CheckBox)
         .selected(checked)
@@ -422,9 +426,9 @@ pub fn toggle<M>(label: impl Into<String>, on: bool, message: M) -> El<M> {
         move |painter: &mut Painter<'_>, rect: Rect, _: Interaction| {
             let track = Rect::new(rect.x, rect.y + (rect.h - 20.0) / 2.0, 40.0, 20.0);
             if on {
-                painter.fill_rounded(track, 10.0, theme::ACCENT);
+                painter.fill_rounded(track, 10.0, theme::accent());
             } else {
-                painter.stroke_rounded(track, 10.0, theme::TEXT_TERTIARY, 1.0);
+                painter.stroke_rounded(track, 10.0, theme::text_tertiary(), 1.0);
             }
             let x = if on {
                 track.right() - 16.0
@@ -436,9 +440,9 @@ pub fn toggle<M>(label: impl Into<String>, on: bool, message: M) -> El<M> {
                 dot,
                 6.0,
                 if on {
-                    theme::TEXT
+                    theme::text()
                 } else {
-                    theme::TEXT_SECONDARY
+                    theme::text_secondary()
                 },
             );
         },
@@ -448,7 +452,7 @@ pub fn toggle<M>(label: impl Into<String>, on: bool, message: M) -> El<M> {
         .gap(10.0)
         .pad_xy(4.0, 2.0)
         .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::SUBTLE_HOVER)
+        .hover_bg(theme::subtle_hover())
         .role(Role::CheckBox)
         .selected(on)
         .on_click(message)
@@ -458,11 +462,11 @@ pub fn toggle<M>(label: impl Into<String>, on: bool, message: M) -> El<M> {
 pub fn error_bar<M>(title: &str, message: &str, on_close: M) -> El<M> {
     row([
         glyph(theme::glyph::ERROR, 16.0)
-            .color(theme::CRITICAL)
+            .color(theme::critical())
             .valign(Align::Start),
         col([
             text(title).bold(),
-            text(message).wrap().color(theme::TEXT_SECONDARY),
+            text(message).wrap().color(theme::text_secondary()),
         ])
         .gap(2.0)
         .fill_width(),
@@ -472,7 +476,7 @@ pub fn error_bar<M>(title: &str, message: &str, on_close: M) -> El<M> {
     ])
     .gap(12.0)
     .pad_xy(14.0, 10.0)
-    .bg(theme::ERROR_FILL)
+    .bg(theme::error_fill())
     .radius(6.0)
 }
 
@@ -488,13 +492,13 @@ pub fn heading<M>(label: impl Into<String>) -> El<M> {
 pub fn hint<M>(label: impl Into<String>) -> El<M> {
     text(label)
         .text_size(theme::TEXT_SMALL)
-        .color(theme::TEXT_TERTIARY)
+        .color(theme::text_tertiary())
         .wrap()
 }
 
 /// A thin line between areas.
 pub fn divider<M>() -> El<M> {
-    col([]).height(1.0).bg(theme::DIVIDER)
+    col([]).height(1.0).bg(theme::divider())
 }
 
 /// A thin strip that resizes what is beside it by dragging (the sidebar): the left-right arrows
@@ -505,7 +509,7 @@ pub fn resize_grip<M>(name: &str, on_drag: impl Fn(f32) -> M + 'static) -> El<M>
         |painter: &mut Painter<'_>, rect: Rect, interaction: Interaction| {
             if interaction.hover || interaction.pressed {
                 let line = Rect::new(rect.x + rect.w / 2.0 - 1.0, rect.y, 2.0, rect.h);
-                painter.fill_rect(line, theme::with_alpha(theme::ACCENT, 0x99));
+                painter.fill_rect(line, theme::with_alpha(theme::accent(), 0x99));
             }
         },
     )
@@ -522,23 +526,23 @@ pub fn segmented<M>(items: Vec<(&str, bool, M)>) -> El<M> {
         row([text(label)
             .weight(if selected { 600 } else { 400 })
             .color(if selected {
-                theme::TEXT
+                theme::text()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             })])
         .pad_xy(16.0, 0.0)
         .height(28.0)
         .radius(14.0)
-        .hover_bg(theme::SUBTLE_HOVER)
-        .pressed_bg(theme::SUBTLE_PRESSED)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .role(Role::Tab)
         .selected(selected)
         .on_click(message)
     }))
     .gap(2.0)
     .pad(3.0)
-    .bg(theme::CARD)
-    .stroke(theme::CARD_STROKE, 1.0)
+    .bg(theme::card())
+    .stroke(theme::card_stroke(), 1.0)
     .radius(17.0)
     .halign(Align::Start)
 }
@@ -549,11 +553,11 @@ pub fn meter<M>(ratio: f32) -> El<M> {
     paint(
         move |painter: &mut Painter<'_>, rect: Rect, _: Interaction| {
             let bar = Rect::new(rect.x, rect.y + (rect.h - 4.0) / 2.0, rect.w, 4.0);
-            painter.fill_rounded(bar, 2.0, theme::CONTROL_HOVER);
+            painter.fill_rounded(bar, 2.0, theme::control_hover());
             let color = if ratio >= 0.9 {
-                theme::CRITICAL
+                theme::critical()
             } else {
-                theme::ACCENT
+                theme::accent()
             };
             painter.fill_rounded(Rect::new(bar.x, bar.y, bar.w * ratio, bar.h), 2.0, color);
         },
@@ -563,7 +567,7 @@ pub fn meter<M>(ratio: f32) -> El<M> {
 
 /// A label with a busy spinner.
 pub fn working<M>(label: impl Into<String>) -> El<M> {
-    row([spinner(16.0), text(label).color(theme::TEXT_SECONDARY)]).gap(8.0)
+    row([spinner(16.0), text(label).color(theme::text_secondary())]).gap(8.0)
 }
 
 /// What the Play button shows.
@@ -600,7 +604,7 @@ fn draw_play(
     state: PlayState,
 ) {
     const CORNER: f32 = 6.0;
-    let color = theme::PLAY;
+    let color = theme::play();
     let lift = if interaction.pressed {
         1.0
     } else if interaction.hover {
@@ -623,14 +627,14 @@ fn draw_play(
     painter.fill_gradient(
         gloss,
         CORNER,
-        theme::with_alpha(theme::TEXT, 0x1F),
-        theme::with_alpha(theme::TEXT, 0x05),
+        theme::with_alpha(theme::text(), 0x1F),
+        theme::with_alpha(theme::text(), 0x05),
     );
     // The crisp edge: lighter on top, darker at the bottom.
     painter.line(
         (face.x + CORNER + 4.0, face.y + 1.0),
         (face.right() - CORNER - 4.0, face.y + 1.0),
-        theme::with_alpha(theme::TEXT, 0x59),
+        theme::with_alpha(theme::text(), 0x59),
         1.0,
     );
     painter.line(
@@ -642,14 +646,14 @@ fn draw_play(
     if interaction.pressed {
         painter.fill_rounded(face, CORNER, theme::with_alpha(ColorF::BLACK, 0x1A));
     } else if interaction.hover {
-        painter.fill_rounded(face, CORNER, theme::with_alpha(theme::TEXT, 0x14));
+        painter.fill_rounded(face, CORNER, theme::with_alpha(theme::text(), 0x14));
     }
     let word = TextSpec {
         text: label.to_owned(),
         size: 19.0,
         weight: 600,
         font: Font::Display,
-        color: theme::TEXT,
+        color: theme::text(),
         wrap: false,
         align: TextAlign::Start,
     };
@@ -660,7 +664,7 @@ fn draw_play(
     match state {
         PlayState::Play => {
             painter.text(
-                &glyph_spec(theme::glyph::PLAY, 18.0, theme::TEXT),
+                &glyph_spec(theme::glyph::PLAY, 18.0, theme::text()),
                 Rect::new(x, face.y, icon_w, face.h),
             );
         }
@@ -670,7 +674,7 @@ fn draw_play(
                 painter.fill_rounded(
                     dot(i as f32),
                     2.5,
-                    theme::with_alpha(theme::TEXT, 0x99 + i as u8 * 0x20),
+                    theme::with_alpha(theme::text(), 0x99 + i as u8 * 0x20),
                 );
             }
         }

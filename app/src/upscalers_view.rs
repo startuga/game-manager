@@ -514,17 +514,17 @@ impl GameManager {
             .enabled(restorable && !busy)
             .on_click(UpscalerMessage::Restore(key).into());
         let tint = match vendor {
-            "NVIDIA" => theme::GREEN,
-            "AMD" => theme::RED,
-            "Intel" => theme::BLUE,
-            _ => theme::SLATE,
+            "NVIDIA" => theme::green(),
+            "AMD" => theme::red(),
+            "Intel" => theme::blue(),
+            _ => theme::slate(),
         };
         card([
             row([
                 icon_square(g::CHIP, tint, 36.0),
                 col([
                     text(name).text_size(theme::TEXT_SUBTITLE).bold(),
-                    text(state).color(theme::TEXT_SECONDARY).wrap(),
+                    text(state).color(theme::text_secondary()).wrap(),
                 ])
                 .gap(2.0)
                 .fill_width(),

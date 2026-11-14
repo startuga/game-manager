@@ -21,13 +21,15 @@ use windows::Win32::{HWND, PostMessageW, WM_APP};
 /// Posted when background work sent a message.
 pub const WM_WAKE: i32 = WM_APP + 1;
 
-/// The window commands the title bar's buttons give.
+/// The window commands the title bar's buttons give, and the window's look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowCommand {
     Minimize,
     /// Maximize, or restore when maximized.
     Maximize,
     Close,
+    /// A dark or light frame, and Windows' backdrop (Mica) or none.
+    Look(super::window::Look),
 }
 
 /// The Open dialog's options.

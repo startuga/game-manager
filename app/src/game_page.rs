@@ -5,10 +5,11 @@
 //! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan). With
 //! page art (`page_art.rs`) the header is a band across the page from edge to edge: the game's
 //! wide picture (else its cover blurred, calmed with a shade) cut to fill it, as high as a share of
-//! its width (`theme::ART_BAND_*`), darker on the left behind the text and fading into the page at
-//! the bottom; over it the logo (else the icon and the name in the hero size), the folder and the
-//! chips, in the page's column. The picture stops 4 DIPs short of the band, under the fade's solid
-//! end: its partly covered edge pixel showed as a light line. Then a
+//! its width (`theme::ART_BAND_*`), darker on the left behind the text, and fading out from
+//! `theme::ART_FADE_FROM` down (`El::fade_out`, an opacity mask, so it melts into Mica as into the
+//! base colour). Over it, above the fade, the logo (else the icon and the name in the hero size),
+//! the folder and the chips, in the page's column, in the dark palette whatever the theme: art is
+//! mostly dark, and logos are drawn for it. Then a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
@@ -54,6 +55,7 @@ impl GameManager {
             Page::Library => page("library", self.library_page(window)),
             Page::Game => self.game_page(window),
             Page::MyPc => page("my-pc", self.my_pc_page(window)),
+            Page::Settings => page("settings", self.settings_page()),
         }
     }
 
@@ -77,28 +79,28 @@ impl GameManager {
         let mut strip = vec![
             tab(
                 g::OVERVIEW,
-                theme::BLUE,
+                theme::blue(),
                 "Overview",
                 self.tab == GameTab::Overview,
                 GameTab::Overview,
             ),
             tab(
                 g::BRUSH,
-                theme::PINK,
+                theme::pink(),
                 "ReShade",
                 self.tab == GameTab::Reshade,
                 GameTab::Reshade,
             ),
             tab(
                 g::WRENCH,
-                theme::ORANGE,
+                theme::orange(),
                 "DXVK & LAA",
                 self.tab == GameTab::Mods,
                 GameTab::Mods,
             ),
             tab(
                 g::CHIP,
-                theme::CYAN,
+                theme::cyan(),
                 "Upscalers",
                 self.tab == GameTab::Upscalers,
                 GameTab::Upscalers,
@@ -108,7 +110,7 @@ impl GameManager {
         if nvidia {
             strip.push(tab(
                 g::NVIDIA,
-                theme::GREEN,
+                theme::green(),
                 "NVIDIA overrides",
                 self.tab == GameTab::Nvidia,
                 GameTab::Nvidia,
@@ -130,7 +132,7 @@ impl GameManager {
                 "page:game",
                 col([
                     band,
-                    page_column(col(rest).gap(18.0)).padding(Edges::new(24.0, 18.0, 24.0, 24.0)),
+                    page_column(col(rest).gap(18.0)).padding(Edges::new(24.0, 0.0, 24.0, 24.0)),
                 ]),
             )
             .grow(),
@@ -142,22 +144,23 @@ impl GameManager {
     }
 
     /// The band across the top of the game page: the game's wide art (else its cover blurred),
-    /// fading into the page, with its logo (else its icon and name), folder and chips over it.
+    /// fading out at the bottom into whatever is behind (Mica, or the base colour), with its logo
+    /// (else its icon and name), folder and chips over it, above the fade. Art is dark more often
+    /// than not and logos are drawn for it, so the band keeps the dark palette in either theme.
     /// `None` while there is no background to draw: the plain header shows instead.
     fn art_band(&self, game: &Game, window: &WindowInfo) -> Option<El<Message>> {
         let shown = self.page_art.shown(&game.id)?;
+        let dark = theme::DARK;
         let width = (window.size.0 - self.sidebar_width).max(1.0);
         let height = (width / theme::ART_BAND_RATIO)
             .clamp(theme::ART_BAND_MIN_HEIGHT, theme::ART_BAND_MAX_HEIGHT);
-        // The picture ends under the scrim's last, solid strip: its edge pixel, partly covered at
-        // most scalings, would show through as a light line.
         let art = image(format!("art:{}", game.id), Arc::clone(shown.background))
             .cover()
             .fill_width()
-            .height(height - 4.0);
+            .height(height);
         let blurred = shown.blurred;
         let scrim = paint(move |painter, rect, _| {
-            let shade = |alpha| theme::with_alpha(theme::BASE, alpha);
+            let shade = |alpha| theme::with_alpha(dark.base, alpha);
             if blurred {
                 // A blurred cover is all colour: calmer behind the text.
                 painter.fill_rect(rect, shade(0x70));
@@ -169,17 +172,13 @@ impl GameManager {
                 (1.0, 0.0),
                 &[(0.0, shade(0xC8)), (0.45, shade(0x60)), (0.8, shade(0))],
             );
-            // Into the page at the bottom, solid for its last few DIPs.
-            let solid = 1.0 - 6.0 / rect.h.max(12.0);
-            painter.fill_linear(
-                rect,
-                (0.0, 0.0),
-                (0.0, 1.0),
-                &[(0.3, shade(0)), (solid, shade(0xFF)), (1.0, shade(0xFF))],
-            );
         })
         .fill_width()
         .height(height);
+        let picture = layers([art, scrim])
+            .fill_width()
+            .height(height)
+            .fade_out(theme::ART_FADE_FROM);
         let title = match shown.logo {
             Some(logo) => art_logo(game, logo),
             None => row([
@@ -188,6 +187,7 @@ impl GameManager {
                     .font(Font::Display)
                     .text_size(theme::TEXT_HERO)
                     .weight(600)
+                    .color(dark.text)
                     .wrap()
                     .fill_width(),
             ])
@@ -195,40 +195,47 @@ impl GameManager {
         };
         let info = col([
             title,
-            self.folder_line(game),
-            row(self.chips(game)).gap(6.0),
+            self.folder_line(game, &dark),
+            row(self.chips(game, &dark)).gap(6.0),
         ])
         .gap(8.0)
         .fill_width()
         .max_width(PAGE_MAX_WIDTH)
         .halign(Align::Center);
+        // Above the fade, over the picture at its fullest.
         let over = col([info])
             .fill_width()
-            .padding(Edges::new(24.0, 0.0, 24.0, 20.0))
+            .padding(Edges::new(
+                24.0,
+                0.0,
+                24.0,
+                height * (1.0 - theme::ART_FADE_FROM),
+            ))
             .valign(Align::End);
-        Some(layers([art, scrim, over]).fill_width().height(height))
+        Some(layers([picture, over]).fill_width().height(height))
     }
 
     /// Where the game is installed, as the header's second line.
-    fn folder_line(&self, game: &Game) -> El<Message> {
+    fn folder_line(&self, game: &Game, palette: &theme::Palette) -> El<Message> {
         let folder = game.install_dir.as_ref().map_or_else(
             || "Install folder unknown".to_owned(),
             |dir| dir.display().to_string(),
         );
         text(folder)
             .text_size(theme::TEXT_SMALL)
-            .color(theme::TEXT_TERTIARY)
+            .color(palette.text_tertiary)
             .wrap()
     }
 
     /// The header without art: the icon beside the name, the folder and the chips.
     fn header(&self, game: &Game) -> El<Message> {
+        let palette = theme::palette();
         row([
             self.icon(game, crate::icons::LARGE),
             col([
                 heading(game.name.clone()).wrap(),
-                self.folder_line(game),
-                row(self.chips(game)).gap(6.0),
+                self.folder_line(game, &palette),
+                row(self.chips(game, &palette)).gap(6.0),
             ])
             .gap(6.0)
             .fill_width(),
@@ -236,27 +243,27 @@ impl GameManager {
         .gap(16.0)
     }
 
-    /// The store, the bitness, the graphics APIs and DXVK's Vulkan, as chips.
-    fn chips(&self, game: &Game) -> Vec<El<Message>> {
+    /// The store, the bitness, the graphics APIs and DXVK's Vulkan, as chips in `palette`'s tints.
+    fn chips(&self, game: &Game, palette: &theme::Palette) -> Vec<El<Message>> {
         let mut chips = vec![chip(
             game.store.name().to_uppercase(),
-            store_tint(game.store),
+            store_tint(game.store, palette),
         )];
         if let Some(arch) = game.arch {
             let chosen = game
                 .edits
                 .as_ref()
                 .is_some_and(|edits| edits.arch.is_some());
-            let arch = chip(arch.label(), theme::BLUE);
+            let arch = chip(arch.label(), palette.blue);
             chips.push(if chosen { arch.tooltip(CHOSEN) } else { arch });
         }
         if let Some((apis, tooltip)) = self.graphics_text(game) {
             for api in apis {
-                chips.push(chip(api, theme::VIOLET).tooltip(tooltip.clone()));
+                chips.push(chip(api, palette.violet).tooltip(tooltip.clone()));
             }
         }
         if self.runs_on_dxvk(game) {
-            chips.push(chip("VULKAN (DXVK)", theme::ORANGE).tooltip(
+            chips.push(chip("VULKAN (DXVK)", palette.orange).tooltip(
                 "DXVK is in the game's folder: it runs the game's Direct3D on Vulkan, so \
                      overlays and ReShade see a Vulkan game.",
             ));
@@ -454,7 +461,7 @@ impl GameManager {
         card([
             card_header(
                 g::SETTINGS,
-                theme::BLUE,
+                theme::blue(),
                 title,
                 "What Play starts, and what mods need to know",
             ),
@@ -529,13 +536,13 @@ impl GameManager {
                 text(label)
                     .text_size(theme::TEXT_CAPTION)
                     .weight(700)
-                    .color(theme::TEXT_TERTIARY),
+                    .color(theme::text_tertiary()),
                 text(value).wrap(),
             ])
             .gap(2.0)
         };
         card([
-            card_header(g::INFO, theme::SLATE, "Details", ""),
+            card_header(g::INFO, theme::slate(), "Details", ""),
             line("STORE", game.store.name().to_owned()),
             line("GAME PROGRAM", program),
             line(
@@ -564,15 +571,15 @@ fn tab(
 }
 
 /// A store's chip colour.
-fn store_tint(store: Store) -> ColorF {
+fn store_tint(store: Store, palette: &theme::Palette) -> ColorF {
     match store {
-        Store::Steam => theme::BLUE,
-        Store::Epic => theme::SLATE,
-        Store::Gog => theme::VIOLET,
-        Store::Ea => theme::ORANGE,
-        Store::Ubisoft => theme::CYAN,
-        Store::Xbox => theme::GREEN,
-        Store::Custom => theme::AMBER,
+        Store::Steam => palette.blue,
+        Store::Epic => palette.slate,
+        Store::Gog => palette.violet,
+        Store::Ea => palette.orange,
+        Store::Ubisoft => palette.cyan,
+        Store::Xbox => palette.green,
+        Store::Custom => palette.amber,
     }
 }
 

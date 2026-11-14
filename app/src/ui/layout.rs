@@ -440,7 +440,7 @@ pub fn item_spec(text: &str) -> TextSpec {
         size: theme::TEXT_SIZE,
         weight: 400,
         font: super::el::Font::Text,
-        color: theme::TEXT,
+        color: theme::text(),
         wrap: false,
         align: super::el::TextAlign::Start,
     }

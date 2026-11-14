@@ -146,7 +146,7 @@ impl GameManager {
             )
             .size(size, size),
             None => glyph(g::GAME, size * 0.6)
-                .color(theme::TEXT_TERTIARY)
+                .color(theme::text_tertiary())
                 .text_align(TextAlign::Center)
                 .size(size, size),
         }

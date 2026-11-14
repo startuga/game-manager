@@ -278,7 +278,7 @@ fn version_link(mod_name: &str, installed: Option<(&str, &str)>) -> El<Message> 
             .tooltip(format!(
                 "Open the page {mod_name} {version} was downloaded from"
             )),
-        None => text("Not installed").color(theme::TEXT_TERTIARY),
+        None => text("Not installed").color(theme::text_tertiary()),
     }
 }
 
@@ -452,7 +452,7 @@ impl GameManager {
         };
         mod_card(ModCard {
             icon: g::BRUSH,
-            tint: theme::PINK,
+            tint: theme::pink(),
             title: "ReShade",
             status: version_link(
                 "ReShade",
@@ -554,9 +554,9 @@ impl GameManager {
         ];
         Some(mod_card(ModCard {
             icon: g::CHIP,
-            tint: theme::CYAN,
+            tint: theme::cyan(),
             title: "Large Address Aware",
-            status: text(label).color(theme::TEXT_SECONDARY),
+            status: text(label).color(theme::text_secondary()),
             actions,
             hint,
         }))
@@ -642,7 +642,7 @@ impl GameManager {
         };
         mod_card(ModCard {
             icon: g::WRENCH,
-            tint: theme::ORANGE,
+            tint: theme::orange(),
             title: "DXVK",
             status: version_link(
                 "DXVK",

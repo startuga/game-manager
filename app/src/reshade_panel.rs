@@ -819,7 +819,7 @@ impl GameManager {
         .name("Apply to")
         .width(280.0);
         let mut rows = vec![
-            row([text("Apply to").color(theme::TEXT_SECONDARY), apply_to])
+            row([text("Apply to").color(theme::text_secondary()), apply_to])
                 .gap(10.0)
                 .halign(Align::Start),
         ];
@@ -1113,7 +1113,7 @@ impl GameManager {
         if cached && id != CUSTOM {
             title.push(
                 glyph(g::CHECK, 12.0)
-                    .color(theme::GREEN)
+                    .color(theme::green())
                     .tooltip("Downloaded"),
             );
         }
@@ -1132,7 +1132,7 @@ impl GameManager {
         }
         let mut lines = vec![
             row(title).gap(6.0),
-            text(description).color(theme::TEXT_TERTIARY).wrap(),
+            text(description).color(theme::text_tertiary()).wrap(),
         ];
         if expanded {
             let shown: Vec<&String> = effects
@@ -1228,8 +1228,8 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
                         .pad_xy(8.0, 0.0)
                         .height(theme::CONTROL_HEIGHT)
                         .radius(theme::RADIUS_CONTROL)
-                        .hover_bg(theme::SUBTLE_HOVER)
-                        .pressed_bg(theme::SUBTLE_PRESSED)
+                        .hover_bg(theme::subtle_hover())
+                        .pressed_bg(theme::subtle_pressed())
                         .name(format!("Load {name}"))
                         .tooltip("Use this profile's selection")
                         .on_click(Message::ProfileLoad(name.clone()))
@@ -1271,18 +1271,18 @@ fn addon_card(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
     let mut title = vec![text(addon.name.as_str()).text_size(15.0).weight(600)];
     if let Some(version) = library.cached.get(&addon.id) {
         if let Some(version) = version {
-            title.push(text(version.as_str()).color(theme::TEXT_TERTIARY));
+            title.push(text(version.as_str()).color(theme::text_tertiary()));
         }
         title.push(
             glyph(g::CHECK, 12.0)
-                .color(theme::GREEN)
+                .color(theme::green())
                 .tooltip("Downloaded"),
         );
     }
     let mut lines = vec![
         row(title).gap(8.0),
         text(addon.description.as_str())
-            .color(theme::TEXT_TERTIARY)
+            .color(theme::text_tertiary())
             .wrap(),
     ];
     if let Some(page) = &addon.repository {

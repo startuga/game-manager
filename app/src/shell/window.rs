@@ -1,4 +1,5 @@
-//! The window's frame: its own title bar, dark mode, minimum size and DPI changes.
+//! The window's frame: its own title bar, its look (light or dark, Mica), minimum size and DPI
+//! changes.
 //!
 //! - **Title bar**: `WM_NCCALCSIZE` keeps Windows' frame on the left, right and bottom (resize
 //!   borders and the shadow) but gives the caption's space to the client area, as Windows Terminal
@@ -7,18 +8,24 @@
 //!   `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE` over the drawn buttons (so Windows 11 shows Snap Layouts
 //!   over maximize) and `HTCAPTION` over the rest of the bar (dragging, double-click, the system
 //!   menu).
-//! - **Dark mode** for the frame and the system menu (`DWMWA_USE_IMMERSIVE_DARK_MODE`).
+//! - **The look** (`set_look`): a dark or light frame and system menu
+//!   (`DWMWA_USE_IMMERSIVE_DARK_MODE`), and Windows 11's backdrop (`DWMWA_SYSTEMBACKDROP_TYPE`:
+//!   Mica, Mica Alt, or none). The window has no GDI surface (`WS_EX_NOREDIRECTIONBITMAP`) and
+//!   draws through DirectComposition, so the backdrop shows wherever a frame is clear. Extending
+//!   the frame into the client area (`DwmExtendFrameIntoClientArea`) isn't needed for that, and
+//!   made Windows draw its own caption buttons beside the view's.
 //! - **Minimum size** and **DPI**: sizes given in DIPs follow the window's monitor.
 //!
 //! Window handles travel as `isize` (`hwnd` turns one back into an `HWND`).
 
 use windows::Win32::{
-    ClientToScreen, DWMWA_USE_IMMERSIVE_DARK_MODE, DefWindowProcW, DwmSetWindowAttribute,
-    GetClientRect, GetDpiForWindow, GetSystemMetricsForDpi, GetWindowPlacement, HTCLIENT, HTTOP,
-    HTTOPLEFT, HTTOPRIGHT, HWND, MINMAXINFO, NCCALCSIZE_PARAMS, POINT, PostMessageW, RECT,
-    SM_CXPADDEDBORDER, SM_CYFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMAXIMIZED,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, ScreenToClient,
-    SetWindowPos, ShowWindow, WINDOWPLACEMENT, WM_CLOSE, WM_NCCALCSIZE, WM_NCHITTEST,
+    ClientToScreen, DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMSBT_TABBEDWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_USE_IMMERSIVE_DARK_MODE, DefWindowProcW, DwmSetWindowAttribute, GetClientRect,
+    GetDpiForWindow, GetSystemMetricsForDpi, GetWindowPlacement, HTCLIENT, HTTOP, HTTOPLEFT,
+    HTTOPRIGHT, HWND, MINMAXINFO, NCCALCSIZE_PARAMS, POINT, PostMessageW, RECT, SM_CXPADDEDBORDER,
+    SM_CYFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMAXIMIZED, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, ScreenToClient, SetWindowPos, ShowWindow,
+    WINDOWPLACEMENT, WM_CLOSE, WM_NCCALCSIZE, WM_NCHITTEST,
 };
 
 use super::ctx::WindowCommand;
@@ -27,22 +34,56 @@ pub fn hwnd(value: isize) -> HWND {
     value as HWND
 }
 
-/// Dark frame, and the frame recalculated through our `WM_NCCALCSIZE` (the window was created
-/// before the handler could see it).
+/// What Windows draws around and behind the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    /// A dark frame and system menu, and dark Mica.
+    pub dark: bool,
+    /// Windows' backdrop behind the window; `None` for the theme's solid colour.
+    pub backdrop: Option<Backdrop>,
+}
+
+/// Windows 11's backdrops: Mica, and Mica Alt (more of the desktop's colours, as tabbed apps use).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backdrop {
+    Mica,
+    MicaAlt,
+}
+
+/// The frame recalculated through our `WM_NCCALCSIZE` (the window was created before the handler
+/// could see it).
 pub fn setup(window: isize) {
-    let dark: i32 = 1;
-    // SAFETY: a valid window and a 4-byte BOOL attribute value that outlives the call.
-    let _ = unsafe {
-        DwmSetWindowAttribute(
-            hwnd(window),
-            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-            std::ptr::from_ref(&dark).cast(),
-            size_of::<i32>() as u32,
-        )
-    };
     let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
     // SAFETY: only asks Windows to send WM_NCCALCSIZE again.
     let _ = unsafe { SetWindowPos(hwnd(window), None, 0, 0, 0, 0, flags as u32) };
+}
+
+/// Gives the window `look`; true when Windows' backdrop shows behind it now. Windows 11 22H2 and
+/// later honour `DWMWA_SYSTEMBACKDROP_TYPE`; older ones refuse it, and the window stays solid.
+pub fn set_look(window: isize, look: Look) -> bool {
+    let dark = i32::from(look.dark);
+    set_attribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, &dark);
+    let backdrop = match look.backdrop {
+        Some(Backdrop::Mica) => DWMSBT_MAINWINDOW,
+        Some(Backdrop::MicaAlt) => DWMSBT_TABBEDWINDOW,
+        None => DWMSBT_NONE,
+    };
+    let applied = set_attribute(window, DWMWA_SYSTEMBACKDROP_TYPE as u32, &backdrop);
+    applied && look.backdrop.is_some()
+}
+
+/// One of the window's DWM attributes, a 4-byte value; true when Windows took it.
+fn set_attribute(window: isize, attribute: u32, value: &i32) -> bool {
+    // SAFETY: a valid window and a 4-byte value that outlives the call.
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd(window),
+            attribute,
+            std::ptr::from_ref(value).cast(),
+            size_of::<i32>() as u32,
+        )
+    }
+    .is_ok()
 }
 
 pub fn dpi(window: isize) -> u32 {
@@ -186,6 +227,11 @@ pub fn command(window: isize, command: WindowCommand) {
         WindowCommand::Close => {
             // SAFETY: asks our own window to close, as its close button would.
             let _ = unsafe { PostMessageW(Some(hwnd(window)), WM_CLOSE as u32, 0, 0) };
+            return;
+        }
+        // The shell's loop gives the window its look, and tells the renderer (`run`).
+        WindowCommand::Look(look) => {
+            set_look(window, look);
             return;
         }
     };

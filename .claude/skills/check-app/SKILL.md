@@ -63,6 +63,12 @@ rebuild `app.exe`: build again before checking a change, or you'll be checking a
 
 ## Seeing the window
 - **Look at the PNGs with the Read tool.**
+- **Never copy the screen** (`Graphics.CopyFromScreen`): it takes whatever window is in front,
+  the user's own included. `Save-GmScreen` (`PrintWindow`) captures the agent build's window
+  alone, DirectComposition and all.
+- **Appearance**: Settings ▸ Appearance writes `appearance` in `game-settings.json`; choosing
+  Windows, Mica and Windows' again removes the entry. Never change Windows' own colour settings to
+  check the theme: choose Light or Dark in the app.
 - **`Save-GmDrawing`** shows layout, text, colours and text boxes as the renderer draws them, at
   one pixel per DIP.
 - **`Save-GmScreen`** shows what Windows puts on screen at the real scaling. Use it for sharpness,

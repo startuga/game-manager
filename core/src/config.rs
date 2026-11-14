@@ -14,6 +14,7 @@
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
 
+use crate::appearance::Appearance;
 use crate::graphics::GraphicsApi;
 use crate::{Arch, Game, Launch, Result, Store, json_file, with_args};
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,10 @@ pub struct GameSettings {
     /// unreadable: `load_library_view` falls back to the default instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     library: Option<serde_json::Value>,
+    /// How the window looks (`appearance::Appearance`), kept the same way: absent while it is the
+    /// default, unreadable values falling back to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    appearance: Option<serde_json::Value>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -370,6 +375,31 @@ pub fn load_library_view() -> Result<LibraryView> {
 /// Saves how the library's lists are sorted and filtered.
 pub fn save_library_view(view: &LibraryView) -> Result<()> {
     save_library_view_in(&json_file::user_file(SETTINGS_FILE)?, view)
+}
+
+/// How the window looks, as chosen in Settings; the default (follow Windows) when nothing was
+/// saved, or what was saved can't be read as one.
+pub fn load_appearance() -> Result<Appearance> {
+    load_appearance_from(&json_file::user_file(SETTINGS_FILE)?)
+}
+
+/// Saves how the window looks.
+pub fn save_appearance(appearance: &Appearance) -> Result<()> {
+    save_appearance_in(&json_file::user_file(SETTINGS_FILE)?, appearance)
+}
+
+fn load_appearance_from(file: &Path) -> Result<Appearance> {
+    let saved = load_settings_from(file)?.appearance;
+    Ok(saved
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default())
+}
+
+fn save_appearance_in(file: &Path, appearance: &Appearance) -> Result<()> {
+    let value = (*appearance != Appearance::default())
+        .then(|| serde_json::to_value(appearance).ok())
+        .flatten();
+    update_settings(file, |settings| settings.appearance = value)
 }
 
 fn load_library_view_from(file: &Path) -> Result<LibraryView> {
@@ -957,6 +987,39 @@ mod tests {
         // Back to the default: the entry goes.
         save_library_view_in(&file, &LibraryView::default()).unwrap();
         assert!(saved().get("library").is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_appearance_is_saved_with_the_other_choices() {
+        use crate::appearance::{Accent, Backdrop, Theme};
+        let dir = temp_dir("appearance");
+        let file = dir.join(SETTINGS_FILE);
+        assert_eq!(load_appearance_from(&file).unwrap(), Appearance::default());
+        fs::write(&file, r#"{ "pinned": ["gog:1"], "later": 1 }"#).unwrap();
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        let light = Appearance {
+            theme: Theme::Light,
+            backdrop: Backdrop::Solid,
+            accent: Accent::GameManager,
+        };
+        save_appearance_in(&file, &light).unwrap();
+        assert_eq!(
+            saved()["appearance"],
+            serde_json::json!({ "theme": "light", "backdrop": "solid", "accent": "gameManager" })
+        );
+        assert_eq!(load_appearance_from(&file).unwrap(), light);
+        // The rest of the file stays; the library view keeps it.
+        assert_eq!(saved()["later"], 1);
+        save_library_view_in(&file, &LibraryView::default()).unwrap();
+        assert_eq!(load_appearance_from(&file).unwrap(), light);
+        // A newer version's choice: the default; back to the default, the entry goes.
+        fs::write(&file, r#"{ "appearance": { "theme": "sepia" } }"#).unwrap();
+        assert_eq!(load_appearance_from(&file).unwrap(), Appearance::default());
+        save_appearance_in(&file, &Appearance::default()).unwrap();
+        assert!(saved().get("appearance").is_none());
         fs::remove_dir_all(&dir).unwrap();
     }
 

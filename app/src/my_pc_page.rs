@@ -39,20 +39,20 @@ impl GameManager {
             Ok(gpus) if !gpus.is_empty() => cards.extend(gpus.iter().map(gpu_card)),
             Ok(_) => cards.push(failed_card(
                 g::MONITOR,
-                theme::PINK,
+                theme::pink(),
                 "Graphics card",
                 "No graphics card was found in the registry.",
             )),
             Err(error) => cards.push(failed_card(
                 g::MONITOR,
-                theme::PINK,
+                theme::pink(),
                 "Graphics card",
                 &error.to_string(),
             )),
         }
         cards.push(match &pc.cpu {
             Ok(cpu) => card([
-                card_header(g::CHIP, theme::BLUE, "Processor", ""),
+                card_header(g::CHIP, theme::blue(), "Processor", ""),
                 big(&cpu.name),
                 facts(vec![
                     ("Cores", known(cpu.cores)),
@@ -67,15 +67,15 @@ impl GameManager {
                     ),
                 ]),
             ]),
-            Err(error) => failed_card(g::CHIP, theme::BLUE, "Processor", &error.to_string()),
+            Err(error) => failed_card(g::CHIP, theme::blue(), "Processor", &error.to_string()),
         });
         cards.push(match &pc.memory {
             Ok(memory) => memory_card(memory),
-            Err(error) => failed_card(g::MEMORY, theme::GREEN, "Memory", &error.to_string()),
+            Err(error) => failed_card(g::MEMORY, theme::green(), "Memory", &error.to_string()),
         });
         cards.push(match &pc.system {
             Ok(system) => card([
-                card_header(g::SYSTEM, theme::SLATE, "System", ""),
+                card_header(g::SYSTEM, theme::slate(), "System", ""),
                 facts(vec![
                     (
                         "Windows",
@@ -85,11 +85,11 @@ impl GameManager {
                     ("BIOS", or_unknown(&system.bios)),
                 ]),
             ]),
-            Err(error) => failed_card(g::SYSTEM, theme::SLATE, "System", &error.to_string()),
+            Err(error) => failed_card(g::SYSTEM, theme::slate(), "System", &error.to_string()),
         });
         cards.push(match &pc.drives {
             Ok(drives) => storage_card(drives),
-            Err(error) => failed_card(g::STORAGE, theme::ORANGE, "Storage", &error.to_string()),
+            Err(error) => failed_card(g::STORAGE, theme::orange(), "Storage", &error.to_string()),
         });
 
         let displays: Vec<El<Message>> = match &pc.displays {
@@ -99,13 +99,13 @@ impl GameManager {
                 .collect(),
             Ok(_) => vec![failed_card(
                 g::MONITOR,
-                theme::CYAN,
+                theme::cyan(),
                 "Displays",
                 "No active display was found.",
             )],
             Err(error) => vec![failed_card(
                 g::MONITOR,
-                theme::CYAN,
+                theme::cyan(),
                 "Displays",
                 &error.to_string(),
             )],
@@ -172,7 +172,7 @@ impl GameManager {
                 text("MY PC")
                     .text_size(theme::TEXT_CAPTION)
                     .weight(700)
-                    .color(theme::TEXT_TERTIARY),
+                    .color(theme::text_tertiary()),
                 heading(name),
                 hint(summary),
             ])
@@ -182,8 +182,8 @@ impl GameManager {
         ])
         .gap(12.0)
         .pad(20.0)
-        .bg(theme::CARD)
-        .stroke(theme::CARD_STROKE, 1.0)
+        .bg(theme::card())
+        .stroke(theme::card_stroke(), 1.0)
         .radius(theme::RADIUS_CARD)
     }
 
@@ -200,7 +200,7 @@ impl GameManager {
         let mut header = vec![
             card_header(
                 g::MONITOR,
-                theme::CYAN,
+                theme::cyan(),
                 display.name.clone(),
                 format!(
                     "{} × {}  ·  {} Hz  ·  {hdr}",
@@ -212,7 +212,7 @@ impl GameManager {
             .fill_width(),
         ];
         if display.primary {
-            header.push(chip("MAIN DISPLAY", theme::ACCENT));
+            header.push(chip("MAIN DISPLAY", theme::accent()));
         }
         let mut lines = vec![row(header).gap(8.0)];
         if display.gdi_name.is_empty() {
@@ -403,7 +403,7 @@ impl GameManager {
         let switches = &pc.switches;
         let mut lines = vec![card_header(
             g::SETTINGS,
-            theme::VIOLET,
+            theme::violet(),
             "Graphics settings for games",
             "Windows' own switches, the same as in its Settings app",
         )];
@@ -494,7 +494,7 @@ impl GameManager {
 
 fn gpu_card(gpu: &Gpu) -> El<Message> {
     card([
-        card_header(g::MONITOR, theme::PINK, "Graphics card", ""),
+        card_header(g::MONITOR, theme::pink(), "Graphics card", ""),
         big(&gpu.name),
         facts(vec![
             ("Vendor", gpu.vendor.name().to_owned()),
@@ -514,7 +514,7 @@ fn gpu_card(gpu: &Gpu) -> El<Message> {
 
 fn memory_card(memory: &Memory) -> El<Message> {
     let mut lines = vec![
-        card_header(g::MEMORY, theme::GREEN, "Memory", ""),
+        card_header(g::MEMORY, theme::green(), "Memory", ""),
         big(&if memory.total > 0 {
             format_bytes(memory.total)
         } else {
@@ -586,7 +586,7 @@ fn memory_card(memory: &Memory) -> El<Message> {
 }
 
 fn storage_card(drives: &[Drive]) -> El<Message> {
-    let mut lines = vec![card_header(g::STORAGE, theme::ORANGE, "Storage", "")];
+    let mut lines = vec![card_header(g::STORAGE, theme::orange(), "Storage", "")];
     if drives.is_empty() {
         lines.push(hint("No fixed drive was found."));
     }
@@ -642,7 +642,7 @@ fn group_label(label: &str) -> El<Message> {
     text(label)
         .text_size(theme::TEXT_CAPTION)
         .weight(700)
-        .color(theme::TEXT_TERTIARY)
+        .color(theme::text_tertiary())
         .padding(crate::ui::el::Edges::new(2.0, 8.0, 0.0, 0.0))
 }
 
@@ -661,7 +661,7 @@ fn facts(rows: Vec<(&str, String)>) -> El<Message> {
         .filter(|(_, value)| !value.trim().is_empty())
         .map(|(label, value)| {
             row([
-                text(label).color(theme::TEXT_TERTIARY).width(110.0),
+                text(label).color(theme::text_tertiary()).width(110.0),
                 text(value).wrap().fill_width(),
             ])
             .gap(12.0)
@@ -680,7 +680,7 @@ fn setting(title: &str, description: &str, control: Option<El<Message>>) -> El<M
     row(items)
         .gap(16.0)
         .pad_xy(12.0, 10.0)
-        .bg(theme::CARD)
+        .bg(theme::card())
         .radius(theme::RADIUS_CONTROL)
 }
 

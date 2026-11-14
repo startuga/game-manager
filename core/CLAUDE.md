@@ -88,6 +88,9 @@ holds the rules and facts that span them.
   - `bytes.rs` (little-endian numbers in file data, `None` past the end).
   - `picture_cache.rs` (a folder of downloaded pictures kept byte for byte, with week-long
     misses, for covers and page art).
+  - `appearance.rs` (how the window looks: the user's choice of theme, background and accent,
+    saved by `config::save_appearance` under `appearance`; Windows' light or dark apps,
+    transparency effects, accent palette and whether it has Mica, read from the registry).
   - `security.rs` (the user's SID, whether elevated, granting file rights, `owner_is_admin`).
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its
     text read back, through a message-only window).
@@ -221,6 +224,13 @@ holds the rules and facts that span them.
   - Epic keeps no Uninstall entry: the app opens the launcher's library
     (`com.epicgames.launcher://library`). Xbox games go to `ms-settings:appsfeatures`.
   - On 37 games, `scan -v` found every Steam, GOG and EA route.
+- **Windows' look** (`appearance.rs`):
+  - `AccentPalette` (`HKCU\...\Explorer\Accent`) is 32 bytes: eight RGBA colours, Light 3 to
+    Dark 3 around the accent and one unused. WinUI fills accent controls with Light 2 in dark apps
+    and Dark 1 in light ones; this PC's gold read as (255, 213, 42) and (225, 157, 0).
+  - Mica needs build 22621 (`DWMWA_SYSTEMBACKDROP_TYPE`). With transparency effects off
+    (`EnableTransparency` 0) Windows draws Mica as a solid colour itself: the app needs no case
+    for it.
 - **Page art** (`page_art.rs`):
   - **Steam**: `GetItems` lists `library_hero` and `library_hero_2x` (3840 × 1240, about 1 MB, no
     text in it) but no logo; the store serves `logo_2x.png` and `logo.png` beside them all the
