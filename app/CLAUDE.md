@@ -29,7 +29,9 @@ samples in `crates/samples/`) instead of guessing.
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
-    scroll position).
+    scroll position). The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
+    one in the background (`OpenNexusMods`, then `NexusModsFound` opens it), as finding it reads
+    the game's folder and may download Nexus's list. The game menu has both too.
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA

@@ -6,8 +6,9 @@
 //!
 //! - **What it holds**: a header with the game's
 //!   icon, name and store; Pin to quick access (or Unpin), Play and its alternative launches
-//!   ("Skip launcher"); Open folder, PCGamingWiki; Rename…, Choose cover… (and Reset cover for a
-//!   game with the user's own, `covers.rs`), Hide from the list (or Show in the list);
+//!   ("Skip launcher"); Open folder, PCGamingWiki, Nexus Mods (as the game page's button);
+//!   Rename…, Choose cover… (and Reset cover for a game with the user's own, `covers.rs`), Hide
+//!   from the list (or Show in the list);
 //!   Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups are
 //!   split by lines, and the two destructive items are red.
 //! - **Its size** is worked out from its rows, so it flips up or left to stay in the window.
@@ -56,6 +57,7 @@ pub(crate) enum MenuAction {
     Play(Option<usize>),
     Folder,
     Wiki,
+    NexusMods,
     Rename,
     /// A picture of the user's as the game's cover (`covers.rs`), or back to the store's.
     ChooseCover,
@@ -277,6 +279,12 @@ impl GameManager {
             "PCGamingWiki",
             format!("{} on PCGamingWiki", game.name),
             MenuAction::Wiki,
+        );
+        rows.item(
+            g::LINK,
+            "Nexus Mods",
+            format!("{} on Nexus Mods", game.name),
+            MenuAction::NexusMods,
         );
         rows.separator();
 
@@ -506,6 +514,7 @@ impl GameManager {
             MenuAction::Play(option) => self.handle(Message::Launch { id, option }, context),
             MenuAction::Folder => self.handle(Message::OpenFolder(id), context),
             MenuAction::Wiki => self.handle(Message::OpenWiki(id), context),
+            MenuAction::NexusMods => self.handle(Message::OpenNexusMods(id), context),
             MenuAction::Rename => {
                 let name = game.name.clone();
                 self.menu.renaming = Some(Rename { id, name });

@@ -158,6 +158,11 @@ enum Message {
     OpenFolder(String),
     /// Opens the game's PCGamingWiki page in the browser.
     OpenWiki(String),
+    /// Opens the game's Nexus Mods page in the browser, once it is found in the background
+    /// (`gm_core::nexus_mods`, which may download Nexus's list of games).
+    OpenNexusMods(String),
+    /// The address of the Nexus Mods page asked for, to open.
+    NexusModsFound(String),
     /// A Game settings field of the selected game changed.
     EditField(EditField, String),
     /// An item of a Game settings drop-down was picked; `None` keeps the choice.
@@ -305,6 +310,8 @@ struct GameManager {
     sidebar_width: f32,
     /// The game just launched: its Play button shows "Starting…" for a few seconds.
     launching: Option<String>,
+    /// A Nexus Mods page is being found: its button waits, so a second click opens no second tab.
+    finding_nexus_mods: bool,
     /// A game's menu while it is open, and its Rename and Uninstall dialogs.
     menu: MenuState,
     /// The covers on the Library's tiles, by game id.
@@ -487,6 +494,7 @@ impl GameManager {
             reshade_view: ReshadeView::Install,
             sidebar_width: ui::theme::SIDEBAR_WIDTH,
             launching: None,
+            finding_nexus_mods: false,
             menu: MenuState::default(),
             covers: CoverState::default(),
             graphics: HashMap::new(),
@@ -761,6 +769,27 @@ impl GameManager {
                 };
                 let page = Launch::Uri(gm_core::pcgamingwiki::page_url(game));
                 self.error = gm_core::launch(&page).err().map(|e| e.to_string());
+            }
+            Message::OpenNexusMods(id) => {
+                let Some(game) = self.games.iter().find(|game| game.id == id) else {
+                    return;
+                };
+                if self.finding_nexus_mods {
+                    return;
+                }
+                self.finding_nexus_mods = true;
+                let game = game.clone();
+                // Reads games.json and the game's folder, and may download Nexus's list.
+                context.spawn_background(move |_cancel| {
+                    Message::NexusModsFound(gm_core::nexus_mods::page_url(&game))
+                });
+            }
+            Message::NexusModsFound(url) => {
+                self.finding_nexus_mods = false;
+                // Opened here: the Shell needs the UI thread's COM apartment.
+                self.error = gm_core::launch(&Launch::Uri(url))
+                    .err()
+                    .map(|e| e.to_string());
             }
             Message::ModsLoaded(Ok(mods)) => {
                 self.mods = mods;

@@ -1,10 +1,10 @@
 //! Game configuration in JSON files, so no game-specific knowledge lives in the code:
 //!
 //! - `games.json`, shipped next to the app (copied from `config/games.json` at build time): what is
-//!   known about particular games, such as their real program when Play starts a launcher, and
-//!   entries that are not games (redistributables) to hide. A game is recognised by its target
-//!   binaries in its install folder, not by a store id, so one entry works for every store and
-//!   computer.
+//!   known about particular games, such as their real program when Play starts a launcher or
+//!   their game domain on Nexus Mods when Nexus names them otherwise (`nexusMods`), and entries
+//!   that are not games (redistributables) to hide. A game is recognised by its target binaries
+//!   in its install folder, not by a store id, so one entry works for every store and computer.
 //! - `%APPDATA%\Game Manager\game-settings.json`: the user's own settings per game, such as the
 //!   program chosen with "Choose game .exe" or being hidden from the list, and the games pinned
 //!   to quick access in the order they were pinned. Favorites of older versions are read as pins
@@ -36,11 +36,15 @@ pub struct GameDefaults {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct KnownGame {
     /// The game's own binaries, relative to its install folder, best first. A game whose install
     /// folder holds one of them is this game; the first that exists is its program.
     #[serde(default)]
     programs: Vec<PathBuf>,
+    /// Its game domain on Nexus Mods (`nexus_mods.rs`), when Nexus names it otherwise.
+    #[serde(default)]
+    nexus_mods: Option<String>,
 }
 
 impl GameDefaults {
@@ -52,6 +56,18 @@ impl GameDefaults {
 
     /// The program of the first known game whose binaries are in this game's install folder.
     fn program(&self, game: &Game) -> Option<PathBuf> {
+        self.known(game).map(|(_, program)| program)
+    }
+
+    /// The Nexus Mods domain of the known game this game is, when its entry names one. Blocking:
+    /// looks for the binaries in the game's folder.
+    pub(crate) fn nexus_mods(&self, game: &Game) -> Option<&str> {
+        self.known(game)?.0.nexus_mods.as_deref()
+    }
+
+    /// The first known game whose binaries are in this game's install folder, and the first of
+    /// them there.
+    fn known(&self, game: &Game) -> Option<(&KnownGame, PathBuf)> {
         let dir = game.install_dir.as_deref()?;
         self.games.iter().find_map(|known| {
             known
@@ -59,6 +75,7 @@ impl GameDefaults {
                 .iter()
                 .map(|program| dir.join(program))
                 .find(|program| program.is_file())
+                .map(|program| (known, program))
         })
     }
 }
@@ -508,6 +525,56 @@ mod tests {
                 .iter()
                 .any(|known| known.programs == [PathBuf::from(r"bin\x64\Cyberpunk2077.exe")])
         );
+        // Nexus Mods domains are bare names, and GTA V Enhanced comes before the Legacy edition,
+        // whose GTA5.exe it may hold too.
+        let domains: Vec<_> = shipped
+            .games
+            .iter()
+            .filter_map(|known| known.nexus_mods.as_deref())
+            .collect();
+        assert!(
+            domains
+                .iter()
+                .all(|domain| !domain.is_empty()
+                    && domain.bytes().all(|b| b.is_ascii_alphanumeric()))
+        );
+        let at = |domain: &str| domains.iter().position(|d| *d == domain).unwrap();
+        assert!(at("gta5enhanced") < at("gta5"));
+    }
+
+    #[test]
+    fn known_games_name_their_nexus_mods_domain() {
+        let gta = temp_dir("nexus-gta");
+        fs::write(gta.join("GTA5.exe"), b"MZ").unwrap();
+        let tomb = temp_dir("nexus-tomb");
+        fs::write(tomb.join("tomb123.exe"), b"MZ").unwrap();
+        let config = defaults(
+            r#"{ "games": [
+                { "name": "Grand Theft Auto V Enhanced", "programs": ["GTA5_Enhanced.exe"], "nexusMods": "gta5enhanced" },
+                { "name": "Grand Theft Auto V Legacy", "programs": ["GTA5.exe"], "nexusMods": "gta5" },
+                { "name": "Tomb Raider I-III Remastered", "programs": ["tomb123.exe"] }
+            ] }"#,
+        );
+        assert_eq!(
+            config.nexus_mods(&game("epic:x", "Grand Theft Auto V", Some(&gta))),
+            Some("gta5")
+        );
+        // An entry without a domain: the name decides (nexus_mods.rs).
+        assert_eq!(
+            config.nexus_mods(&game("gog:1", "Tomb Raider", Some(&tomb))),
+            None
+        );
+        assert_eq!(
+            config.nexus_mods(&game("custom:1", "No folder", None)),
+            None
+        );
+        fs::write(gta.join("GTA5_Enhanced.exe"), b"MZ").unwrap();
+        assert_eq!(
+            config.nexus_mods(&game("steam:1", "Grand Theft Auto V", Some(&gta))),
+            Some("gta5enhanced")
+        );
+        fs::remove_dir_all(&gta).unwrap();
+        fs::remove_dir_all(&tomb).unwrap();
     }
 
     #[test]

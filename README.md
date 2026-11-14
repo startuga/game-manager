@@ -49,7 +49,7 @@ in `%APPDATA%\Game Manager\custom-games.json`.
     Library, in the order you pinned them. Favorites from earlier versions became pins.
   - **Play**, and the store's other ways to start it ("Skip launcher", a Ubisoft game's
     "Settings").
-  - **Open folder**, **PCGamingWiki**.
+  - **Open folder**, **PCGamingWiki**, **Nexus Mods**.
   - **Rename…** (leave it empty for the store's name), **Choose cover…** (and **Reset cover**),
     **Hide from the list** (Hidden games in Sort and filters shows it again, with **Show in the
     list**). The
@@ -67,7 +67,8 @@ in `%APPDATA%\Game Manager\custom-games.json`.
   - **Enter** opens the first match; **Escape** or ✕ clears the search.
 - **The title bar** has **Rescan** (⟳), which looks for games again.
 - **A game's page**: its icon, name and install folder, with chips for its store, bitness and
-  graphics APIs; **Play** (and the store's other launches), **Folder** and **PCGamingWiki**.
+  graphics APIs; **Play** (and the store's other launches), **Folder**, **PCGamingWiki** and
+  **Nexus Mods**.
   Below them are the tabs: **Overview**, **ReShade**, **DXVK & LAA**, **Upscalers** and, with an
   NVIDIA graphics driver, **NVIDIA overrides**.
 
@@ -213,6 +214,12 @@ cached in `%LOCALAPPDATA%\Game Manager\mods`.
 settings, save locations) in your browser: by store id for Steam and GOG games, otherwise a wiki
 search for the game's name (rename the game in Game settings if the search misses it).
 
+**Nexus Mods** opens the game's [Nexus Mods](https://www.nexusmods.com) page in your browser. Nexus
+keeps no store ids, so the game is found by name in Nexus's public list of games (downloaded at
+most once a week into `%LOCALAPPDATA%\Game Manager\cache`), ignoring editions such as "Game of the
+Year Edition"; `config/games.json` names the page of games Nexus calls otherwise (GTA V). A game
+Nexus doesn't list opens Nexus's games search for its name.
+
 When a store's Play action starts a launcher, the game's own program comes from the shipped
 `config/games.json` (known games, e.g. Cyberpunk 2077's `bin\x64\Cyberpunk2077.exe`) unless you set
 one. The build copies `games.json` and the `7-Zip` folder next to `app.exe`; keep them there when
@@ -261,8 +268,8 @@ together. A running `app.exe` cannot be replaced: close it before rebuilding.
 ## Project layout
 
 - `app/` – the window (Win32, Direct2D and DirectWrite): the sidebar, the Library grid, the game
-  page and its tabs, and My PC. `app/assets` holds the Oxanium font used for titles (SIL Open
-  Font License, `Oxanium-OFL.txt`).
+  page and its tabs, and My PC. It draws only with Windows' own fonts (Segoe UI Variable, Segoe
+  Fluent Icons).
 - `core/` (crate `gm-core`) – store scanners, icon extraction and launching; no UI code.
 - `config/games.json` – per-game knowledge used by the scanners (no game-specific data in code).
 - `tools/7-Zip` – the 7-Zip command line (`7z.exe`, `7z.dll`) that unpacks downloaded mods.

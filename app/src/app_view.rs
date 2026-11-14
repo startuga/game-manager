@@ -81,7 +81,7 @@ impl GameManager {
         row([
             glyph(g::GAME, 16.0).color(theme::ACCENT),
             text("GAME MANAGER")
-                .font(Font::Title)
+                .font(Font::Display)
                 .text_size(13.0)
                 .weight(700),
             status,
