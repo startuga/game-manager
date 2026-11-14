@@ -5,8 +5,11 @@
 //! cache, `appcache\appinfo.vdf`: the launch entry Steam would use on 64-bit Windows.
 //!
 //! Cover art (for `covers.rs`): the client's own copy in `appcache\librarycache`, the store's
-//! address of the 600 × 900 one, and the store's search by name for other stores' games.
+//! address of the 600 × 900 one, and the store's search by name for other stores' games. The game
+//! page's art (for `page_art.rs`) the same way: the client's `library_hero` and `logo`, and the
+//! store's `library_hero_2x` (3840 × 1240) and `logo_2x.png`.
 
+use crate::page_art::ArtUrls;
 use crate::text::{letters, percent_encode, search_name};
 use crate::vdf::BinaryKeys;
 use crate::{Error, Game, IconRef, Launch, Result, Store, UNINSTALL_KEYS, on_disk_case, vdf};
@@ -279,12 +282,29 @@ const COVER_FILES: [&str; 4] = [
     "library_600x900.jpg",
     "library_capsule.jpg",
 ];
+/// The game page's background in Steam's cache (`library_hero`, 1920 × 620; 3840 × 1240 in `_2x`),
+/// sharpest first, and the logo drawn over it.
+const BACKGROUND_FILES: [&str; 2] = ["library_hero_2x.jpg", "library_hero.jpg"];
+const LOGO_FILES: [&str; 2] = ["logo_2x.png", "logo.png"];
 /// Where Steam's store serves an app's art from; `asset_url_format` goes after it.
 const ASSET_ROOT: &str = "https://shared.fastly.steamstatic.com/store_item_assets/";
 
 /// The portrait cover Steam's client keeps for an app, if it has one: in
 /// `<steam>\appcache\librarycache\<appid>`, or in a folder named after the file's hash in it.
 pub(crate) fn cached_cover(steam: &Path, app_id: u32) -> Option<PathBuf> {
+    library_cache_file(steam, app_id, &COVER_FILES)
+}
+
+/// The game page's background and logo Steam's client keeps for an app, where it keeps its cover.
+pub(crate) fn cached_page_art(steam: &Path, app_id: u32) -> (Option<PathBuf>, Option<PathBuf>) {
+    (
+        library_cache_file(steam, app_id, &BACKGROUND_FILES),
+        library_cache_file(steam, app_id, &LOGO_FILES),
+    )
+}
+
+/// The first of `names` in the app's folder of Steam's library cache, or in a folder in it.
+fn library_cache_file(steam: &Path, app_id: u32, names: &[&str]) -> Option<PathBuf> {
     let dir = steam
         .join("appcache")
         .join("librarycache")
@@ -297,7 +317,7 @@ pub(crate) fn cached_cover(steam: &Path, app_id: u32) -> Option<PathBuf> {
             .map(|entry| entry.path())
             .filter(|path| path.is_dir()),
     );
-    COVER_FILES.iter().find_map(|name| {
+    names.iter().find_map(|name| {
         folders
             .iter()
             .map(|folder| folder.join(name))
@@ -308,6 +328,18 @@ pub(crate) fn cached_cover(steam: &Path, app_id: u32) -> Option<PathBuf> {
 /// The address of an app's 600 × 900 library cover (else its 300 × 450 one), asked of the store's
 /// `IStoreBrowseService/GetItems`; `None` when the store lists none. Blocking.
 pub(crate) fn cover_url(app_id: u32) -> Result<Option<String>> {
+    Ok(parse_cover_url(&store_assets(app_id)?))
+}
+
+/// The addresses of an app's page art, sharpest first: its `library_hero` from the store's
+/// `IStoreBrowseService/GetItems`, and its logo, which the store serves beside it (`logo_2x.png`,
+/// `logo.png`) though `GetItems` doesn't list it. Blocking.
+pub(crate) fn page_art_urls(app_id: u32) -> Result<ArtUrls> {
+    Ok(parse_page_art_urls(&store_assets(app_id)?))
+}
+
+/// What the store's `IStoreBrowseService/GetItems` says of an app, with its art. Blocking.
+fn store_assets(app_id: u32) -> Result<serde_json::Value> {
     let input = format!(
         r#"{{"ids":[{{"appid":{app_id}}}],"context":{{"language":"english","country_code":"US"}},"data_request":{{"include_assets":true}}}}"#
     );
@@ -316,21 +348,40 @@ pub(crate) fn cover_url(app_id: u32) -> Result<Option<String>> {
         percent_encode(&input)
     );
     let answer = crate::http::get(&url)?;
-    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+    serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
         url: url.clone(),
         source,
-    })?;
-    Ok(parse_cover_url(&answer))
+    })
 }
 
 /// `response.store_items[0].assets`: `asset_url_format` is the address with `${FILENAME}` where
 /// the file's name goes ("steam/apps/220/${FILENAME}?t=1745368545").
 fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
     let assets = &answer["response"]["store_items"][0]["assets"];
-    let format = assets["asset_url_format"].as_str()?;
-    let file = ["library_capsule_2x", "library_capsule"]
+    ["library_capsule_2x", "library_capsule"]
         .iter()
-        .find_map(|key| assets[*key].as_str().filter(|file| !file.is_empty()))?;
+        .find_map(|key| assets[*key].as_str().filter(|file| !file.is_empty()))
+        .and_then(|file| asset_url(assets, file))
+}
+
+/// The hero's files as `GetItems` lists them, and the logo's beside them.
+fn parse_page_art_urls(answer: &serde_json::Value) -> ArtUrls {
+    let assets = &answer["response"]["store_items"][0]["assets"];
+    let background = ["library_hero_2x", "library_hero"]
+        .iter()
+        .filter_map(|key| assets[*key].as_str().filter(|file| !file.is_empty()))
+        .filter_map(|file| asset_url(assets, file))
+        .collect();
+    let logo = LOGO_FILES
+        .iter()
+        .filter_map(|file| asset_url(assets, file))
+        .collect();
+    ArtUrls { background, logo }
+}
+
+/// `file` at the address `asset_url_format` makes.
+fn asset_url(assets: &serde_json::Value, file: &str) -> Option<String> {
+    let format = assets["asset_url_format"].as_str()?;
     format
         .contains("${FILENAME}")
         .then(|| format!("{ASSET_ROOT}{}", format.replace("${FILENAME}", file)))
@@ -555,7 +606,57 @@ mod tests {
         put(r"7\header.jpg");
         assert_eq!(cached_cover(&steam, 7), None);
         assert_eq!(cached_cover(&steam, 8), None);
+        // The page's background and logo, wherever the cover is, the sharper first.
+        assert_eq!(
+            cached_page_art(&steam, 546_560),
+            (Some(cache.join(r"546560\library_hero.jpg")), None)
+        );
+        assert_eq!(
+            cached_page_art(&steam, 220),
+            (Some(cache.join(r"220\5925343a\library_hero.jpg")), None)
+        );
+        let logo_2x = put(r"1659040\logo_2x.png");
+        assert_eq!(cached_page_art(&steam, 1_659_040), (None, Some(logo_2x)));
+        assert_eq!(cached_page_art(&steam, 8), (None, None));
         fs::remove_dir_all(&steam).unwrap();
+    }
+
+    #[test]
+    fn reads_the_stores_page_art_addresses() {
+        // Trimmed from a real GetItems answer (Half-Life 2).
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{"response":{"store_items":[{"appid":220,"assets":{
+                "asset_url_format":"steam/apps/220/${FILENAME}?t=1745368545",
+                "library_capsule":"ac2f074d/library_600x900.jpg",
+                "library_hero":"5925343a/library_hero.jpg",
+                "library_hero_2x":"5925343a/library_hero_2x.jpg"}}]}}"#,
+        )
+        .unwrap();
+        let root = "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/220/";
+        let urls = parse_page_art_urls(&answer);
+        assert_eq!(
+            urls.background,
+            [
+                format!("{root}5925343a/library_hero_2x.jpg?t=1745368545"),
+                format!("{root}5925343a/library_hero.jpg?t=1745368545")
+            ]
+        );
+        assert_eq!(
+            urls.logo,
+            [
+                format!("{root}logo_2x.png?t=1745368545"),
+                format!("{root}logo.png?t=1745368545")
+            ]
+        );
+        // No hero listed: only the logo is tried; nothing at all without the address format.
+        let no_hero: serde_json::Value = serde_json::from_str(
+            r#"{"response":{"store_items":[{"assets":{"asset_url_format":"steam/apps/7/${FILENAME}"}}]}}"#,
+        )
+        .unwrap();
+        let urls = parse_page_art_urls(&no_hero);
+        assert!(urls.background.is_empty() && urls.logo.len() == 2);
+        let none = parse_page_art_urls(&serde_json::json!({"response":{}}));
+        assert!(none.background.is_empty() && none.logo.is_empty());
     }
 
     #[test]

@@ -22,7 +22,8 @@
 //!   composition underlined at the caret (`with_marked_layout`), and an accent line along the
 //!   bottom of the focused box, as WinUI draws it. `edit_spec` is the text's format, which the
 //!   shell's hit-testing uses too.
-//! - **`Painter`** is what custom painters (the Play button) draw with.
+//! - **`Painter`** is what custom painters draw with (the Play button; the game page's art band
+//!   fades with `fill_linear`, a gradient in any direction through several stops).
 //!
 //! A frame with a spinner reports `animating`, so the loop keeps drawing while it turns; any other
 //! frame is drawn once. `present` answering `false` means the device was lost: the caller makes a
@@ -488,6 +489,32 @@ impl Painter<'_> {
         };
         self.session
             .fill_rounded_rect(&RoundedRect::uniform(to_canvas(rect), radius), &gradient);
+    }
+
+    /// A rectangle filled with a gradient along the line from `from` to `to` (in its own
+    /// fractions: (0, 0) is its top-left corner, (1, 1) its bottom-right), through `stops` (an
+    /// offset along that line, and the colour there). The game page's art fades into the page this
+    /// way.
+    pub fn fill_linear(
+        &self,
+        rect: Rect,
+        from: (f32, f32),
+        to: (f32, f32),
+        stops: &[(f32, ColorF)],
+    ) {
+        let at = |(x, y): (f32, f32)| Vector2::new(rect.x + rect.w * x, rect.y + rect.h * y);
+        let stops: Vec<GradientStop> = stops
+            .iter()
+            .map(|&(offset, c)| {
+                GradientStop::new(offset, ColorF::new(c.r, c.g, c.b, c.a * self.alpha))
+            })
+            .collect();
+        if let Ok(gradient) = self
+            .session
+            .create_linear_gradient(at(from), at(to), &stops)
+        {
+            self.session.fill_rect(&to_canvas(rect), &gradient);
+        }
     }
 
     /// A soft glow: rounded rectangles growing outwards at falling opacity.

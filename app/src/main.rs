@@ -31,6 +31,7 @@ mod library_page;
 mod mods_view;
 mod my_pc;
 mod my_pc_page;
+mod page_art;
 mod reshade_panel;
 mod shell;
 mod sidebar;
@@ -54,6 +55,7 @@ use gm_core::{Game, Launch, Store};
 use library::LibraryView;
 use mods_view::{DxvkSettings, DxvkSettingsEdit, ModDialog, ModKind};
 use my_pc::{MyPcMessage, MyPcState};
+use page_art::{PageArtMessage, PageArtState};
 use reshade_panel::{AddonLibrary, ReshadePanel, ShaderLibrary};
 use shell::ctx::{Ctx, FilePicker, WindowCommand};
 use shell::{App, WindowInfo};
@@ -135,6 +137,8 @@ enum Message {
     Menu(MenuMessage),
     /// Cover art on the Library's tiles (`covers.rs`).
     Cover(CoverMessage),
+    /// The game page's background and logo (`page_art.rs`).
+    PageArt(PageArtMessage),
     /// The title bar's minimize, maximize and close.
     Window(WindowCommand),
     /// A sidebar page.
@@ -322,6 +326,8 @@ struct GameManager {
     menu: MenuState,
     /// The covers on the Library's tiles, by game id.
     covers: CoverState,
+    /// The selected game's background and logo for its page.
+    page_art: PageArtState,
     /// Graphics APIs by game id, once looked up (`None`: none found).
     graphics: HashMap<String, Option<GraphicsInfo>>,
     /// Games whose graphics APIs are being looked up.
@@ -431,6 +437,8 @@ impl App for GameManager {
         if let Some(id) = self.selected.clone() {
             self.request_game_folders(&id, ctx);
         }
+        // The game page's background and logo, whenever another game shows.
+        self.request_page_art(ctx);
         // Whatever showed HDR-mod in DXVK settings, its configs are listed.
         self.request_hdr_mod_configs(ctx);
         // A 32-bit game's LAA status, whenever it is unknown.
@@ -516,6 +524,7 @@ impl GameManager {
             finding_nexus_mods: false,
             menu: MenuState::default(),
             covers: CoverState::default(),
+            page_art: PageArtState::default(),
             graphics: HashMap::new(),
             graphics_pending: HashSet::new(),
             game_folders: HashMap::new(),
@@ -826,6 +835,7 @@ impl GameManager {
             }
             Message::Menu(message) => self.handle_menu(message, context),
             Message::Cover(message) => self.handle_cover(message, context),
+            Message::PageArt(message) => self.handle_page_art(message),
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),
             Message::Tab(tab) => {

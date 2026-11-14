@@ -20,8 +20,12 @@
 //!   then makes it that many pixels, premultiplied first so transparent edges stay clean, with
 //!   Catmull-Rom (fast_image_resize), which rings less than Lanczos around an icon's hard edges.
 //!   An image already that size is only premultiplied: pixel for pixel.
+//! - **The game page's art**: `trimmed` cuts a logo to its visible pixels (Steam draws its logos
+//!   on a 1280 × 720 transparent canvas); `blurred` makes a cover small (`fit`) and softens it
+//!   with a box blur three times over, to be drawn stretched across the page when a game has no
+//!   wide picture.
 //! - **Writing**: `encode_png` only, for the window's capture. Nothing else is ever re-encoded:
-//!   covers are kept as the stores' files are (`covers.rs`).
+//!   covers and page art are kept as the stores' files are (`covers.rs`, `page_art.rs`).
 
 use crate::bytes::{u16_at, u32_at};
 use crate::icon;
@@ -591,6 +595,81 @@ pub fn fit(picture: Rgba, size: u32) -> Result<Rgba, PictureError> {
     Ok(rgba(target))
 }
 
+/// A pixel with less alpha than this counts as empty for `trimmed`: a logo's faint glow at its
+/// canvas's edges doesn't hold the trim back.
+const TRIM_ALPHA: u8 = 8;
+
+/// A picture cut to the smallest rectangle holding its visible pixels (alpha `TRIM_ALPHA` or more):
+/// a logo drawn on a larger transparent canvas (Steam's are 1280 × 720) then lines up with the
+/// text beside it and is sized by what shows. One with no visible pixel is left as it is.
+pub fn trimmed(picture: Rgba) -> Rgba {
+    let (width, height) = (picture.width as usize, picture.height as usize);
+    let visible = |x: usize, y: usize| picture.pixels[(y * width + x) * 4 + 3] >= TRIM_ALPHA;
+    let rows: Vec<usize> = (0..height)
+        .filter(|&y| (0..width).any(|x| visible(x, y)))
+        .collect();
+    let columns: Vec<usize> = (0..width)
+        .filter(|&x| rows.iter().any(|&y| visible(x, y)))
+        .collect();
+    let (Some(&top), Some(&bottom), Some(&left), Some(&right)) =
+        (rows.first(), rows.last(), columns.first(), columns.last())
+    else {
+        return picture;
+    };
+    if (left, top, right, bottom) == (0, 0, width - 1, height - 1) {
+        return picture;
+    }
+    let mut pixels = Vec::with_capacity((right - left + 1) * (bottom - top + 1) * 4);
+    for y in top..=bottom {
+        pixels.extend_from_slice(
+            &picture.pixels[(y * width + left) * 4..(y * width + right + 1) * 4],
+        );
+    }
+    Rgba {
+        width: (right - left + 1) as u32,
+        height: (bottom - top + 1) as u32,
+        pixels,
+    }
+}
+
+/// How many times `blurred` runs its box blur: three passes come close to a Gaussian.
+const BLUR_PASSES: usize = 3;
+
+/// A straight-RGBA picture made small (inside `size` × `size`, premultiplied, `fit`) and softened
+/// with a 3 × 3 box blur run `BLUR_PASSES` times, its edges clamped. Drawn stretched over a large
+/// area it is a blur of the picture: the game page's background from a cover when the game has no
+/// wide picture.
+pub fn blurred(picture: Rgba, size: u32) -> Result<Rgba, PictureError> {
+    let mut small = fit(picture, size)?;
+    let (width, height) = (small.width as usize, small.height as usize);
+    for _ in 0..BLUR_PASSES {
+        let across = box_blur(&small.pixels, width, height, (1, 0));
+        small.pixels = box_blur(&across, width, height, (0, 1));
+    }
+    Ok(small)
+}
+
+/// Each channel of each pixel averaged with its two neighbours one `step` (x, y) away on either
+/// side, the edge pixels standing in for those beyond it.
+fn box_blur(pixels: &[u8], width: usize, height: usize, step: (usize, usize)) -> Vec<u8> {
+    let mut out = vec![0; pixels.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let before = ((x.saturating_sub(step.0)), y.saturating_sub(step.1));
+            let after = ((x + step.0).min(width - 1), (y + step.1).min(height - 1));
+            let at = |(x, y): (usize, usize)| (y * width + x) * 4;
+            let (here, before, after) = (at((x, y)), at(before), at(after));
+            for channel in 0..4 {
+                let sum = u32::from(pixels[before + channel])
+                    + u32::from(pixels[here + channel])
+                    + u32::from(pixels[after + channel]);
+                out[here + channel] = ((sum + 1) / 3) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Straight RGBA written as a PNG file's bytes.
 pub fn encode_png(picture: &Rgba) -> Result<Vec<u8>, PictureError> {
     let fail = |error: png::EncodingError| PictureError::Encode(error.to_string());
@@ -1124,5 +1203,76 @@ mod tests {
                 .all(|(a, b)| a.abs_diff(*b) <= 2)
         );
         assert_eq!(&back.pixels[8..], [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_logo_is_trimmed_to_what_shows() {
+        // 6 × 4, clear but for an opaque pixel at (1, 1), one at (3, 2) and a faint one at (5, 3).
+        let mut pixels = vec![0; 6 * 4 * 4];
+        for (x, y, alpha) in [(1, 1, 255), (3, 2, 200), (5, 3, 4)] {
+            pixels[(y * 6 + x) * 4..][..4].copy_from_slice(&[10, 20, 30, alpha]);
+        }
+        let logo = trimmed(Rgba {
+            width: 6,
+            height: 4,
+            pixels,
+        });
+        assert_eq!((logo.width, logo.height), (3, 2));
+        assert_eq!(&logo.pixels[..4], [10, 20, 30, 255]);
+        assert_eq!(&logo.pixels[logo.pixels.len() - 4..], [10, 20, 30, 200]);
+        // All clear, or nothing to cut: as it was.
+        let clear = Rgba {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 16],
+        };
+        assert_eq!(trimmed(clear.clone()), clear);
+        let full = Rgba {
+            width: 1,
+            height: 1,
+            pixels: vec![1, 2, 3, 255],
+        };
+        assert_eq!(trimmed(full.clone()), full);
+    }
+
+    #[test]
+    fn a_blur_is_small_soft_and_keeps_the_colours_apart_at_its_edges() {
+        // 40 × 20: the left half red, the right half blue.
+        let pixels = (0..20 * 40)
+            .flat_map(|i| {
+                if i % 40 < 20 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 255, 255]
+                }
+            })
+            .collect();
+        let blur = blurred(
+            Rgba {
+                width: 40,
+                height: 20,
+                pixels,
+            },
+            16,
+        )
+        .unwrap();
+        assert_eq!((blur.width, blur.height), (16, 8));
+        let pixel = |x: usize, y: usize| &blur.pixels[(y * 16 + x) * 4..][..4];
+        // The edges keep their colour, the middle mixes both, and every pixel stays opaque.
+        assert!(
+            pixel(0, 4)[0] > 200 && pixel(0, 4)[2] < 40,
+            "{:?}",
+            pixel(0, 4)
+        );
+        assert!(
+            pixel(15, 4)[2] > 200 && pixel(15, 4)[0] < 40,
+            "{:?}",
+            pixel(15, 4)
+        );
+        let middle = pixel(8, 4);
+        assert!(middle[0] > 40 && middle[2] > 40, "{middle:?}");
+        assert!(blur.pixels.chunks(4).all(|p| p[3] == 255));
+        // Rows hold no stripes: a column is the same from top to bottom.
+        assert_eq!(pixel(8, 0), pixel(8, 7));
     }
 }

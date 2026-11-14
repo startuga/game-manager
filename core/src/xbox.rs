@@ -9,8 +9,9 @@
 //! package identity, `shell:AppsFolder\<PackageFamilyName>!<AppId>`, as the Start menu does.
 //!
 //! Cover art (for `covers.rs`): the game's Store id names its 2:3 poster in Microsoft's store
-//! catalog.
+//! catalog, and the game page's art (for `page_art.rs`): its super hero art and logo.
 
+use crate::page_art::ArtUrls;
 use crate::text::{child_text, read_text, xml_body};
 use crate::{Arch, Error, Game, IconRef, Launch, LaunchOption, Result, Store};
 use std::fs;
@@ -284,24 +285,51 @@ pub(crate) fn store_id(dir: &Path) -> Option<String> {
 /// (1440 × 2160 for Forza Horizon 5; `?w=400&h=600` would have the server re-encode it smaller).
 /// `None` when the catalog lists none. Blocking.
 pub(crate) fn cover_url(store_id: &str) -> Result<Option<String>> {
+    Ok(parse_cover_url(&product(store_id)?))
+}
+
+/// The addresses of a game's page art in Microsoft's store catalog: its `SuperHeroArt` (3840 ×
+/// 2160, a 2.4 MB JPEG for Forza Horizon 5), else its `TitledHeroArt` (1920 × 1080, the title in
+/// it), and its `Logo`, which few games list. Blocking.
+pub(crate) fn page_art_urls(store_id: &str) -> Result<ArtUrls> {
+    Ok(parse_page_art_urls(&product(store_id)?))
+}
+
+/// What Microsoft's store catalog says of a product, with its images. Blocking.
+fn product(store_id: &str) -> Result<serde_json::Value> {
     let url = format!(
         "https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds={store_id}&market=US&languages=en-us"
     );
     let answer = crate::http::get(&url)?;
-    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+    serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
         url: url.clone(),
         source,
-    })?;
-    Ok(parse_cover_url(&answer))
+    })
 }
 
-/// `Products[0].LocalizedProperties[0].Images[]`: the one whose `ImagePurpose` is `Poster`. Its
-/// `Uri` has no scheme ("//store-images.s-microsoft.com/image/…").
+/// The image whose `ImagePurpose` is `Poster`.
 fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
+    image_url(answer, "Poster")
+}
+
+/// `SuperHeroArt`, else `TitledHeroArt`; `Logo`.
+fn parse_page_art_urls(answer: &serde_json::Value) -> ArtUrls {
+    ArtUrls {
+        background: ["SuperHeroArt", "TitledHeroArt"]
+            .iter()
+            .filter_map(|purpose| image_url(answer, purpose))
+            .collect(),
+        logo: image_url(answer, "Logo").into_iter().collect(),
+    }
+}
+
+/// `Products[0].LocalizedProperties[0].Images[]`: the one whose `ImagePurpose` is `purpose`. Its
+/// `Uri` has no scheme ("//store-images.s-microsoft.com/image/…").
+fn image_url(answer: &serde_json::Value, purpose: &str) -> Option<String> {
     let images = answer["Products"][0]["LocalizedProperties"][0]["Images"].as_array()?;
     let uri = images
         .iter()
-        .find(|image| image["ImagePurpose"].as_str() == Some("Poster"))
+        .find(|image| image["ImagePurpose"].as_str() == Some(purpose))
         .and_then(|image| image["Uri"].as_str())?;
     let address = uri.strip_prefix("https:").unwrap_or(uri);
     address
@@ -541,5 +569,32 @@ mod tests {
         assert_eq!(parse_cover_url(&square), None);
         let unknown: serde_json::Value = serde_json::from_str(r#"{"Products":[]}"#).unwrap();
         assert_eq!(parse_cover_url(&unknown), None);
+    }
+
+    #[test]
+    fn reads_the_page_art_addresses() {
+        // Trimmed from a real displaycatalog answer (Forza Horizon 5), with a logo added.
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{"Products":[{"LocalizedProperties":[{"Images":[
+                {"ImagePurpose":"TitledHeroArt","Uri":"//store-images.s-microsoft.com/image/apps.19144.titled"},
+                {"ImagePurpose":"Poster","Uri":"//store-images.s-microsoft.com/image/apps.49800.poster"},
+                {"ImagePurpose":"SuperHeroArt","Uri":"//store-images.s-microsoft.com/image/apps.33953.hero"},
+                {"ImagePurpose":"Logo","Uri":"https://store-images.s-microsoft.com/image/apps.1.logo"}]}]}]}"#,
+        )
+        .unwrap();
+        let urls = parse_page_art_urls(&answer);
+        assert_eq!(
+            urls.background,
+            [
+                "https://store-images.s-microsoft.com/image/apps.33953.hero",
+                "https://store-images.s-microsoft.com/image/apps.19144.titled"
+            ]
+        );
+        assert_eq!(
+            urls.logo,
+            ["https://store-images.s-microsoft.com/image/apps.1.logo"]
+        );
+        let none = parse_page_art_urls(&serde_json::json!({"Products":[]}));
+        assert!(none.background.is_empty() && none.logo.is_empty());
     }
 }

@@ -117,7 +117,17 @@ pub const TEXT_SMALL: f32 = 12.0;
 pub const TEXT_CAPTION: f32 = 11.0;
 pub const TEXT_SUBTITLE: f32 = 15.0;
 pub const TEXT_TITLE: f32 = 22.0;
+/// A game's name over its art, at the top of its page.
+pub const TEXT_HERO: f32 = 32.0;
 pub const ICON_SIZE: f32 = 14.0;
+
+/// The band of art across the top of the game page: as high as a share of its width
+/// (`ART_BAND_RATIO`, wider than Steam's 3.1:1 heroes, so the tabs stay near), within these.
+pub const ART_BAND_RATIO: f32 = 4.2;
+pub const ART_BAND_MIN_HEIGHT: f32 = 220.0;
+pub const ART_BAND_MAX_HEIGHT: f32 = 340.0;
+/// The largest a game's logo is drawn over its art (width, height).
+pub const ART_LOGO_MAX: (f32, f32) = (480.0, 132.0);
 
 /// Fonts, all Windows' own: the UI's text, headings and page titles, and the icon glyphs.
 pub const FONT_TEXT: &str = "Segoe UI Variable Text";

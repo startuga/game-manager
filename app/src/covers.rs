@@ -102,6 +102,11 @@ impl CoverState {
         self.pictures.get(id).map(|(picture, _)| picture)
     }
 
+    /// The file of a game's cover, once found (the game page blurs it when it has no wide picture).
+    pub fn file(&self, id: &str) -> Option<&std::path::Path> {
+        self.sources.get(id).map(|(cover, _)| cover.file.as_path())
+    }
+
     /// Whether the game's cover is the user's own (the menu offers Reset cover).
     pub fn is_own(&self, id: &str) -> bool {
         self.sources.get(id).is_some_and(|(cover, _)| cover.own)
@@ -216,6 +221,7 @@ impl GameManager {
             }
             if let Some(library) = library {
                 gm_core::covers::prune(&library);
+                gm_core::page_art::prune(&library);
             }
             if network && !rest.is_empty() {
                 send(CoverMessage::Missing(rest).into());

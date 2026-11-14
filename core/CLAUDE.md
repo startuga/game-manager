@@ -34,9 +34,12 @@ holds the rules and facts that span them.
     kept byte for byte, never re-encoded; a `Cover` names its file, read with `covers::read` when
     a tile needs it). Each store's facts are
     in its own module (`steam::cached_cover`, `epic::cover_url`, `gog::cached_cover`, …).
+  - `page_art.rs` (the game page's wide background and logo, the same way: originals by id or by
+    name in their own cache, the stores' copies on this PC meanwhile; each store's sources in
+    order, Epic's after the Steam store's; `steam::page_art_urls`, `gog::cached_background`, …).
   - `picture.rs` (pictures in pure Rust: JPEG, PNG and WebP through their crates, BMP and icon
-    bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, the capture's PNG; no
-    Windows API).
+    bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, logos trimmed, covers
+    blurred, the capture's PNG; no Windows API).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links, a game's page found by id or
     by full-text search and kept ten minutes, its `Game data` paths) and `game_data.rs` (a game's
     saves and config folders on this PC: the wiki's paths cached a month, their `{{p|…}}`
@@ -83,6 +86,8 @@ holds the rules and facts that span them.
   - `json_file.rs` (where files live, JSON load/save) and `whole_file.rs` (files written whole,
     through a temporary file of their own; leftovers pruned after ten minutes).
   - `bytes.rs` (little-endian numbers in file data, `None` past the end).
+  - `picture_cache.rs` (a folder of downloaded pictures kept byte for byte, with week-long
+    misses, for covers and page art).
   - `security.rs` (the user's SID, whether elevated, granting file rights, `owner_is_admin`).
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its
     text read back, through a message-only window).
@@ -126,6 +131,7 @@ holds the rules and facts that span them.
   - `snapshot::VERSION`: the serde form of `Game`.
   - `icon::CACHE_FORMAT`.
   - `covers::CACHE_FORMAT` (what is cached for a cover).
+  - `page_art::CACHE_FORMAT` (what is cached for a page's background and logo).
   - `dxvk::CACHE_FORMAT`.
   - `reshade::CACHE_FORMAT`.
 
@@ -215,6 +221,19 @@ holds the rules and facts that span them.
   - Epic keeps no Uninstall entry: the app opens the launcher's library
     (`com.epicgames.launcher://library`). Xbox games go to `ms-settings:appsfeatures`.
   - On 37 games, `scan -v` found every Steam, GOG and EA route.
+- **Page art** (`page_art.rs`):
+  - **Steam**: `GetItems` lists `library_hero` and `library_hero_2x` (3840 × 1240, about 1 MB, no
+    text in it) but no logo; the store serves `logo_2x.png` and `logo.png` beside them all the
+    same, through `asset_url_format`. Steam draws its logos on a canvas up to 1280 × 720 with
+    transparent margins, so the app trims them. The client keeps `library_hero.jpg` (1920 × 620)
+    and `logo.png` where it keeps the cover. Older apps have neither (Child of Light: 404).
+  - **GOG**: the API's `_links` has `galaxyBackgroundImage` (2560 × 670), `backgroundImage` and
+    `logo` (1600 × 740 PNG); Galaxy keeps `<hash>_glx_bg_top_padding_7.webp` beside the cover.
+  - **Epic**: the catalog's `DieselGameBox` is 2560 × 1440 with the title drawn in it more often
+    than not, and only 18 of 858 items have a `DieselGameBoxLogo`. Epic games ask the Steam store
+    by name first: Cyberpunk 2077 and Hogwarts Legacy got clean heroes and logos there.
+  - **Xbox**: the catalog's `SuperHeroArt` (3840 × 2160, a 2.4 MB JPEG for Forza Horizon 5) has
+    no text; `TitledHeroArt` (1920 × 1080) does; few products list a `Logo`.
 - **Cover art** (`covers.rs`):
   - **Steam's client** keeps 300 × 450 covers in `appcache\librarycache\<appid>`, as
     `library_600x900.jpg` whatever their size, or as `library_capsule.jpg`, often in a folder

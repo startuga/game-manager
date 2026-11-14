@@ -29,7 +29,9 @@ samples in `crates/samples/`) instead of guessing.
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
-    scroll position). The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
+    scroll position). The header is a band of the game's art from edge to edge when it has some
+    (`page_art.rs`: the selected game's wide background and logo, decoded in the background,
+    else its cover blurred; the plain header otherwise). The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
     one in the background (`OpenNexusMods`, then `NexusModsFound` opens it), as finding it reads
     the game's folder and may download Nexus's list. Saves and Config open the folders
     PCGamingWiki names (`gm_core::game_data`, `request_game_folders`, `GameFoldersLoaded`), looked

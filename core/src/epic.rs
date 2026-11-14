@@ -11,8 +11,10 @@
 //! from the legacy launcher is only listed once.
 //!
 //! Cover art (for `covers.rs`): both launchers cache the store's catalog, whose items list a tall
-//! cover's address (`cover_url`).
+//! cover's address (`cover_url`), and the game page's (for `page_art.rs`): the wide box art and,
+//! for a few games, a logo (`page_art_urls`).
 
+use crate::page_art::ArtUrls;
 use crate::{Error, Game, IconRef, Launch, Result, Store};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -284,19 +286,30 @@ fn parse_legacy_manifest(text: &str) -> Option<Game> {
 /// - the current one in `cache\prod\catalog-cache.json`, by catalog item id;
 /// - the legacy one in `Data\Catalog\catcache.bin`, a base64-encoded JSON array.
 pub(crate) fn cover_url(game: &Game) -> Option<String> {
+    catalog_find(game, &tall_cover)
+}
+
+/// The addresses of a game's page art in the launcher's catalog cache: its wide box art
+/// (`DieselGameBox`, 2560 × 1440, often with the title in it) and its logo (`DieselGameBoxLogo`,
+/// which few games have: 18 of the 858 items of one catalog).
+pub(crate) fn page_art_urls(game: &Game) -> ArtUrls {
+    catalog_find(game, &page_art).unwrap_or_default()
+}
+
+/// What `pick` finds in the game's catalog item: in the current launcher's catalog, else in the
+/// legacy one's.
+fn catalog_find<T>(game: &Game, pick: &dyn Fn(&serde_json::Value) -> Option<T>) -> Option<T> {
     let app_name = game.id.strip_prefix("epic:")?;
     let item_id = item_id(&game.launch);
     let current = eglv2_dir()
         .and_then(|dir| fs::read_to_string(dir.join(r"cache\prod\catalog-cache.json")).ok())
-        .and_then(|text| catalog_cover(&text, item_id, app_name));
-    let url = current.or_else(|| {
+        .and_then(|text| catalog_cover(&text, item_id, app_name, pick));
+    current.or_else(|| {
         let catalog = legacy_manifests_dir()?
             .parent()?
             .join(r"Catalog\catcache.bin");
-        legacy_catalog_cover(&fs::read(catalog).ok()?, item_id, app_name)
-    })?;
-    // Spaces are part of some names.
-    Some(url.replace(' ', "%20"))
+        legacy_catalog_cover(&fs::read(catalog).ok()?, item_id, app_name, pick)
+    })
 }
 
 /// The catalog item id in the game's own launch link (`…apps/<namespace>%3A<item>%3A<app>?…`).
@@ -312,23 +325,33 @@ fn item_id(launch: &Launch) -> Option<&str> {
 }
 
 /// `catalog-cache.json`: `items.<item id>.item` is a catalog item.
-fn catalog_cover(text: &str, item_id: Option<&str>, app_name: &str) -> Option<String> {
+fn catalog_cover<T>(
+    text: &str,
+    item_id: Option<&str>,
+    app_name: &str,
+    pick: &dyn Fn(&serde_json::Value) -> Option<T>,
+) -> Option<T> {
     let catalog: serde_json::Value = serde_json::from_str(text).ok()?;
     let items = catalog["items"].as_object()?;
     item_id
         .and_then(|id| items.get(id))
-        .and_then(|entry| tall_cover(&entry["item"]))
+        .and_then(|entry| pick(&entry["item"]))
         .or_else(|| {
             items
                 .values()
                 .map(|entry| &entry["item"])
                 .find(|item| releases(item, app_name))
-                .and_then(tall_cover)
+                .and_then(pick)
         })
 }
 
 /// `catcache.bin`: a JSON array of catalog items, base64-encoded.
-fn legacy_catalog_cover(file: &[u8], item_id: Option<&str>, app_name: &str) -> Option<String> {
+fn legacy_catalog_cover<T>(
+    file: &[u8],
+    item_id: Option<&str>,
+    app_name: &str,
+    pick: &dyn Fn(&serde_json::Value) -> Option<T>,
+) -> Option<T> {
     let json = crate::text::base64_decode(file.trim_ascii())?;
     let items: serde_json::Value = serde_json::from_slice(&json).ok()?;
     items
@@ -337,7 +360,7 @@ fn legacy_catalog_cover(file: &[u8], item_id: Option<&str>, app_name: &str) -> O
         .filter(|item| {
             item_id.is_some_and(|id| item["id"].as_str() == Some(id)) || releases(item, app_name)
         })
-        .find_map(tall_cover)
+        .find_map(pick)
 }
 
 /// Whether a catalog item is released as this app (`releaseInfo[].appId`).
@@ -351,13 +374,28 @@ fn releases(item: &serde_json::Value, app_name: &str) -> bool {
 
 /// A catalog item's `DieselGameBoxTall` key image.
 fn tall_cover(item: &serde_json::Value) -> Option<String> {
+    key_image(item, "DieselGameBoxTall")
+}
+
+/// A catalog item's wide box art and logo; `None` when it has neither.
+fn page_art(item: &serde_json::Value) -> Option<ArtUrls> {
+    let urls = ArtUrls {
+        background: key_image(item, "DieselGameBox").into_iter().collect(),
+        logo: key_image(item, "DieselGameBoxLogo").into_iter().collect(),
+    };
+    (!urls.background.is_empty() || !urls.logo.is_empty()).then_some(urls)
+}
+
+/// The address of a catalog item's key image of `kind`.
+fn key_image(item: &serde_json::Value, kind: &str) -> Option<String> {
     item["keyImages"]
         .as_array()?
         .iter()
-        .find(|image| image["type"].as_str() == Some("DieselGameBoxTall"))
+        .find(|image| image["type"].as_str() == Some(kind))
         .and_then(|image| image["url"].as_str())
         .filter(|url| url.starts_with("https://"))
-        .map(str::to_owned)
+        // Spaces are part of some names.
+        .map(|url| url.replace(' ', "%20"))
 }
 
 #[cfg(test)]
@@ -487,17 +525,24 @@ ZUJveCIsInVybCI6Imh0dHBzOi8vY2RuMS5lcGljZ2FtZXMuY29tL2l0ZW0veC93aWRlIn0seyJ0\r\n
 eXBlIjoiRGllc2VsR2FtZUJveFRhbGwiLCJ1cmwiOiJodHRwczovL2NkbjEuZXBpY2dhbWVzLmNv\r\n\
 bS9pdGVtL3gvU2lmdSBUYWxsXzEyMDB4MTYwMCJ9XSwicmVsZWFzZUluZm8iOlt7ImFwcElkIjoi\r\n\
 ZDM2MyIsInBsYXRmb3JtIjpbIldpbmRvd3MiXX1dfV0=\r\n";
-    const SIFU_TALL: &str = "https://cdn1.epicgames.com/item/x/Sifu Tall_1200x1600";
+    /// Its space as the address needs it.
+    const SIFU_TALL: &str = "https://cdn1.epicgames.com/item/x/Sifu%20Tall_1200x1600";
 
     #[test]
     fn finds_the_tall_cover_in_the_legacy_catalog() {
-        let cover = |item, app| legacy_catalog_cover(CATCACHE.as_bytes(), item, app);
+        let cover = |item, app| legacy_catalog_cover(CATCACHE.as_bytes(), item, app, &tall_cover);
         // By the app it is released as, or by the item id of the game's launch link.
         assert_eq!(cover(None, "d363").as_deref(), Some(SIFU_TALL));
         assert_eq!(cover(Some("c80a"), "renamed").as_deref(), Some(SIFU_TALL));
         assert_eq!(cover(Some("zzzz"), "unknown"), None);
-        assert_eq!(legacy_catalog_cover(b"not base64 !", None, "d363"), None);
-        assert_eq!(legacy_catalog_cover(b"e30=", None, "d363"), None);
+        assert_eq!(
+            legacy_catalog_cover(b"not base64 !", None, "d363", &tall_cover),
+            None
+        );
+        assert_eq!(
+            legacy_catalog_cover(b"e30=", None, "d363", &tall_cover),
+            None
+        );
     }
 
     #[test]
@@ -509,7 +554,7 @@ ZDM2MyIsInBsYXRmb3JtIjpbIldpbmRvd3MiXX1dfV0=\r\n";
             "77a5":{"item":{"title":"Brothers","releaseInfo":[{"appId":"Tamarind"}],"keyImages":[
                 {"type":"DieselGameBoxTall","url":"https://cdn1.epicgames.com/b/tall.jpg"}]}},
             "0000":{"item":{"title":"No art","keyImages":null}}}}"#;
-        let tall = |item, app| catalog_cover(catalog, item, app);
+        let tall = |item, app| catalog_cover(catalog, item, app, &tall_cover);
         assert_eq!(
             tall(Some("df38"), "281a").as_deref(),
             Some("https://cdn1.epicgames.com/a/tall.jpg")
@@ -519,7 +564,20 @@ ZDM2MyIsInBsYXRmb3JtIjpbIldpbmRvd3MiXX1dfV0=\r\n";
             Some("https://cdn1.epicgames.com/b/tall.jpg")
         );
         assert_eq!(tall(Some("0000"), "none"), None);
-        assert_eq!(catalog_cover("{ not json", Some("df38"), "281a"), None);
+        assert_eq!(
+            catalog_cover("{ not json", Some("df38"), "281a", &tall_cover),
+            None
+        );
+        // The page's art: the wide box art, and a logo when the item has one.
+        let art = catalog_cover(catalog, Some("df38"), "281a", &page_art).unwrap();
+        assert_eq!(art.background, ["https://cdn1.epicgames.com/a/wide.jpg"]);
+        assert!(art.logo.is_empty());
+        let logo = r#"{"items":{"e1":{"item":{"keyImages":[
+            {"type":"DieselGameBoxLogo","url":"https://cdn1.epicgames.com/c/logo name.png"}]}}}}"#;
+        let art = catalog_cover(logo, Some("e1"), "x", &page_art).unwrap();
+        assert!(art.background.is_empty());
+        assert_eq!(art.logo, ["https://cdn1.epicgames.com/c/logo%20name.png"]);
+        assert!(catalog_cover(catalog, Some("77a5"), "Tamarind", &page_art).is_none());
     }
 
     #[test]

@@ -72,6 +72,23 @@ pub fn decode_cover(bytes: &[u8]) -> Option<Picture> {
     Some(Picture::from_premultiplied(premultiplied))
 }
 
+/// A game's logo decoded at full size and cut to what shows (`picture::trimmed`); `None` when it is
+/// no picture.
+pub fn decode_logo(bytes: &[u8]) -> Option<Picture> {
+    let straight = picture::trimmed(picture::decode(bytes).ok()?);
+    let premultiplied = picture::premultiply(straight).ok()?;
+    Some(Picture::from_premultiplied(premultiplied))
+}
+
+/// A picture (a cover) made small and soft, its longer side `size` pixels (`picture::blurred`):
+/// drawn stretched across the game page's top, it is a blur of the picture. `None` when it is no
+/// picture.
+pub fn decode_blurred(bytes: &[u8], size: u32) -> Option<Picture> {
+    let straight = picture::decode(bytes).ok()?;
+    let blurred = picture::blurred(straight, size).ok()?;
+    Some(Picture::from_premultiplied(blurred))
+}
+
 /// Writes premultiplied BGRA pixels to `path` as a PNG (the window's frame capture for checks,
 /// `shell::WM_CAPTURE`).
 pub fn save_png(pixels: &[u8], width: u32, height: u32, path: &Path) -> std::io::Result<()> {

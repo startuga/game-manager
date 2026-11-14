@@ -75,6 +75,12 @@ rebuild `app.exe`: build again before checking a change, or you'll be checking a
   like clicks, typing and dragging; Focus and Expand scroll the element into view first.
 - **Names repeat**: "ReShade" is a tab, a view pill (both TabItems, the tab first) and a card. Pick
   elements by control type, and the nth match where names repeat.
+- **An open drop-down's items** aren't in the UI Automation tree (2026-11-14): `Expand-GmElement`
+  the ComboBox, then `Send-GmKey 0x28` (Down) as often as needed and `Send-GmKey 0x0D` (Enter);
+  its Value says what was picked. `Save-GmDrawing` shows the open list.
+- **Timing a job** (a deploy queued behind another): `Find-GmElement` walks every element and
+  takes 300–500 ms; `FindAll` with an `AndCondition` of name and control type is far quicker. A
+  Streamline swap to a version not downloaded took about 5 s, a DLSS one under 2 s.
 - **Typing**: `Send-GmText` and `Send-GmKey` (Backspace, Delete, the arrows, Home, End, Enter,
   Escape). Ctrl and Shift can't be held by posted messages, because the app reads the real key
   state. Check Ctrl shortcuts through the text box menu and the unit tests

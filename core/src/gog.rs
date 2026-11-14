@@ -8,8 +8,10 @@
 //! installed, "Play via Galaxy" is offered as an extra action for playtime tracking and cloud saves.
 //!
 //! Cover art (for `covers.rs`): GOG Galaxy's own copy in its web cache, else the box art's
-//! address from GOG's public API.
+//! address from GOG's public API. The game page's art (for `page_art.rs`) the same way: Galaxy's
+//! background, and the API's `galaxyBackgroundImage` and `logo`.
 
+use crate::page_art::ArtUrls;
 use crate::{Error, Game, IconRef, Launch, LaunchOption, Result, Store};
 use serde::Deserialize;
 use std::fs;
@@ -243,6 +245,8 @@ fn galaxy_launch(client: &Path, game_id: &str, game_dir: &str) -> Launch {
 
 /// How GOG Galaxy names a game's vertical cover (342 × 482, WebP) in its web cache.
 const GALAXY_COVER: &str = "_glx_vertical_cover.webp";
+/// How it names the background across the top of a game's page there (WebP).
+const GALAXY_BACKGROUND: &str = "_glx_bg_top_padding_7.webp";
 
 /// `%ProgramData%\GOG.com\Galaxy\webcache`, where GOG Galaxy keeps the pictures it shows.
 pub(crate) fn galaxy_webcache() -> Option<PathBuf> {
@@ -254,12 +258,22 @@ pub(crate) fn galaxy_webcache() -> Option<PathBuf> {
 /// `<webcache>\<user id>\gog\<product id>\<hash>_glx_vertical_cover.webp`. The newest, when
 /// several users' folders hold one.
 pub(crate) fn cached_cover(webcache: &Path, product_id: &str) -> Option<PathBuf> {
+    galaxy_file(webcache, product_id, GALAXY_COVER)
+}
+
+/// GOG Galaxy's own copy of the background across the top of a game's page, beside its cover.
+pub(crate) fn cached_background(webcache: &Path, product_id: &str) -> Option<PathBuf> {
+    galaxy_file(webcache, product_id, GALAXY_BACKGROUND)
+}
+
+/// The newest file whose name ends with `suffix` in any user's folder of the game.
+fn galaxy_file(webcache: &Path, product_id: &str, suffix: &str) -> Option<PathBuf> {
     fs::read_dir(webcache)
         .ok()?
         .flatten()
         .filter_map(|user| fs::read_dir(user.path().join("gog").join(product_id)).ok())
         .flat_map(|files| files.flatten())
-        .filter(|file| file.file_name().to_string_lossy().ends_with(GALAXY_COVER))
+        .filter(|file| file.file_name().to_string_lossy().ends_with(suffix))
         .filter_map(|file| {
             let modified = file.metadata().ok()?.modified().ok()?;
             Some((modified, file.path()))
@@ -271,18 +285,44 @@ pub(crate) fn cached_cover(webcache: &Path, product_id: &str) -> Option<PathBuf>
 /// The address of a game's box art (JPEG, 342 × 482), asked of GOG's public API; `None` when it
 /// lists none. Blocking.
 pub(crate) fn cover_url(product_id: &str) -> Result<Option<String>> {
+    Ok(parse_cover_url(&game_links(product_id)?))
+}
+
+/// The addresses of a game's page art from GOG's public API: Galaxy's background (2560 × 670 for
+/// The Witcher 3), else the store page's, and the logo (a 1600 × 740 PNG). Blocking.
+pub(crate) fn page_art_urls(product_id: &str) -> Result<ArtUrls> {
+    Ok(parse_page_art_urls(&game_links(product_id)?))
+}
+
+/// What GOG's public API says of a game, with `_links` to its pictures. Blocking.
+fn game_links(product_id: &str) -> Result<serde_json::Value> {
     let url = format!("https://api.gog.com/v2/games/{product_id}?locale=en-US");
     let answer = crate::http::get(&url)?;
-    let answer = serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
+    serde_json::from_slice(&answer).map_err(|source| Error::WebJson {
         url: url.clone(),
         source,
-    })?;
-    Ok(parse_cover_url(&answer))
+    })
 }
 
 /// `_links.boxArtImage.href`.
 fn parse_cover_url(answer: &serde_json::Value) -> Option<String> {
-    answer["_links"]["boxArtImage"]["href"]
+    link(answer, "boxArtImage")
+}
+
+/// `_links.galaxyBackgroundImage`, else `_links.backgroundImage`; `_links.logo`.
+fn parse_page_art_urls(answer: &serde_json::Value) -> ArtUrls {
+    ArtUrls {
+        background: ["galaxyBackgroundImage", "backgroundImage"]
+            .iter()
+            .filter_map(|name| link(answer, name))
+            .collect(),
+        logo: link(answer, "logo").into_iter().collect(),
+    }
+}
+
+/// `_links.<name>.href`, when it is an `https` address.
+fn link(answer: &serde_json::Value, name: &str) -> Option<String> {
+    answer["_links"][name]["href"]
         .as_str()
         .filter(|url| url.starts_with("https://"))
         .map(str::to_owned)
@@ -506,7 +546,8 @@ mod tests {
         // As Galaxy lays them out: a folder per user, "common", and overlays.
         let cover = put(r"47443227069348028\gog\1495134320\e030ace5_glx_vertical_cover.webp");
         put(r"47443227069348028\gog\1495134320\9da841d5_glx_square_icon_v2.webp");
-        put(r"47443227069348028\gog\1207658747\d730809f_glx_bg_top_padding_7.webp");
+        let background =
+            put(r"47443227069348028\gog\1207658747\d730809f_glx_bg_top_padding_7.webp");
         put(r"common\readme.txt");
         fs::create_dir_all(webcache.join("1207658747-overlay")).unwrap();
         assert_eq!(cached_cover(&webcache, "1495134320"), Some(cover));
@@ -514,6 +555,9 @@ mod tests {
         assert_eq!(cached_cover(&webcache, "1207658747"), None);
         assert_eq!(cached_cover(&webcache, "42"), None);
         assert_eq!(cached_cover(&webcache.join("missing"), "42"), None);
+        // The background, for the game page.
+        assert_eq!(cached_background(&webcache, "1207658747"), Some(background));
+        assert_eq!(cached_background(&webcache, "1495134320"), None);
         fs::remove_dir_all(&webcache).unwrap();
     }
 
@@ -533,5 +577,33 @@ mod tests {
         let none: serde_json::Value =
             serde_json::from_str(r#"{"_links":{"logo":{"href":"https://x/l.png"}}}"#).unwrap();
         assert_eq!(parse_cover_url(&none), None);
+    }
+
+    #[test]
+    fn reads_the_page_art_addresses() {
+        // Trimmed from a real api.gog.com/v2/games answer (The Witcher 3).
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{"_links":{
+                "logo":{"href":"https://images.gog-statics.com/bdec92f3.png"},
+                "backgroundImage":{"href":"https://images.gog-statics.com/6aaaff44.jpg"},
+                "galaxyBackgroundImage":{"href":"https://images.gog-statics.com/58a4266e.jpg"},
+                "icon":{"href":"https://images.gog-statics.com/bebaefa9.png"}}}"#,
+        )
+        .unwrap();
+        let urls = parse_page_art_urls(&answer);
+        assert_eq!(
+            urls.background,
+            [
+                "https://images.gog-statics.com/58a4266e.jpg",
+                "https://images.gog-statics.com/6aaaff44.jpg"
+            ]
+        );
+        assert_eq!(urls.logo, ["https://images.gog-statics.com/bdec92f3.png"]);
+        // Only plain addresses count.
+        let plain: serde_json::Value =
+            serde_json::from_str(r#"{"_links":{"backgroundImage":{"href":"http://x/b.jpg"}}}"#)
+                .unwrap();
+        let urls = parse_page_art_urls(&plain);
+        assert!(urls.background.is_empty() && urls.logo.is_empty());
     }
 }

@@ -2,7 +2,13 @@
 //! (`my_pc_page.rs`).
 //!
 //! The game page: a header with the icon, the name in the title
-//! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan), a
+//! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan). With
+//! page art (`page_art.rs`) the header is a band across the page from edge to edge: the game's
+//! wide picture (else its cover blurred, calmed with a shade) cut to fill it, as high as a share of
+//! its width (`theme::ART_BAND_*`), darker on the left behind the text and fading into the page at
+//! the bottom; over it the logo (else the icon and the name in the hero size), the folder and the
+//! chips, in the page's column. The picture stops 4 DIPs short of the band, under the fade's solid
+//! end: its partly covered edge pixel showed as a light line. Then a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
@@ -26,7 +32,12 @@ use windows_canvas::ColorF;
 use crate::app_view::field_label;
 use crate::edit::{EditChoice, EditDraft, EditField};
 use crate::shell::WindowInfo;
-use crate::ui::el::{Align, El, col, dropdown, row, scroll, text};
+use std::sync::Arc;
+
+use crate::ui::el::{
+    Align, Edges, El, Font, Role, col, dropdown, image, layers, paint, row, scroll, text,
+};
+use crate::ui::image::Picture;
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
     PlayState, Tab, accent_button, button, card, card_header, chip, heading, hint,
@@ -41,7 +52,7 @@ impl GameManager {
     pub(crate) fn page_view(&self, window: &WindowInfo) -> El<Message> {
         match self.page {
             Page::Library => page("library", self.library_page(window)),
-            Page::Game => self.game_page(),
+            Page::Game => self.game_page(window),
             Page::MyPc => page("my-pc", self.my_pc_page(window)),
         }
     }
@@ -52,7 +63,7 @@ impl GameManager {
         (window.size.0 - self.sidebar_width - 52.0).min(PAGE_MAX_WIDTH)
     }
 
-    fn game_page(&self) -> El<Message> {
+    fn game_page(&self, window: &WindowInfo) -> El<Message> {
         let Some(game) = self.selected_game() else {
             let message = if self.scanning {
                 "Looking for installed games…"
@@ -112,25 +123,111 @@ impl GameManager {
             GameTab::Nvidia => self.overview(game),
         };
         let tab_strip = tabs(strip);
-        page(
-            "game",
-            col([self.header(game), self.launch_bar(game), tab_strip, body]).gap(18.0),
-        )
+        let rest = [self.launch_bar(game), tab_strip, body];
+        match self.art_band(game, window) {
+            // The band spans the page from edge to edge, the rest in the page's column below it.
+            Some(band) => scroll(
+                "page:game",
+                col([
+                    band,
+                    page_column(col(rest).gap(18.0)).padding(Edges::new(24.0, 18.0, 24.0, 24.0)),
+                ]),
+            )
+            .grow(),
+            None => page(
+                "game",
+                col(std::iter::once(self.header(game)).chain(rest)).gap(18.0),
+            ),
+        }
     }
 
-    fn header(&self, game: &Game) -> El<Message> {
+    /// The band across the top of the game page: the game's wide art (else its cover blurred),
+    /// fading into the page, with its logo (else its icon and name), folder and chips over it.
+    /// `None` while there is no background to draw: the plain header shows instead.
+    fn art_band(&self, game: &Game, window: &WindowInfo) -> Option<El<Message>> {
+        let shown = self.page_art.shown(&game.id)?;
+        let width = (window.size.0 - self.sidebar_width).max(1.0);
+        let height = (width / theme::ART_BAND_RATIO)
+            .clamp(theme::ART_BAND_MIN_HEIGHT, theme::ART_BAND_MAX_HEIGHT);
+        // The picture ends under the scrim's last, solid strip: its edge pixel, partly covered at
+        // most scalings, would show through as a light line.
+        let art = image(format!("art:{}", game.id), Arc::clone(shown.background))
+            .cover()
+            .fill_width()
+            .height(height - 4.0);
+        let blurred = shown.blurred;
+        let scrim = paint(move |painter, rect, _| {
+            let shade = |alpha| theme::with_alpha(theme::BASE, alpha);
+            if blurred {
+                // A blurred cover is all colour: calmer behind the text.
+                painter.fill_rect(rect, shade(0x70));
+            }
+            // Darker on the left, behind the text.
+            painter.fill_linear(
+                rect,
+                (0.0, 0.0),
+                (1.0, 0.0),
+                &[(0.0, shade(0xC8)), (0.45, shade(0x60)), (0.8, shade(0))],
+            );
+            // Into the page at the bottom, solid for its last few DIPs.
+            let solid = 1.0 - 6.0 / rect.h.max(12.0);
+            painter.fill_linear(
+                rect,
+                (0.0, 0.0),
+                (0.0, 1.0),
+                &[(0.3, shade(0)), (solid, shade(0xFF)), (1.0, shade(0xFF))],
+            );
+        })
+        .fill_width()
+        .height(height);
+        let title = match shown.logo {
+            Some(logo) => art_logo(game, logo),
+            None => row([
+                self.icon(game, crate::icons::LARGE),
+                text(game.name.clone())
+                    .font(Font::Display)
+                    .text_size(theme::TEXT_HERO)
+                    .weight(600)
+                    .wrap()
+                    .fill_width(),
+            ])
+            .gap(16.0),
+        };
+        let info = col([
+            title,
+            self.folder_line(game),
+            row(self.chips(game)).gap(6.0),
+        ])
+        .gap(8.0)
+        .fill_width()
+        .max_width(PAGE_MAX_WIDTH)
+        .halign(Align::Center);
+        let over = col([info])
+            .fill_width()
+            .padding(Edges::new(24.0, 0.0, 24.0, 20.0))
+            .valign(Align::End);
+        Some(layers([art, scrim, over]).fill_width().height(height))
+    }
+
+    /// Where the game is installed, as the header's second line.
+    fn folder_line(&self, game: &Game) -> El<Message> {
         let folder = game.install_dir.as_ref().map_or_else(
             || "Install folder unknown".to_owned(),
             |dir| dir.display().to_string(),
         );
+        text(folder)
+            .text_size(theme::TEXT_SMALL)
+            .color(theme::TEXT_TERTIARY)
+            .wrap()
+    }
+
+    /// The header without art: the icon beside the name, the folder and the chips.
+    fn header(&self, game: &Game) -> El<Message> {
         row([
             self.icon(game, crate::icons::LARGE),
             col([
                 heading(game.name.clone()).wrap(),
-                text(folder)
-                    .text_size(theme::TEXT_SMALL)
-                    .color(theme::TEXT_TERTIARY)
-                    .wrap(),
+                self.folder_line(game),
                 row(self.chips(game)).gap(6.0),
             ])
             .gap(6.0)
@@ -482,13 +579,25 @@ fn store_tint(store: Store) -> ColorF {
 /// A page's content, scrolled and no wider than `PAGE_MAX_WIDTH`. Each page keeps its own scroll
 /// position (`key`), so the Library doesn't open where a game's page was scrolled to.
 fn page(key: &str, content: El<Message>) -> El<Message> {
-    scroll(
-        format!("page:{key}"),
-        col([content
-            .fill_width()
-            .max_width(PAGE_MAX_WIDTH)
-            .halign(Align::Center)])
-        .pad(24.0),
-    )
-    .grow()
+    scroll(format!("page:{key}"), page_column(content).pad(24.0)).grow()
+}
+
+/// The page's column: as wide as the page, at most `PAGE_MAX_WIDTH`, centred.
+fn page_column(content: El<Message>) -> El<Message> {
+    col([content
+        .fill_width()
+        .max_width(PAGE_MAX_WIDTH)
+        .halign(Align::Center)])
+}
+
+/// A game's logo over its art, as large as fits `ART_LOGO_MAX`, its shape kept. UI Automation
+/// reads the game's name.
+fn art_logo(game: &Game, logo: &Arc<Picture>) -> El<Message> {
+    let (most_w, most_h) = theme::ART_LOGO_MAX;
+    let (w, h) = (logo.width.max(1) as f32, logo.height.max(1) as f32);
+    let fit = (most_w / w).min(most_h / h);
+    image(format!("art-logo:{}", game.id), Arc::clone(logo))
+        .size(w * fit, h * fit)
+        .role(Role::Text)
+        .name(game.name.clone())
 }

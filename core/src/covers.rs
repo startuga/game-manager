@@ -25,30 +25,26 @@
 //! file is decoded once here (`picture::decode`) only to prove it is a whole picture; the app
 //! decodes it to draw it, and Direct2D scales it into its tile.
 //!
-//! **The cache** holds downloads under their format's extension, named after a hash of what was
-//! asked: the game's id (by id), or its id and the letters of its name (by name). A lookup that
-//! found nothing leaves an empty `.none` file and is not asked again for a week; a failed request
-//! leaves nothing and is tried again at the next start. Files are written whole, through a
-//! temporary file of their own (`whole_file::write`); `prune` leaves a temporary file
-//! younger than ten minutes, which may be a download still being written.
+//! **The cache** (`picture_cache`, shared with the game page's art) holds downloads under their
+//! format's extension, named after a hash of what was asked: the game's id (by id), or its id and
+//! the letters of its name (by name). A lookup that found nothing leaves an empty `.none` file and
+//! is not asked again for a week; a failed request leaves nothing and is tried again at the next
+//! start.
 
-use crate::picture::{self, Format};
-use crate::text::{fnv1a, letters};
+use crate::picture;
+use crate::picture_cache::{EXTENSIONS, PictureCache, describe_file, read_file, read_picture};
+use crate::text::letters;
 use crate::{
     Error, Game, Result, Store, epic, gog, http, json_file, steam, ubisoft, whole_file, xbox,
 };
 use std::cell::OnceCell;
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
 /// Bump when what is cached changes, so covers cached by an older version are not reused.
 const CACHE_FORMAT: u32 = 2;
-/// How long a lookup that found nothing is not asked again.
-const MISS_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// The extensions a cover is kept under, one per format.
-const EXTENSIONS: [&str; 5] = ["jpg", "png", "webp", "bmp", "ico"];
+/// The cover cache's folder in `%LOCALAPPDATA%\Game Manager\cache`.
+const CACHE: &str = "covers";
 
 /// A game's cover: a picture file, as the store (or the user) has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +79,7 @@ pub fn read(cover: &Cover) -> Option<Vec<u8>> {
 /// smaller copies the stores keep on this PC. `found` gets each one; the games returned are those
 /// whose original the network may still have (a copy on this PC is shown meanwhile). Blocking.
 pub fn load_local(games: &[Game], found: &mut dyn FnMut(&Game, Cover)) -> Vec<Game> {
-    let Some(cache) = Cache::open() else {
+    let Some(cache) = PictureCache::open(CACHE) else {
         return Vec::new();
     };
     let own = own_dir().ok();
@@ -105,7 +101,7 @@ pub fn load_local(games: &[Game], found: &mut dyn FnMut(&Game, Cover)) -> Vec<Ga
 /// `None` when neither has one, which is remembered for a week. An error is a request that failed:
 /// it is tried again next time. Blocking.
 pub fn fetch(game: &Game) -> Result<Option<Cover>> {
-    let Some(cache) = Cache::open() else {
+    let Some(cache) = PictureCache::open(CACHE) else {
         return Ok(None);
     };
     fetch_into(game, &cache)
@@ -120,35 +116,37 @@ pub fn set_own(game_id: &str, image: &Path) -> Result<Cover> {
 /// Drops the user's own cover of a game, and what was downloaded or looked up for it, so its
 /// cover is found afresh (Reset cover; also when a game added by hand is removed). Blocking.
 pub fn clear_own(game: &Game) -> Result<()> {
-    clear_own_in(&own_dir()?, Cache::open().as_ref(), game)
+    clear_own_in(&own_dir()?, PictureCache::open(CACHE).as_ref(), game)
 }
 
 /// Deletes cached covers no game uses any more. For a full library only: pruning after a partial
 /// list would drop the other games' covers. The user's own pictures are never touched.
 pub fn prune(games: &[Game]) {
-    let Some(cache) = Cache::open() else {
+    let Some(cache) = PictureCache::open(CACHE) else {
         return;
     };
-    let mut used = HashSet::new();
-    for game in games {
-        for identity in [net_identity(game), name_identity(game)] {
-            used.extend(cache.files(&identity));
-            used.insert(cache.miss_file(&identity));
-        }
-    }
+    let used = cache.used(
+        games
+            .iter()
+            .flat_map(|game| [net_identity(game), name_identity(game)]),
+    );
     cache.prune(&used);
 }
 
 /// Where a game's cover comes from, or would be looked for, in a line: for `scan --covers`.
 /// Reads only; nothing is downloaded or cached.
 pub fn describe(game: &Game) -> String {
-    let cache = Cache::existing();
+    let cache = PictureCache::existing(CACHE);
     let cached = |identity: &str| cache.as_ref().and_then(|c| c.existing_file(identity));
     let missed = |identity: &str| cache.as_ref().is_some_and(|c| c.missed(identity));
     if let Ok(dir) = own_dir()
         && let Some(file) = own_files(&dir, &game.id).find(|file| file.is_file())
     {
-        return format!("your own picture ({}): {}", details(&file), file.display());
+        return format!(
+            "your own picture ({}): {}",
+            describe_file(&file),
+            file.display()
+        );
     }
     let net = net_identity(game);
     let name = name_identity(game);
@@ -156,14 +154,14 @@ pub fn describe(game: &Game) -> String {
         return format!(
             "{}'s original ({}): {}",
             game.store.name(),
-            details(&file),
+            describe_file(&file),
             file.display()
         );
     }
     if let Some(file) = cached(&name) {
         return format!(
             "the original from the Steam store, found by name ({}): {}",
-            details(&file),
+            describe_file(&file),
             file.display()
         );
     }
@@ -193,22 +191,11 @@ pub fn describe(game: &Game) -> String {
         };
         steps.push(format!(
             "meanwhile {keeper}'s copy on this PC ({}): {}",
-            details(&file),
+            describe_file(&file),
             file.display()
         ));
     }
     steps.join("; ")
-}
-
-/// A picture file's format and size, for `describe`.
-fn details(file: &Path) -> String {
-    let Some(bytes) = read_file(file) else {
-        return "unreadable".to_owned();
-    };
-    match (picture::format(&bytes), picture::size(&bytes)) {
-        (Some(format), Some((width, height))) => format!("{format} {width} × {height}"),
-        _ => "not a picture".to_owned(),
-    }
 }
 
 /// Where the stores keep covers on this PC, looked up once for a batch of games.
@@ -246,7 +233,7 @@ impl Stores {
 }
 
 /// The store's own id in a `<store>:<id>` game id.
-fn store_number(game: &Game) -> Option<&str> {
+pub(crate) fn store_number(game: &Game) -> Option<&str> {
     game.id
         .split_once(':')
         .map(|(_, id)| id)
@@ -255,7 +242,7 @@ fn store_number(game: &Game) -> Option<&str> {
 
 /// Stores whose server has a game's cover by its id; EA and Ubisoft games and games added by hand
 /// have only the lookup by name.
-fn has_id_source(store: Store) -> bool {
+pub(crate) fn has_id_source(store: Store) -> bool {
     matches!(store, Store::Steam | Store::Epic | Store::Gog | Store::Xbox)
 }
 
@@ -271,7 +258,7 @@ fn name_identity(game: &Game) -> String {
 /// Steps 1 to 3 for one game: its cover, and whether the network may still have its original.
 fn local_cover(
     game: &Game,
-    cache: &Cache,
+    cache: &PictureCache,
     own: Option<&Path>,
     stores: &Stores,
 ) -> (Option<Cover>, bool) {
@@ -294,7 +281,7 @@ fn local_cover(
     (copy, by_id || by_name)
 }
 
-fn fetch_into(game: &Game, cache: &Cache) -> Result<Option<Cover>> {
+fn fetch_into(game: &Game, cache: &PictureCache) -> Result<Option<Cover>> {
     let net = net_identity(game);
     if has_id_source(game.store) && !cache.missed(&net) {
         let url = match store_cover_url(game) {
@@ -363,7 +350,7 @@ fn store_cover_url(game: &Game) -> Result<Option<String>> {
 
 /// The picture at `url`, byte for byte; `None` when the server has none there, or what it sent is
 /// no whole picture.
-fn download(url: &str) -> Result<Option<Vec<u8>>> {
+pub(crate) fn download(url: &str) -> Result<Option<Vec<u8>>> {
     match http::get(url) {
         Ok(bytes) => Ok(whole_picture(bytes)),
         Err(error) if is_absent(&error) => Ok(None),
@@ -378,7 +365,7 @@ fn whole_picture(bytes: Vec<u8>) -> Option<Vec<u8>> {
 
 /// The server answered that there is no such thing, which asking again will not change (unlike a
 /// failed connection, a busy server or a rate limit).
-fn is_absent(error: &Error) -> bool {
+pub(crate) fn is_absent(error: &Error) -> bool {
     matches!(
         error,
         Error::Http {
@@ -446,7 +433,7 @@ fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
     Ok(Cover::new(file, true, false))
 }
 
-fn clear_own_in(dir: &Path, cache: Option<&Cache>, game: &Game) -> Result<()> {
+fn clear_own_in(dir: &Path, cache: Option<&PictureCache>, game: &Game) -> Result<()> {
     for file in own_files(dir, &game.id) {
         match fs::remove_file(&file) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -462,132 +449,11 @@ fn clear_own_in(dir: &Path, cache: Option<&Cache>, game: &Game) -> Result<()> {
     Ok(())
 }
 
-fn read_file(file: &Path) -> Option<Vec<u8>> {
-    fs::read(file).ok().filter(|bytes| !bytes.is_empty())
-}
-
-/// A file that holds a picture of the format its extension says.
-fn read_picture(file: &Path) -> Option<Vec<u8>> {
-    let bytes = read_file(file)?;
-    let extension = file.extension()?.to_str()?;
-    (picture::format(&bytes).map(Format::extension) == Some(extension)).then_some(bytes)
-}
-
-/// The stores' original covers in one folder, each under its format's extension, and the `.none`
-/// markers of lookups that found nothing. Every failure only means "not cached".
-struct Cache {
-    dir: PathBuf,
-}
-
-impl Cache {
-    /// `%LOCALAPPDATA%\Game Manager\cache\covers`; `None` when it cannot be used.
-    fn open() -> Option<Self> {
-        Self::at(Self::dir()?)
-    }
-
-    /// The cache as it is, for reading only: nothing is created.
-    fn existing() -> Option<Self> {
-        Some(Self { dir: Self::dir()? }).filter(|cache| cache.dir.is_dir())
-    }
-
-    fn dir() -> Option<PathBuf> {
-        Some(json_file::local_file("cache").ok()?.join("covers"))
-    }
-
-    fn at(dir: PathBuf) -> Option<Self> {
-        fs::create_dir_all(&dir).ok()?;
-        Some(Self { dir })
-    }
-
-    fn stem(&self, identity: &str) -> PathBuf {
-        self.dir
-            .join(format!("{:016x}", fnv1a(identity.as_bytes())))
-    }
-
-    /// Where a cover may be cached: under each format's extension.
-    fn files(&self, identity: &str) -> Vec<PathBuf> {
-        let stem = self.stem(identity);
-        EXTENSIONS
-            .into_iter()
-            .map(|extension| stem.with_extension(extension))
-            .collect()
-    }
-
-    fn existing_file(&self, identity: &str) -> Option<PathBuf> {
-        self.files(identity).into_iter().find(|file| file.is_file())
-    }
-
-    fn miss_file(&self, identity: &str) -> PathBuf {
-        self.stem(identity).with_extension("none")
-    }
-
-    /// The cached file that holds a picture of the format its name says.
-    fn find(&self, identity: &str) -> Option<PathBuf> {
-        self.files(identity)
-            .into_iter()
-            .find(|file| read_picture(file).is_some())
-    }
-
-    /// Kept byte for byte under its format's extension: the file, or `None` when it is no
-    /// picture or can't be written. A found cover also ends the wait a miss started.
-    fn write(&self, identity: &str, bytes: &[u8]) -> Option<PathBuf> {
-        let format = picture::format(bytes)?;
-        let file = self.stem(identity).with_extension(format.extension());
-        for other in self
-            .files(identity)
-            .into_iter()
-            .filter(|other| *other != file)
-        {
-            let _ = fs::remove_file(other);
-        }
-        let written = whole_file::write(&file, bytes).is_ok();
-        let _ = fs::remove_file(self.miss_file(identity));
-        written.then_some(file)
-    }
-
-    /// Whether this was looked up and not found less than `MISS_AGE` ago.
-    fn missed(&self, identity: &str) -> bool {
-        fs::metadata(self.miss_file(identity))
-            .and_then(|marker| marker.modified())
-            .ok()
-            .and_then(|at| SystemTime::now().duration_since(at).ok())
-            .is_some_and(|age| age < MISS_AGE)
-    }
-
-    fn mark_miss(&self, identity: &str) {
-        let _ = fs::write(self.miss_file(identity), b"");
-    }
-
-    fn forget(&self, identity: &str) {
-        for file in self.files(identity) {
-            let _ = fs::remove_file(file);
-        }
-        let _ = fs::remove_file(self.miss_file(identity));
-    }
-
-    /// Deletes cached covers and markers that are not in `used`, and temporary files left by
-    /// writes that ended long ago (a younger one may be a download being written).
-    fn prune(&self, used: &HashSet<PathBuf>) {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return;
-        };
-        for path in entries.flatten().map(|entry| entry.path()) {
-            let cached = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| EXTENSIONS.contains(&ext) || ext == "none");
-            if (cached && !used.contains(&path)) || whole_file::is_stale_temp(&path) {
-                let _ = fs::remove_file(&path);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Launch;
-    use crate::picture::Rgba;
+    use crate::picture_cache::tests::{bmp, png};
 
     fn temp_dir(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("GM-Covers-{test}-{}", std::process::id()));
@@ -614,50 +480,6 @@ mod tests {
         }
     }
 
-    /// What the cache holds for `identity`, read from its file.
-    fn cached(cache: &Cache, identity: &str) -> Option<Vec<u8>> {
-        cache.find(identity).map(|file| fs::read(file).unwrap())
-    }
-
-    /// A PNG of one colour.
-    fn png(width: u32, height: u32) -> Vec<u8> {
-        picture::encode_png(&Rgba {
-            width,
-            height,
-            pixels: [30, 60, 90, 255].repeat((width * height) as usize),
-        })
-        .unwrap()
-    }
-
-    /// An uncompressed 24-bit BMP: the left half red, the right half blue.
-    fn bmp(width: u32, height: u32) -> Vec<u8> {
-        let row = (width * 3).div_ceil(4) * 4;
-        let size = 54 + row * height;
-        let mut file = Vec::with_capacity(size as usize);
-        file.extend_from_slice(b"BM");
-        file.extend_from_slice(&size.to_le_bytes());
-        file.extend_from_slice(&[0; 4]);
-        file.extend_from_slice(&54u32.to_le_bytes());
-        file.extend_from_slice(&40u32.to_le_bytes());
-        file.extend_from_slice(&width.to_le_bytes());
-        file.extend_from_slice(&height.to_le_bytes());
-        file.extend_from_slice(&1u16.to_le_bytes());
-        file.extend_from_slice(&24u16.to_le_bytes());
-        file.extend_from_slice(&[0; 24]);
-        for _ in 0..height {
-            for x in 0..width {
-                // Blue, green, red.
-                file.extend_from_slice(if x < width / 2 {
-                    &[0, 0, 255]
-                } else {
-                    &[255, 0, 0]
-                });
-            }
-            file.extend_from_slice(&vec![0; (row - width * 3) as usize]);
-        }
-        file
-    }
-
     #[test]
     fn only_whole_pictures_are_kept_as_they_are() {
         let picture = png(6, 9);
@@ -665,76 +487,6 @@ mod tests {
         assert_eq!(whole_picture(picture[..40].to_vec()), None);
         assert_eq!(whole_picture(b"<html>Not found</html>".to_vec()), None);
         assert_eq!(whole_picture(Vec::new()), None);
-    }
-
-    #[test]
-    fn the_cache_keeps_originals_by_format_and_week_long_misses() {
-        let cache = Cache::at(temp_dir("cache")).unwrap();
-        let (half_life, portal) = ("net|steam:220|2", "net|steam:400|2");
-        assert_eq!(cached(&cache, half_life), None);
-        assert!(!cache.missed(half_life));
-        // Kept byte for byte, under the extension its format has.
-        let original = png(6, 9);
-        let file = cache.write(half_life, &original).unwrap();
-        assert_eq!(cached(&cache, half_life), Some(original.clone()));
-        assert_eq!(cache.existing_file(half_life), Some(file.clone()));
-        assert_eq!(cache.find(half_life), Some(file.clone()));
-        assert_eq!(file.extension().unwrap(), "png");
-        assert_eq!(fs::read(&file).unwrap(), original);
-        // A new original in another format replaces it; what is no picture is not written.
-        let bitmap = bmp(4, 6);
-        cache.write(half_life, &bitmap);
-        assert_eq!(cached(&cache, half_life), Some(bitmap.clone()));
-        assert!(!file.exists());
-        assert_eq!(cache.write(portal, b"<html>"), None);
-        assert_eq!(cache.existing_file(portal), None);
-        // A file whose content isn't what its name says is not read.
-        fs::write(cache.stem(portal).with_extension("jpg"), png(2, 3)).unwrap();
-        assert_eq!(cached(&cache, portal), None);
-        cache.forget(portal);
-
-        // A miss holds for a week, then the lookup may run again.
-        cache.mark_miss(portal);
-        assert!(cache.missed(portal));
-        assert!(!cache.missed(half_life));
-        let marker = fs::File::options()
-            .write(true)
-            .open(cache.miss_file(portal))
-            .unwrap();
-        let eight_days = Duration::from_secs(8 * 24 * 60 * 60);
-        marker.set_modified(SystemTime::now() - eight_days).unwrap();
-        drop(marker);
-        assert!(!cache.missed(portal));
-        // A cover found later ends the miss; forgetting drops both.
-        cache.mark_miss(portal);
-        cache.write(portal, &original);
-        assert!(!cache.missed(portal));
-        cache.forget(portal);
-        assert_eq!(cached(&cache, portal), None);
-
-        // Pruning keeps what is in use, and files that are not the cache's.
-        cache.mark_miss(portal);
-        let stale = cache.dir.join("0123456789abcdef.jpg");
-        let old_webp = cache.dir.join("0123456789abcdee.webp");
-        let leftover = cache.dir.join("fedcba9876543210.jpg.1-0.tmp");
-        let in_progress = cache.dir.join("fedcba9876543210.jpg.1-1.tmp");
-        let unrelated = cache.dir.join("notes.txt");
-        for file in [&stale, &old_webp, &leftover, &in_progress, &unrelated] {
-            fs::write(file, b"x").unwrap();
-        }
-        let leftover_file = fs::File::options().write(true).open(&leftover).unwrap();
-        leftover_file
-            .set_modified(SystemTime::now() - Duration::from_secs(60 * 60))
-            .unwrap();
-        drop(leftover_file);
-        let mut used: HashSet<PathBuf> = cache.files(half_life).into_iter().collect();
-        used.insert(cache.miss_file(half_life));
-        cache.prune(&used);
-        assert_eq!(cached(&cache, half_life), Some(bitmap));
-        assert!(!cache.miss_file(portal).exists());
-        assert!(!stale.exists() && !old_webp.exists() && !leftover.exists());
-        assert!(in_progress.exists() && unrelated.exists());
-        fs::remove_dir_all(&cache.dir).unwrap();
     }
 
     #[test]
@@ -751,7 +503,7 @@ mod tests {
     #[test]
     fn a_cover_is_the_original_and_a_copy_on_this_pc_shows_meanwhile() {
         let dir = temp_dir("chain");
-        let cache = Cache::at(dir.join("cache")).unwrap();
+        let cache = PictureCache::at(dir.join("cache")).unwrap();
         let own = dir.join("own");
         let steam = dir.join("steam");
         let client_cover = steam.join(r"appcache\librarycache\220\library_600x900.jpg");
