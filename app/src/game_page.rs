@@ -5,7 +5,8 @@
 //! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan). With
 //! page art (`page_art.rs`) the header is a band across the page from edge to edge: the game's
 //! wide picture (else its cover blurred, calmed with a shade) cut to fill it, as high as a share of
-//! its width (`theme::ART_BAND_*`), darker on the left behind the text, and fading out from
+//! its width (`theme::ART_BAND_*`), darker on the left and towards the text's bottom (white text
+//! must read on light art: Half-Life 2's fog), and fading out from
 //! `theme::ART_FADE_FROM` down (`El::fade_out`, an opacity mask, so it melts into Mica as into the
 //! base colour). Over it, above the fade, the logo (else the icon and the name in the hero size),
 //! the folder and the chips, in the page's column, in the dark palette whatever the theme: art is
@@ -171,6 +172,18 @@ impl GameManager {
                 (0.0, 0.0),
                 (1.0, 0.0),
                 &[(0.0, shade(0xC8)), (0.45, shade(0x60)), (0.8, shade(0))],
+            );
+            // And darker down to where the text ends, so white text reads on light art too
+            // (Half-Life 2's fog); the band's fade then takes it all out.
+            painter.fill_linear(
+                rect,
+                (0.0, 0.0),
+                (0.0, 1.0),
+                &[
+                    (0.3, shade(0)),
+                    (theme::ART_FADE_FROM, shade(0xA0)),
+                    (1.0, shade(0xA0)),
+                ],
             );
         })
         .fill_width()
