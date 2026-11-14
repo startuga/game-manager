@@ -62,7 +62,7 @@ holds the rules and facts that span them.
     `config/upscalers.json`, the vendors' versions, the cache, `scan`, `swap`, `restore`; swaps
     are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`, and
     the signer's name, which must be the kind's vendor).
-  - `seven_zip.rs` (the shipped 7-Zip).
+  - `seven_zip.rs` (the shipped 7-Zip: names after `--`, stopped after ten minutes).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops` /
     `--gpu-scheduling`; long work in a file checked by its SHA-256; `check_paths`, where work
     as administrator may go).
@@ -80,8 +80,9 @@ holds the rules and facts that span them.
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
   - `crypto.rs` (SHA-256 and random bytes from Windows' CNG).
-  - `json_file.rs` (where files live, load/save, `write_whole` through a temporary file of its
-    own).
+  - `json_file.rs` (where files live, JSON load/save) and `whole_file.rs` (files written whole,
+    through a temporary file of their own; leftovers pruned after ten minutes).
+  - `bytes.rs` (little-endian numbers in file data, `None` past the end).
   - `security.rs` (the user's SID, whether elevated, granting file rights, `owner_is_admin`).
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its
     text read back, through a message-only window).

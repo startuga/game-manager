@@ -13,7 +13,7 @@
 //! Answers are cached in `%LOCALAPPDATA%\Game Manager\cache\graphics.json` by game id: the
 //! wiki's for 30 days, the files' for 7 days and only while the game's program is unchanged.
 
-use crate::{Game, json_file, pcgamingwiki, pe};
+use crate::{Game, has_extension, json_file, pcgamingwiki, pe};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -193,7 +193,7 @@ fn main_programs(game: &Game, files: &[Binary]) -> Vec<PathBuf> {
     if small
         && let Some(largest) = files
             .iter()
-            .filter(|file| has_extension(&file.path, "exe"))
+            .filter(|file| has_extension(&file.path, &["exe"]))
             .max_by_key(|file| file.size)
         && !programs.contains(&largest.path)
     {
@@ -245,15 +245,10 @@ fn named_api(path: &Path) -> Option<GraphicsApi> {
 pub(crate) fn programs_by_size(dir: &Path) -> Vec<PathBuf> {
     let mut programs: Vec<Binary> = binaries(dir)
         .into_iter()
-        .filter(|file| has_extension(&file.path, "exe"))
+        .filter(|file| has_extension(&file.path, &["exe"]))
         .collect();
     programs.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
     programs.into_iter().map(|file| file.path).collect()
-}
-
-fn has_extension(path: &Path, extension: &str) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
 }
 
 const WIKI_DAYS: u64 = 30;

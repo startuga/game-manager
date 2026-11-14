@@ -90,10 +90,7 @@ fn app_id(game: &Game) -> Option<u32> {
 /// The app info of the `wanted` apps in `appinfo.vdf`; `None` for an unknown file version. Other
 /// apps are skipped without being parsed.
 fn parse_app_info(data: &[u8], wanted: &HashSet<u32>) -> Option<HashMap<u32, vdf::Value>> {
-    let u32_at = |pos: usize| {
-        data.get(pos..pos.checked_add(4)?)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap_or_default()))
-    };
+    let u32_at = |pos: usize| crate::bytes::u32_at(data, pos);
     let (table, mut pos) = match u32_at(0)? {
         APPINFO_V28 => (None, 8),
         APPINFO_V29 => {

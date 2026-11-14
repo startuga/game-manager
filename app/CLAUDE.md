@@ -145,8 +145,9 @@ samples in `crates/samples/`) instead of guessing.
   `Drawn::animating` and the loop draws again; otherwise nothing draws at idle.
 - **Background work** goes through `Ctx::spawn_background` (the thread pool; the message comes
   back through `WM_WAKE`), or `Ctx::spawn_stream` for work that sends several messages as it goes
-  (covers). Modal dialogs (the Open dialog) and window commands are `Effect`s, run by the loop
-  with no state borrowed.
+  (covers). A message for later goes through `Ctx::after` (a one-shot window timer, so no pool
+  thread sleeps: "Starting…", My PC's countdown). Modal dialogs (the Open dialog), window commands
+  and timers are `Effect`s, run by the loop with no state borrowed.
 - **Re-entrancy**: the shell's state is borrowed with `try_borrow_mut`; a message sent while it
   is busy gets default handling. Never send our own window a message from inside `update` and
   expect it handled; `WM_NCCALCSIZE` and `WM_GETMINMAXINFO` need no state.
@@ -172,7 +173,10 @@ lists what can't be checked here and the rules (My PC's registry, the clipboard,
     program and bitness in one place.
   - In the Bitness and Graphics API drop-downs, item 0 is "As detected: …".
 - **Mods**:
-  - One job runs at a time (`mod_job`), and `mods.json` is replaced by what each job returns.
+  - One job runs at a time: every job starts through `begin_mod_job`, which refuses while one
+    runs (the views disable the buttons too). A deploy asked for meanwhile (leaving the Add-ons
+    view) is queued (`queued_deploy`) and runs when the job ends. `mods.json` is replaced by what
+    each job returns.
     After a failed job it is read again, since a job may have saved part of its work.
   - **DXVK settings' NVIDIA section** (for every variant): opening the dialog reads the game's
     driver profile in the background (`NvidiaLoaded`, matched to the selected game; hidden when

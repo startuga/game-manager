@@ -88,7 +88,9 @@ unsafe fn sid_text(sid: PSID, what: &str) -> Result<String> {
     // SAFETY: a null-terminated string from ConvertSidToStringSidW, freed by `owner` afterwards.
     let sid = unsafe { text.to_string() };
     drop(owner);
-    sid.map_err(|_| Error::NotInstallable(format!("Windows gave an unreadable SID for {what}.")))
+    sid.map_err(|_| Error::UnreadableText {
+        what: format!("the SID of {what}"),
+    })
 }
 
 /// Whether `path` itself (a junction or symbolic link is not followed) is owned by

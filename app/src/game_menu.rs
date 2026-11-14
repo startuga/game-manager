@@ -477,7 +477,7 @@ impl GameManager {
                 edits.name = (!name.is_empty()).then(|| name.to_owned());
                 let id = rename.id;
                 self.saving = true;
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::EditsSaved(
                         gm_core::config::save_edits(&id, &edits).map_err(|e| e.to_string()),
                     )
@@ -523,7 +523,7 @@ impl GameManager {
                 // Shown at once, written in the background, set back on failure.
                 let pinned = game.pinned.is_none();
                 library::set_pin(&mut self.games, &id, pinned);
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let saved = gm_core::config::set_pinned(&id, pinned).map_err(|e| e.to_string());
                     MenuMessage::PinSaved(id, pinned, saved).into()
                 });
@@ -543,7 +543,7 @@ impl GameManager {
             MenuAction::Uninstall => {
                 let game = game.clone();
                 // The registry's Uninstall entries are read in the background.
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let route = gm_core::uninstall::route(&game);
                     MenuMessage::UninstallRoute(game.id, route).into()
                 });
@@ -566,7 +566,7 @@ impl GameManager {
         }
         // The last hidden game shown again: the Hidden filter goes.
         self.tidy_view();
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let saved = gm_core::config::set_hidden(&id, hidden).map_err(|e| e.to_string());
             MenuMessage::HiddenSaved(id, hidden, saved).into()
         });

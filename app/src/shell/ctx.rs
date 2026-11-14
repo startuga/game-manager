@@ -5,24 +5,21 @@
 //!   Its `Message` goes back through a channel, and `WM_WAKE` wakes the window to read it, so
 //!   blocking work (disk, registry, network) never runs on the UI thread. `spawn_stream` is the
 //!   same for work that sends several messages.
+//! - **A message later** (`after`): a window timer sends it once the time has passed ("Starting…"
+//!   for a few seconds, My PC's countdown), so no pool thread waits for it.
 //! - **The window's scaling** (`scale`), for pictures made at the window's own pixel size.
 //! - **Effects** (the Open dialog, minimize, maximize, close) are queued and run by the message
 //!   loop between messages, with no state borrowed: a modal dialog's own message loop then reaches
 //!   the window normally.
-//!
-//! The names follow the reactor's (`spawn_background(|_cancel| …)`, `FilePicker::request`), so
-//! the logic that used them reads the same.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 use windows::Win32::{HWND, PostMessageW, WM_APP};
 
 /// Posted when background work sent a message.
 pub const WM_WAKE: i32 = WM_APP + 1;
-
-/// Passed to background work, as the reactor's cancel token was; nothing cancels work today.
-pub struct Cancel;
 
 /// The window commands the title bar's buttons give.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,16 +77,15 @@ impl FilePicker {
     }
 
     /// Opens the dialog once the current message is handled; `then` makes the message for what
-    /// was picked (`None`: cancelled). Returns `true`: the dialog is on its way.
+    /// was picked (`None`: cancelled).
     pub fn request<M>(
         self,
         ctx: &Ctx<M>,
         then: impl FnOnce(Result<Option<PathBuf>, String>) -> M + 'static,
-    ) -> bool {
+    ) {
         ctx.effects
             .borrow_mut()
             .push(Effect::PickFile(self, Box::new(then)));
-        true
     }
 }
 
@@ -100,6 +96,8 @@ pub enum Effect<M> {
         Box<dyn FnOnce(Result<Option<PathBuf>, String>) -> M>,
     ),
     Window(WindowCommand),
+    /// A message to send once the time has passed.
+    After(Duration, M),
 }
 
 pub struct Ctx<M> {
@@ -138,12 +136,12 @@ impl<M: Send + 'static> Ctx<M> {
     /// Runs `work` on the thread pool; its message comes back to `update` on the UI thread.
     pub fn spawn_background<F>(&self, work: F)
     where
-        F: FnOnce(Cancel) -> M + Send + 'static,
+        F: FnOnce() -> M + Send + 'static,
     {
         let sender = self.sender.clone();
         let hwnd = self.hwnd.get();
         windows_threading::submit(move || {
-            if sender.send(work(Cancel)).is_ok() {
+            if sender.send(work()).is_ok() {
                 wake(hwnd);
             }
         });
@@ -165,6 +163,13 @@ impl<M: Send + 'static> Ctx<M> {
                 }
             });
         });
+    }
+
+    /// Sends `message` to `update` once `delay` has passed (a window timer, so no thread waits).
+    pub fn after(&self, delay: Duration, message: M) {
+        self.effects
+            .borrow_mut()
+            .push(Effect::After(delay, message));
     }
 
     /// Minimizes, maximizes or closes the window once the current message is handled.

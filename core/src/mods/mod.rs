@@ -398,6 +398,32 @@ pub(crate) fn plan(
     })
 }
 
+/// A fresh folder of `%LOCALAPPDATA%\Game Manager\mods\staging`, where a job lays out what it
+/// copies (a patched program, a `dxvk.conf`, ReShade's files); the job removes it once done
+/// (`drop_staging`). Files an older version left loose in `staging` go too.
+pub(crate) fn fresh_staging(name: &str) -> Result<PathBuf> {
+    fresh_staging_in(&json_file::local_file("mods")?.join("staging"), name)
+}
+
+fn fresh_staging_in(root: &Path, name: &str) -> Result<PathBuf> {
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let staging = root.join(name);
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(Error::io(&staging))?;
+    Ok(staging)
+}
+
+/// Removes a job's staging folder (`fresh_staging`) once what it held was copied.
+pub(crate) fn drop_staging(staging: &Path) {
+    let _ = fs::remove_dir_all(staging);
+}
+
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = OsString::from(path.as_os_str());
     name.push(suffix);
@@ -1277,6 +1303,29 @@ mod tests {
                 build.sha256.unwrap()
             );
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_jobs_staging_folder_starts_empty_and_goes_after() {
+        let dir = temp_dir("staging");
+        // What an older version left: a patched program and a dxvk.conf loose in the root, and
+        // another job's folder.
+        fs::write(dir.join("trl.exe"), b"MZ").unwrap();
+        fs::write(dir.join("dxvk.conf"), b"").unwrap();
+        fs::create_dir_all(dir.join(r"reshade\effects")).unwrap();
+        fs::create_dir_all(dir.join("laa")).unwrap();
+        fs::write(dir.join(r"laa\old.exe"), b"MZ").unwrap();
+        let staging = fresh_staging_in(&dir, "laa").unwrap();
+        assert_eq!(staging, dir.join("laa"));
+        assert!(fs::read_dir(&staging).unwrap().next().is_none());
+        assert!(!dir.join("trl.exe").exists() && !dir.join("dxvk.conf").exists());
+        assert!(
+            dir.join(r"reshade\effects").is_dir(),
+            "another job's folder stays"
+        );
+        drop_staging(&staging);
+        assert!(!staging.exists());
         fs::remove_dir_all(dir).unwrap();
     }
 

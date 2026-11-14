@@ -100,7 +100,7 @@ fn load_list() -> Option<NexusGames> {
         if let Some(dir) = file.parent()
             && fs::create_dir_all(dir).is_ok()
         {
-            let _ = json_file::write_whole(&file, &bytes);
+            let _ = crate::whole_file::write(&file, &bytes);
         }
         return Some(games);
     }

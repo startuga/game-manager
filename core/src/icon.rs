@@ -36,13 +36,14 @@
 //! Icons read from programs are cached in `%LOCALAPPDATA%\Game Manager\cache\icons` as `.png`
 //! or `.ico` files (`alone`'s), named after the program's path, the icon's index, and the
 //! program's length and modified time, so a game's program is only read again when it changes.
-//! They are written whole, through a temporary file of their own (`json_file::write_whole`).
+//! They are written whole, through a temporary file of their own (`whole_file::write`).
 //! `.ico` and picture files are read where they are. No icon handle, GDI or WIC is used here.
 
+use crate::bytes::{u16_at, u32_at};
 use crate::data_module::{DataModule, int_resource};
 use crate::folder_key;
 use crate::text::fnv1a;
-use crate::{Game, IconRef, json_file};
+use crate::{Game, IconRef, has_extension, json_file, whole_file};
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs;
@@ -75,14 +76,6 @@ pub struct IconImage {
     pub height: u32,
     /// Bits a pixel: 32 for colour with alpha.
     pub bits: u16,
-}
-
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
 /// An image's own width, height and depth: from a PNG's header, or a bitmap's (whose height
@@ -324,12 +317,6 @@ fn program_files(file: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn has_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| extensions.iter().any(|e| ext.eq_ignore_ascii_case(e)))
-}
-
 /// A game's icon as the app gets it: its best image as it is in the game's files, as a `.png`
 /// file or a one-image `.ico` file (`alone`), or a picture file's bytes (PNG, JPEG). `None`
 /// when there is no usable icon. Blocking.
@@ -459,10 +446,10 @@ impl IconCache {
     }
 
     /// Written as `.png` or `.ico` by what it holds, through a temporary file of its own
-    /// (`json_file::write_whole`), so another reader never sees half an icon.
+    /// (`whole_file::write`), so another reader never sees half an icon.
     fn write(stem: &Path, bytes: &[u8]) {
         let ext = if is_png(bytes) { "png" } else { "ico" };
-        let _ = json_file::write_whole(&stem.with_extension(ext), bytes);
+        let _ = whole_file::write(&stem.with_extension(ext), bytes);
     }
 
     /// Deletes cached icons (older versions' too) that are not in `used`, and temporary files
@@ -473,7 +460,7 @@ impl IconCache {
         };
         for path in entries.flatten().map(|entry| entry.path()) {
             let cached = has_extension(&path, &["ico", "png"]) && !used.contains(&path);
-            if cached || json_file::is_stale_temp(&path) {
+            if cached || whole_file::is_stale_temp(&path) {
                 let _ = fs::remove_file(&path);
             }
         }

@@ -299,7 +299,8 @@ impl GameManager {
                     return;
                 };
                 // Owned by the app's window, which is disabled while the dialog is open.
-                self.picking = FilePicker::new()
+                self.picking = true;
+                FilePicker::new()
                     .title(format!("Choose a cover for {}", game.name))
                     .filter_extensions("Pictures", ["jpg", "jpeg", "png", "webp", "bmp"])
                     .filter_all()
@@ -311,7 +312,7 @@ impl GameManager {
             CoverMessage::Picked(id, Ok(Some(file))) => {
                 self.picking = false;
                 // Reading and checking the picture are blocking work.
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let chosen = gm_core::covers::set_own(&id, &file)
                         .map(|cover| (id, cover))
                         .map_err(|e| e.to_string());
@@ -332,7 +333,7 @@ impl GameManager {
                 let Some(game) = self.games.iter().find(|game| game.id == id).cloned() else {
                     return;
                 };
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let reset = gm_core::covers::clear_own(&game).map_err(|e| e.to_string());
                     CoverMessage::ResetDone(game.id, reset).into()
                 });

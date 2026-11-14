@@ -5,7 +5,7 @@
 //! but never merged with them: the user chose each one, even when a store reports the same folder.
 
 use crate::version_info::VersionInfo;
-use crate::{Error, Game, IconRef, Launch, Result, Store, json_file, shortcut};
+use crate::{Error, Game, IconRef, Launch, Result, Store, has_extension, json_file, shortcut};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,14 +92,6 @@ fn is_program(path: &Path) -> bool {
 
 fn is_shortcut(path: &Path) -> bool {
     has_extension(path, &["lnk"])
-}
-
-fn has_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension().is_some_and(|ext| {
-        extensions
-            .iter()
-            .any(|known| ext.eq_ignore_ascii_case(known))
-    })
 }
 
 impl CustomGame {

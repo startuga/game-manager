@@ -51,8 +51,8 @@ use super::reshade_settings::{Part, ReshadeSettings};
 use super::shader_packs::{Catalog, Selection};
 use super::{
     BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, SourceHashes, check_download,
-    files_under, folder_writable, get_json, latest_run, plan, reshade_settings, run_artifact,
-    run_then, shader_packs, update, with_suffix,
+    drop_staging, files_under, folder_writable, fresh_staging, get_json, latest_run, plan,
+    reshade_settings, run_artifact, run_then, shader_packs, update, with_suffix,
 };
 use crate::graphics::GraphicsApi;
 use crate::text::{percent_decode, percent_encode};
@@ -436,10 +436,7 @@ fn setup_version(page: &str, add_ons: bool) -> Option<String> {
 fn appended_zip(bytes: &[u8]) -> Option<&[u8]> {
     const END: &[u8] = b"PK\x05\x06";
     const LOCAL_FILE: &[u8] = b"PK\x03\x04";
-    let u32_at = |at: usize| -> Option<usize> {
-        let field: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
-        Some(u32::from_le_bytes(field) as usize)
-    };
+    let u32_at = |at: usize| crate::bytes::u32_at(bytes, at).map(|value| value as usize);
     let last = bytes.len().checked_sub(22)?;
     // The end record is 22 bytes plus a comment of at most 65 535.
     let first = last.saturating_sub(u16::MAX as usize);
@@ -887,14 +884,6 @@ fn state(game: &Game) -> Result<(ModsFile, ReshadeState)> {
     Ok((mods, state))
 }
 
-/// A fresh folder in Game Manager's staging area, for laying out what a job copies.
-fn fresh_staging(name: &str) -> Result<PathBuf> {
-    let staging = json_file::local_file("mods")?.join("staging").join(name);
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging).map_err(Error::io(&staging))?;
-    Ok(staging)
-}
-
 /// A choice of shaders and add-ons, laid out for a job.
 struct Chosen {
     /// The add-ons switched on, with their folders.
@@ -1035,7 +1024,7 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     )?;
     prepared.job.ops.extend(ops);
     run_job(&prepared.job)?;
-    let _ = fs::remove_dir_all(&staging);
+    drop_staging(&staging);
     let mut installed = prepared.installed;
     if state.variant == ReshadeVariant::NoAddons {
         installed.version = format!("{} (no add-ons)", installed.version);
@@ -1224,7 +1213,7 @@ pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
             ),
         }
     }
-    let _ = fs::remove_dir_all(&staging);
+    drop_staging(&staging);
     // Every game changed is recorded, even when another one's record can't be saved.
     let mut saved = mods;
     for (id, (effects, addons)) in done {

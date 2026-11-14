@@ -46,7 +46,8 @@ use gm_core::custom::NewGame;
 use gm_core::game_data::{Folder, FolderKind, GameFolders};
 use gm_core::graphics::{GraphicsApi, GraphicsInfo};
 use gm_core::mods::laa::{self, Laa};
-use gm_core::mods::reshade::{self, ReshadeStatus, ReshadeVariant};
+use gm_core::mods::reshade::{self, DeployTo, ReshadeStatus, ReshadeVariant};
+use gm_core::mods::reshade_settings::ReshadeSettings;
 use gm_core::mods::{ModsFile, dxvk};
 use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
@@ -345,8 +346,11 @@ struct GameManager {
     saving: bool,
     /// `mods.json`: each game's mods, their settings and what is installed.
     mods: ModsFile,
-    /// The game and mod being installed, uninstalled or set up; one job at a time.
+    /// The game and mod being installed, uninstalled or set up; one job at a time
+    /// (`begin_mod_job`).
     mod_job: Option<(String, ModKind)>,
+    /// A deploy asked for while another job ran (leaving the Add-ons view): run when it ends.
+    queued_deploy: Option<(ReshadeSettings, DeployTo)>,
     /// 32-bit games' Large Address Aware status by id, once read.
     laa: HashMap<String, Result<Laa, String>>,
     laa_pending: HashSet<String>,
@@ -387,7 +391,7 @@ fn main() -> ExitCode {
         Some(gm_core::mods::FILE_OPS_ARG) => Some(gm_core::mods::run_encoded),
         Some(gm_core::mods::reshade::RESHADE_OPS_ARG) => Some(gm_core::mods::reshade::run_encoded),
         Some(gm_core::nvidia::NVIDIA_OPS_ARG) => Some(gm_core::nvidia::run_encoded),
-        Some(gm_core::pc::GPU_SCHEDULING_ARG) => Some(gm_core::pc::run_encoded),
+        Some(gm_core::pc::GPU_SCHEDULING_ARG) => Some(gm_core::pc::run_gpu_scheduling),
         _ => None,
     };
     if let Some(run) = elevated {
@@ -526,6 +530,7 @@ impl GameManager {
             saving: false,
             mods: ModsFile::default(),
             mod_job: None,
+            queued_deploy: None,
             laa: HashMap::new(),
             laa_pending: HashSet::new(),
             reshade: HashMap::new(),
@@ -543,10 +548,10 @@ impl GameManager {
             my_pc: MyPcState::default(),
         };
         // The last scan's games show at once while the fresh scan runs.
-        ctx.spawn_background(|_cancel| {
+        ctx.spawn_background(|| {
             Message::SnapshotLoaded(gm_core::snapshot::load().unwrap_or_default())
         });
-        ctx.spawn_background(|_cancel| {
+        ctx.spawn_background(|| {
             Message::ModsLoaded(gm_core::mods::load().map_err(|e| format!("Mods: {e}")))
         });
         Self::load_view(ctx);
@@ -560,7 +565,7 @@ impl GameManager {
 impl GameManager {
     fn start_scan(&mut self, context: &Ctx<Message>) {
         self.scanning = true;
-        context.spawn_background(|_cancel| {
+        context.spawn_background(|| {
             let report = gm_core::scan_all();
             // The next start shows these games at once. A cache only: failures are ignored.
             let _ = gm_core::snapshot::save(&report.games);
@@ -669,7 +674,7 @@ impl GameManager {
         }
         let game = game.clone();
         self.graphics_pending.insert(game.id.clone());
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let info = gm_core::graphics::detect(&game);
             Message::GraphicsDetected(game.id, info)
         });
@@ -677,6 +682,16 @@ impl GameManager {
 }
 
 impl GameManager {
+    /// Starts a mod job for game `id`: `false`, and nothing starts, while another runs. The views
+    /// disable the buttons then too; this holds whatever sends the message.
+    fn begin_mod_job(&mut self, id: &str, kind: ModKind) -> bool {
+        if self.mod_job.is_some() {
+            return false;
+        }
+        self.mod_job = Some((id.to_owned(), kind));
+        true
+    }
+
     /// Looks up a game's saves and config folders in the background, unless they are known or
     /// being looked up. Reads the wiki (cached for a month) and the disk.
     fn request_game_folders(&mut self, id: &str, context: &Ctx<Message>) {
@@ -687,7 +702,7 @@ impl GameManager {
             return;
         };
         self.game_folders_pending.insert(game.id.clone());
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let folders = gm_core::game_data::folders(&game).map_err(|e| e.to_string());
             Message::GameFoldersLoaded(game.id, folders)
         });
@@ -835,10 +850,10 @@ impl GameManager {
                 // Started: "Starting…" while the game's own window takes its time.
                 if self.error.is_none() {
                     self.launching = Some(id.clone());
-                    context.spawn_background(move |_cancel| {
-                        std::thread::sleep(std::time::Duration::from_secs(4));
-                        Message::LaunchSettled(id)
-                    });
+                    context.after(
+                        std::time::Duration::from_secs(4),
+                        Message::LaunchSettled(id),
+                    );
                 }
             }
             Message::LaunchSettled(id) => {
@@ -877,7 +892,7 @@ impl GameManager {
                 self.finding_nexus_mods = true;
                 let game = game.clone();
                 // Reads games.json and the game's folder, and may download Nexus's list.
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::NexusModsFound(gm_core::nexus_mods::page_url(&game))
                 });
             }
@@ -909,8 +924,10 @@ impl GameManager {
                     return;
                 };
                 let game = game.clone();
-                self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
-                context.spawn_background(move |_cancel| {
+                if !self.begin_mod_job(&game.id, ModKind::Dxvk) {
+                    return;
+                }
+                context.spawn_background(move || {
                     Message::ModJobDone(dxvk::install(&game, api).map_err(|e| e.to_string()))
                 });
             }
@@ -918,13 +935,18 @@ impl GameManager {
                 let Some(game) = self.selected_game().cloned() else {
                     return;
                 };
-                self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
-                context.spawn_background(move |_cancel| {
+                if !self.begin_mod_job(&game.id, ModKind::Dxvk) {
+                    return;
+                }
+                context.spawn_background(move || {
                     Message::ModJobDone(dxvk::uninstall(&game).map_err(|e| e.to_string()))
                 });
             }
             Message::ModJobDone(done) => {
                 self.mod_job = None;
+                if let Some((settings, to)) = self.queued_deploy.take() {
+                    self.save_and_deploy(settings, to, context);
+                }
                 self.laa.clear();
                 self.reshade.clear();
                 self.upscaler_job_done(context);
@@ -933,7 +955,7 @@ impl GameManager {
                     Err(e) => {
                         self.error = Some(e);
                         // A job may have saved part of its work before it failed.
-                        context.spawn_background(|_cancel| {
+                        context.spawn_background(|| {
                             Message::ModsLoaded(
                                 gm_core::mods::load().map_err(|e| format!("Mods: {e}")),
                             )
@@ -957,8 +979,10 @@ impl GameManager {
                     return;
                 };
                 let enable = matches!(message, Message::EnableLaa);
-                self.mod_job = Some((game.id.clone(), ModKind::Laa));
-                context.spawn_background(move |_cancel| {
+                if !self.begin_mod_job(&game.id, ModKind::Laa) {
+                    return;
+                }
+                context.spawn_background(move || {
                     let done = if enable {
                         laa::enable(&game)
                     } else {
@@ -977,7 +1001,7 @@ impl GameManager {
                 self.nvidia_profile = None;
                 if let Some(exe) = program.as_deref().and_then(Path::file_name) {
                     let exe = exe.to_string_lossy().into_owned();
-                    context.spawn_background(move |_cancel| {
+                    context.spawn_background(move || {
                         let read = gm_core::nvidia::read(&exe).map_err(|e| e.to_string());
                         Message::NvidiaLoaded(id, read)
                     });
@@ -1051,8 +1075,10 @@ impl GameManager {
                     return;
                 };
                 let game = game.clone();
-                self.mod_job = Some((game.id.clone(), ModKind::Reshade));
-                context.spawn_background(move |_cancel| {
+                if !self.begin_mod_job(&game.id, ModKind::Reshade) {
+                    return;
+                }
+                context.spawn_background(move || {
                     Message::ModJobDone(reshade::install(&game, api).map_err(|e| e.to_string()))
                 });
             }
@@ -1060,8 +1086,10 @@ impl GameManager {
                 let Some(game) = self.selected_game().cloned() else {
                     return;
                 };
-                self.mod_job = Some((game.id.clone(), ModKind::Reshade));
-                context.spawn_background(move |_cancel| {
+                if !self.begin_mod_job(&game.id, ModKind::Reshade) {
+                    return;
+                }
+                context.spawn_background(move || {
                     Message::ModJobDone(reshade::uninstall(&game).map_err(|e| e.to_string()))
                 });
             }
@@ -1094,8 +1122,10 @@ impl GameManager {
                 match dialog {
                     Some(ModDialog::Settings(settings)) => {
                         let api = self.mod_api(&game);
-                        self.mod_job = Some((game.id.clone(), ModKind::Dxvk));
-                        context.spawn_background(move |_cancel| {
+                        if !self.begin_mod_job(&game.id, ModKind::Dxvk) {
+                            return;
+                        }
+                        context.spawn_background(move || {
                             let saved = dxvk::save_settings(
                                 &game,
                                 api,
@@ -1107,8 +1137,10 @@ impl GameManager {
                         });
                     }
                     Some(ModDialog::ReshadeSettings(variant)) => {
-                        self.mod_job = Some((game.id.clone(), ModKind::Reshade));
-                        context.spawn_background(move |_cancel| {
+                        if !self.begin_mod_job(&game.id, ModKind::Reshade) {
+                            return;
+                        }
+                        context.spawn_background(move || {
                             let saved = reshade::save_settings(&game, variant);
                             Message::ModJobDone(saved.map_err(|e| e.to_string()))
                         });
@@ -1152,13 +1184,11 @@ impl GameManager {
                 if let Some(folder) = folder {
                     picker = picker.folder(folder);
                 }
-                self.picking = picker.request(context, move |picked| {
+                picker.request(context, move |picked| {
                     let picked = picked.map_err(|e| format!("could not choose a program: {e}"));
                     Message::EditPathPicked(field, picked)
                 });
-                if !self.picking {
-                    self.error = Some("The file dialog is not available right now.".to_owned());
-                }
+                self.picking = true;
             }
             Message::EditPathPicked(field, Ok(Some(path))) => {
                 self.picking = false;
@@ -1181,7 +1211,7 @@ impl GameManager {
                 let edits = draft.edits(game.edits.clone().unwrap_or_default());
                 self.saving = true;
                 // Checking the paths and writing the file are disk work.
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let saved = edit::check_paths(&edits).and_then(|()| {
                         gm_core::config::save_edits(&id, &edits).map_err(|e| e.to_string())
                     });
@@ -1194,7 +1224,7 @@ impl GameManager {
                     return;
                 };
                 self.saving = true;
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::EditsSaved(
                         gm_core::config::clear_edits(&id).map_err(|e| e.to_string()),
                     )
@@ -1214,7 +1244,7 @@ impl GameManager {
             Message::DismissError => self.error = None,
             Message::AddGame => {
                 // Owned by the app's window, which is disabled while the dialog is open.
-                self.picking = FilePicker::new()
+                FilePicker::new()
                     .title("Choose the game's program")
                     .filter_extensions("Programs", ["exe", "bat", "cmd"])
                     .filter_all()
@@ -1223,10 +1253,11 @@ impl GameManager {
                             picked.map_err(|e| format!("could not choose a program: {e}")),
                         )
                     });
+                self.picking = true;
             }
             Message::ProgramPicked(Ok(Some(program))) => {
                 // The suggested name comes from the program's version information on disk.
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::DraftReady(Ok(NewGame::from_program(program)))
                 });
             }
@@ -1242,7 +1273,7 @@ impl GameManager {
                 }
                 self.picking = true;
                 // Reading a shortcut uses COM and the disk.
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::DraftReady(NewGame::from_dropped(&paths).map_err(|e| e.to_string()))
                 });
             }
@@ -1267,7 +1298,7 @@ impl GameManager {
                 if let Some(draft) = self.draft.take()
                     && result == DialogResult::Primary
                 {
-                    context.spawn_background(move |_cancel| {
+                    context.spawn_background(move || {
                         let added = gm_core::custom::add(&draft).map_err(|e| e.to_string());
                         let added = added.map(|custom| {
                             // As a scan would: program, icon and architecture.
@@ -1301,7 +1332,7 @@ impl GameManager {
                     // A pinned one leaves quick access too, and its cover goes.
                     let game = self.games.iter().find(|game| game.id == id).cloned();
                     let pinned = game.as_ref().is_some_and(|game| game.pinned.is_some());
-                    context.spawn_background(move |_cancel| {
+                    context.spawn_background(move || {
                         let removed = gm_core::custom::remove(&id).and_then(|()| {
                             if let Some(game) = &game {
                                 gm_core::covers::clear_own(game)?;

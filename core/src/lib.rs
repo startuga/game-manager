@@ -1,5 +1,6 @@
 //! Game discovery and launching for Game Manager. Contains no UI code.
 
+mod bytes;
 pub mod clipboard;
 mod com;
 pub mod config;
@@ -37,6 +38,7 @@ pub mod uninstall;
 mod unreal;
 pub mod vdf;
 mod version_info;
+mod whole_file;
 pub mod xbox;
 
 pub use elevate::elevated_work;
@@ -354,13 +356,21 @@ fn follow_unreal_launcher(game: &mut Game) {
 }
 
 fn is_exe(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    has_extension(path, &["exe"])
 }
 
-/// Library order: by name, ignoring case.
+/// Whether `path`'s extension is one of `extensions` (`"exe"`), ignoring case.
+pub(crate) fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension().is_some_and(|ext| {
+        extensions
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+    })
+}
+
+/// Library order: by name, ignoring case (each name lowered once).
 pub fn sort_games(games: &mut [Game]) {
-    games.sort_by_key(|game| game.name.to_lowercase());
+    games.sort_by_cached_key(|game| game.name.to_lowercase());
 }
 
 /// A game started through a program shows that program's icon unless the scanner found a better one.

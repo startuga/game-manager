@@ -363,7 +363,7 @@ impl GameManager {
         }
         self.filters.saved = self.view.clone();
         let view = self.view.clone();
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let saved = gm_core::config::save_library_view(&view)
                 .map_err(|e| format!("Sort and filters: {e}"));
             FilterMessage::Saved(saved).into()
@@ -383,7 +383,7 @@ impl GameManager {
 
     /// Reads the view saved last time, in the background.
     pub(crate) fn load_view(context: &Ctx<Message>) {
-        context.spawn_background(|_cancel| {
+        context.spawn_background(|| {
             let view = gm_core::config::load_library_view().map_err(|e| e.to_string());
             FilterMessage::Loaded(view).into()
         });

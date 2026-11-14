@@ -9,10 +9,11 @@
 //! then stale, and enabling LAA again or ✕ removes it.
 
 use super::{
-    BACKUP_SUFFIX, FileOp, Installed, InstalledFile, ModsFile, apply, plan, update, with_suffix,
+    BACKUP_SUFFIX, FileOp, Installed, InstalledFile, ModsFile, apply, drop_staging, fresh_staging,
+    plan, update, with_suffix,
 };
 use crate::mods::dxvk::Blocked;
-use crate::{Error, Game, Result, json_file, pe};
+use crate::{Error, Game, Result, pe};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -66,9 +67,14 @@ pub fn enable(game: &Game) -> Result<ModsFile> {
     if record.is_some_and(is_patched) {
         return Ok(mods);
     }
-    let staging = json_file::local_file("mods")?.join("staging");
-    let (ops, installed) = enable_ops(&program, record, &staging)?;
-    apply(&ops)?;
+    let staging = fresh_staging("laa")?;
+    let applied = enable_ops(&program, record, &staging).and_then(|(ops, installed)| {
+        apply(&ops)?;
+        Ok(installed)
+    });
+    // The patched copy is in the game now, or the job failed: either way it goes.
+    drop_staging(&staging);
+    let installed = applied?;
     update(&game.id, |entry| entry.laa = Some(installed))
 }
 

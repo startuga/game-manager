@@ -23,6 +23,7 @@ zune-jpeg = { workspace = true }
 # coml2api), web requests (winhttp), Xbox packages and their architecture (WinRT
 # Management_Deployment, ApplicationModel, System), mod files as administrator and 7-Zip (synchapi,
 # processthreadsapi, handleapi, winbase, winerror) with long work's hash and file name (bcrypt),
+# a resource checked against its mapping (memoryapi),
 # who runs it and file permissions (winnt, securitybaseapi, sddl, aclapi, accctrl), the
 # signatures of upscaler DLLs and their signers (wintrust, mscat, mssip, wincrypt, shared), and My PC:
 # hardware, memory modules and drives (sysinfoapi, fileapi), displays (wingdi) and their colour
@@ -36,7 +37,7 @@ windows = { workspace = true, features = [
     "shobjidl_core", "objidl", "coml2api",
     "winhttp",
     "Management_Deployment", "ApplicationModel", "System",
-    "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror", "bcrypt",
+    "synchapi", "processthreadsapi", "handleapi", "winbase", "winerror", "bcrypt", "memoryapi",
     "winnt", "securitybaseapi", "sddl", "aclapi", "accctrl",
     "wintrust", "mscat", "mssip", "wincrypt", "shared",
     "sysinfoapi", "fileapi", "wingdi", "icm",

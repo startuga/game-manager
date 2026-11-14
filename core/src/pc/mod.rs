@@ -25,8 +25,8 @@ pub use displays::{
 pub use hardware::{Cpu, Drive, Gpu, GpuVendor, Memory, System};
 pub use smbios::MemoryModule;
 pub use switches::{
-    GPU_SCHEDULING_ARG, Switches, run_encoded, set_auto_hdr, set_game_mode, set_gpu_scheduling,
-    set_windowed_optimizations,
+    GPU_SCHEDULING_ARG, Switches, run_gpu_scheduling, set_auto_hdr, set_game_mode,
+    set_gpu_scheduling, set_windowed_optimizations,
 };
 
 use crate::Result;

@@ -28,8 +28,8 @@
 //! directory: the program's folder for nearly every launch.
 
 use super::{
-    Build, Installed, ModsFile, apply, check_download, get_json, latest_run, plan, reshade,
-    run_artifact, update,
+    Build, Installed, ModsFile, apply, check_download, drop_staging, fresh_staging, get_json,
+    latest_run, plan, reshade, run_artifact, update,
 };
 use crate::graphics::GraphicsApi;
 use crate::nvidia::{self, NvidiaChoice, NvidiaOriginal};
@@ -435,11 +435,16 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
         }
         files.push(((*dll).to_owned(), source));
     }
+    let staging = fresh_staging("dxvk")?;
     if let Some(text) = config_text(&state.config, &cache, Some(api))? {
-        files.push((CONFIG_FILE.to_owned(), staged_config(&text)?));
+        files.push((CONFIG_FILE.to_owned(), staged_config(&staging, &text)?));
     }
-    let plan = plan(state.installed.as_ref(), &target.folder, &files)?;
-    apply(&plan.ops)?;
+    let applied = plan(state.installed.as_ref(), &target.folder, &files).and_then(|plan| {
+        apply(&plan.ops)?;
+        Ok(plan)
+    });
+    drop_staging(&staging);
+    let plan = applied?;
     let installed = Installed {
         version: build.version,
         page: build.page,
@@ -490,12 +495,17 @@ pub fn save_settings(
             backups: config_backups,
             ..record.clone()
         };
+        let staging = fresh_staging("dxvk")?;
         let new = match config_text(&config, &build_dir(&record.version)?, api)? {
-            Some(text) => vec![(CONFIG_FILE.to_owned(), staged_config(&text)?)],
+            Some(text) => vec![(CONFIG_FILE.to_owned(), staged_config(&staging, &text)?)],
             None => Vec::new(),
         };
-        let plan = plan(Some(&previous), &record.folder, &new)?;
-        apply(&plan.ops)?;
+        let applied = plan(Some(&previous), &record.folder, &new).and_then(|plan| {
+            apply(&plan.ops)?;
+            Ok(plan)
+        });
+        drop_staging(&staging);
+        let plan = applied?;
         files.extend(plan.files);
         backups.extend(plan.backups);
         record.files = files;
@@ -624,11 +634,10 @@ pub fn hdr_mod_configs() -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// `text` as `dxvk.conf`, written where the copy (possibly as administrator) reads it.
-fn staged_config(text: &str) -> Result<PathBuf> {
-    let dir = json_file::local_file("mods")?.join("staging");
-    fs::create_dir_all(&dir).map_err(Error::io(&dir))?;
-    let file = dir.join(CONFIG_FILE);
+/// `text` as `dxvk.conf` in the job's `staging`, where the copy (possibly as administrator)
+/// reads it.
+fn staged_config(staging: &Path, text: &str) -> Result<PathBuf> {
+    let file = staging.join(CONFIG_FILE);
     fs::write(&file, text).map_err(Error::io(&file))?;
     Ok(file)
 }
@@ -733,7 +742,10 @@ fn keep_configs(unpacked: &Path, configs: &Path) -> Result<()> {
 fn find_build_folder(root: &Path, name: &str) -> Option<PathBuf> {
     let mut folders = vec![(root.to_path_buf(), 0)];
     while let Some((folder, depth)) = folders.pop() {
-        for entry in fs::read_dir(&folder).ok()?.flatten() {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
                 continue;

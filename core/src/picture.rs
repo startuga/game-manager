@@ -23,6 +23,7 @@
 //! - **Writing**: `encode_png` only, for the window's capture. Nothing else is ever re-encoded:
 //!   covers are kept as the stores' files are (`covers.rs`).
 
+use crate::bytes::{u16_at, u32_at};
 use crate::icon;
 use fast_image_resize::images::Image;
 use fast_image_resize::{FilterType, MulDiv, PixelType, ResizeAlg, ResizeOptions, Resizer};
@@ -114,16 +115,8 @@ impl Rgba {
     }
 }
 
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-}
-
 fn i32_at(bytes: &[u8], at: usize) -> Option<i32> {
-    Some(i32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    u32_at(bytes, at).map(|value| value.cast_signed())
 }
 
 /// The format `bytes` are in, from their first bytes.

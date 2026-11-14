@@ -301,11 +301,11 @@ impl GameManager {
         match key {
             "shaders" => {
                 self.reshade_panel = Some(ReshadePanel::new(game, PanelKind::Shaders(None)));
-                context.spawn_background(|_cancel| Message::ShaderLibraryLoaded(load_library()));
+                context.spawn_background(|| Message::ShaderLibraryLoaded(load_library()));
             }
             "addons" => {
                 self.reshade_panel = Some(ReshadePanel::new(game, PanelKind::Addons(None)));
-                context.spawn_background(|_cancel| Message::AddonLibraryLoaded(load_addons()));
+                context.spawn_background(|| Message::AddonLibraryLoaded(load_addons()));
             }
             _ => {}
         }
@@ -367,7 +367,12 @@ impl GameManager {
 
     /// Closes the panel, then saves `settings` and deploys them to `to` in the background. Both
     /// panels' copies of the settings take them, so neither brings back an older choice.
-    fn save_and_deploy(&mut self, settings: ReshadeSettings, to: DeployTo, context: &Ctx<Message>) {
+    pub(crate) fn save_and_deploy(
+        &mut self,
+        settings: ReshadeSettings,
+        to: DeployTo,
+        context: &Ctx<Message>,
+    ) {
         if let Some(Ok(library)) = &mut self.shader_library {
             library.settings = settings.clone();
         }
@@ -379,9 +384,13 @@ impl GameManager {
             DeployTo::Game(id) => id.clone(),
             DeployTo::Sharing(_) => String::new(),
         };
-        self.mod_job = Some((id, ModKind::Deploy));
+        // Another job runs (left the Add-ons view meanwhile): this one follows it.
+        if !self.begin_mod_job(&id, ModKind::Deploy) {
+            self.queued_deploy = Some((settings, to));
+            return;
+        }
         let games = self.games.clone();
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let done =
                 reshade_settings::save(&settings).and_then(|()| reshade::deploy(&games, &to));
             Message::ModJobDone(done.map_err(|e| e.to_string()))
@@ -619,7 +628,7 @@ impl GameManager {
                 };
                 draft.note = Some("Zipping the selected shaders…".to_owned());
                 let (catalog, selection) = (library.catalog.clone(), draft.selection.clone());
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let done =
                         shader_packs::export(&catalog, &selection).and_then(|(zip, failed)| {
                             gm_core::clipboard::put_file(&zip)?;
@@ -646,7 +655,8 @@ impl GameManager {
                 }
             }
             Message::ImportShaders => {
-                self.picking = FilePicker::new()
+                self.picking = true;
+                FilePicker::new()
                     .title("Choose a ZIP of ReShade shaders to import")
                     .filter_extensions("ZIP archives", ["zip"])
                     .request(context, |picked| {
@@ -662,7 +672,7 @@ impl GameManager {
                         if let Some(draft) = draft {
                             draft.note = Some("Importing…".to_owned());
                         }
-                        context.spawn_background(move |_cancel| {
+                        context.spawn_background(move || {
                             let done = shader_packs::import(&zip)
                                 .map(|count| (count, shader_packs::custom_effects()));
                             Message::ShadersImported(done.map_err(|e| e.to_string()))
@@ -728,7 +738,7 @@ impl GameManager {
         };
         change(&mut library.settings, draft);
         let settings = library.settings.clone();
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             Message::ProfilesSaved(reshade_settings::save(&settings).map_err(|e| e.to_string()))
         });
     }
@@ -744,7 +754,7 @@ impl GameManager {
         let catalog = library.catalog.clone();
         let id = id.to_owned();
         self.packs_downloading.insert(id.clone());
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let effects = catalog
                 .pack(&id)
                 .ok_or_else(|| format!("{id} is not in the pack list"))

@@ -44,10 +44,13 @@ mod text_input;
 pub mod window;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 use windows::Win32::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DragAcceptFiles, DragFinish, DragQueryFileW,
@@ -84,6 +87,8 @@ pub const CAPTION_CLOSE: &str = "caption:close";
 
 /// The tooltip's timer.
 const TOOLTIP_TIMER: usize = 1;
+/// The first id of the timers `Ctx::after` sets; the shell's own are below it.
+const FIRST_LATER_TIMER: usize = 1000;
 /// Fires a moment after a frame dropped pictures' bitmaps: Direct2D then releases its textures
 /// that went unused meanwhile (`Renderer::trim`).
 const TRIM_TIMER: usize = 3;
@@ -200,6 +205,11 @@ pub fn run<A: App>(
                     }
                 }
                 Effect::Window(command) => window::command(handle, command),
+                Effect::After(delay, message) => {
+                    if let Some(shell) = state.borrow_mut().as_mut() {
+                        shell.after(delay, message);
+                    }
+                }
             }
         }
         let mut guard = state.borrow_mut();
@@ -273,6 +283,10 @@ struct Shell<A: App> {
     high_surrogate: Option<u16>,
     /// The last press, for double- and triple-clicks in text boxes.
     last_click: Option<Clicks>,
+    /// Messages waiting for their timer (`Ctx::after`), by timer id.
+    later: HashMap<usize, A::Message>,
+    /// The next such timer's id.
+    next_later: usize,
 }
 
 fn low(value: isize) -> i32 {
@@ -312,6 +326,20 @@ impl<A: App> Shell<A> {
             caret_box: None,
             high_surrogate: None,
             last_click: None,
+            later: HashMap::new(),
+            next_later: FIRST_LATER_TIMER,
+        }
+    }
+
+    /// Sends `message` to the app once `delay` has passed, through a one-shot window timer.
+    fn after(&mut self, delay: Duration, message: A::Message) {
+        let id = self.next_later;
+        self.next_later = self.next_later.wrapping_add(1).max(FIRST_LATER_TIMER);
+        let ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: a timer on our own window; its id is ours alone.
+        let set = unsafe { SetTimer(Some(hwnd(self.hwnd)), id, ms, None) };
+        if set != 0 {
+            self.later.insert(id, message);
         }
     }
 
@@ -565,6 +593,14 @@ impl<A: App> Shell<A> {
                 let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), TRIM_TIMER) };
                 if let Some(renderer) = &self.renderer {
                     renderer.trim(TRIM_DELAY_MS / 2);
+                }
+                Some(0)
+            }
+            WM_TIMER if self.later.contains_key(&wparam) => {
+                // SAFETY: stops our own one-shot timer.
+                let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), wparam) };
+                if let Some(message) = self.later.remove(&wparam) {
+                    self.dispatch(message);
                 }
                 Some(0)
             }
@@ -945,7 +981,8 @@ fn dropped_paths(wparam: usize) -> Vec<PathBuf> {
                 buffer.len() as u32,
             )
         } as usize;
-        paths.push(PathBuf::from(String::from_utf16_lossy(
+        // As Windows wrote it: a path need not be valid Unicode.
+        paths.push(PathBuf::from(OsString::from_wide(
             &buffer[..copied.min(length)],
         )));
     }

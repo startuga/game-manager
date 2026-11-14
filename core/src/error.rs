@@ -53,6 +53,35 @@ pub enum Error {
     /// 7-Zip could not unpack an archive; `code` is its exit code.
     #[error("7-Zip could not unpack {} (exit code {code})", .archive.display())]
     Extract { archive: PathBuf, code: i32 },
+    /// 7-Zip could not pack a folder into an archive; `code` is its exit code.
+    #[error(
+        "7-Zip could not pack {} into {} (exit code {code})",
+        .folder.display(),
+        .archive.display()
+    )]
+    Pack {
+        folder: PathBuf,
+        archive: PathBuf,
+        code: i32,
+    },
+    /// An archive lacks what had to be in it (`what`: "TAR archive").
+    #[error("{} holds no {what}", .archive.display())]
+    NotInArchive {
+        archive: PathBuf,
+        what: &'static str,
+    },
+    /// Work ran longer than it may and was stopped (`what`: "7-Zip unpacking …").
+    #[error("{what} took over {minutes} minutes and was stopped")]
+    TookTooLong { what: String, minutes: u64 },
+    /// A file is larger than what reads it takes (`limit_mb`).
+    #[error("{} is larger than {limit_mb} MB", .path.display())]
+    FileTooLarge { path: PathBuf, limit_mb: u64 },
+    /// A download the cache doesn't hold, by its kind and version as asked for.
+    #[error("{kind} {version} is not a download in Game Manager's cache")]
+    NotADownload { kind: String, version: String },
+    /// Windows gave text that isn't Unicode for `what`.
+    #[error("Windows gave unreadable text for {what}")]
+    UnreadableText { what: String },
     /// The user said No when Windows asked for administrator rights.
     #[error("Administrator rights were refused, so nothing was changed.")]
     ElevationRefused,

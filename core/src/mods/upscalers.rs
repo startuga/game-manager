@@ -17,7 +17,9 @@
 //!   - `release`: the DLLs are inside a release's archive (Streamline's, about 280 MB, since 2.7.32
 //!     keeps no binaries in its repository); only those matching the kind's files are unpacked.
 //!   - The lists (tags, or releases with their assets) come from GitHub's API, 60 anonymous
-//!     requests an hour, and are kept for a day in `cache\upscaler-versions.json`.
+//!     requests an hour, every page of them (100 a page), and are kept for a day in
+//!     `cache\upscaler-versions.json`, each list with its own date: one that can't be read is
+//!     asked for again alone, its last list still in use.
 //! - **Cache**: `%LOCALAPPDATA%\Game Manager\mods\upscalers\<kind>\<version>\`, its DLLs as the
 //!   vendor names them (lowercase), with a `.source` file naming the repository and tag. Every DLL
 //!   is checked before it is kept: 64-bit, with a valid Authenticode signature by the kind's
@@ -213,15 +215,25 @@ impl Kind {
     }
 }
 
-/// Whether `name` matches `pattern`, ignoring case; one `*` matches any text.
+/// Whether `name` matches `pattern`, ignoring case; each `*` matches any text, none too.
 fn matches(pattern: &str, name: &str) -> bool {
     let (pattern, name) = (pattern.to_ascii_lowercase(), name.to_ascii_lowercase());
-    match pattern.split_once('*') {
-        Some((head, tail)) => {
-            name.len() >= head.len() + tail.len() && name.starts_with(head) && name.ends_with(tail)
-        }
-        None => pattern == name,
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let [first, middle @ .., last] = parts.as_slice() else {
+        return pattern == name;
+    };
+    if name.len() < first.len() + last.len() || !name.starts_with(first) || !name.ends_with(last) {
+        return false;
     }
+    // The parts between the stars, in order, in what is left between the first and the last.
+    let mut rest = &name[first.len()..name.len() - last.len()];
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// The shipped kinds. Blocking: reads a file.
@@ -233,10 +245,48 @@ pub fn catalog() -> Result<Catalog> {
 }
 
 /// A version as vendors tag it: numbers and an optional letter (`3.1.0a`), ordered by number.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Trailing zeros don't count: `3.1` is `3.1.0` (it still shows as tagged).
+#[derive(Clone, Debug)]
 pub struct Version {
     numbers: Vec<u32>,
     suffix: String,
+}
+
+impl Version {
+    /// What it is compared by: its numbers without trailing zeros, and its letter.
+    fn key(&self) -> (&[u32], &str) {
+        let mut numbers = self.numbers.as_slice();
+        while let [rest @ .., 0] = numbers {
+            numbers = rest;
+        }
+        (numbers, &self.suffix)
+    }
+}
+
+impl PartialEq for Version {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Version {}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+impl std::hash::Hash for Version {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
 }
 
 impl Version {
@@ -301,11 +351,23 @@ pub struct Available {
 /// The repositories' tags and releases, as GitHub listed them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Listings {
-    /// When they were listed, in seconds since 1970.
+    /// When all were listed, in seconds since 1970 (an older file's, for lists without their own).
     #[serde(default)]
     fetched: u64,
     #[serde(default)]
     lists: BTreeMap<String, Vec<Listed>>,
+    /// When each list was listed: a repository that can't be listed is asked again alone, not
+    /// with every other (GitHub allows 60 anonymous requests an hour).
+    #[serde(default)]
+    fetched_each: BTreeMap<String, u64>,
+}
+
+impl Listings {
+    /// Whether the list `key` is kept and younger than a day.
+    fn is_fresh(&self, key: &str, now: u64) -> bool {
+        let fetched = self.fetched_each.get(key).copied().unwrap_or(self.fetched);
+        self.lists.contains_key(key) && now.saturating_sub(fetched) < LISTINGS_AGE.as_secs()
+    }
 }
 
 /// A tag, or a release with its assets.
@@ -349,25 +411,24 @@ pub fn versions(
         .collect();
     keys.sort_by(|a, b| a.0.cmp(&b.0));
     keys.dedup_by(|a, b| a.0 == b.0);
-    let fresh = !refresh
-        && now().saturating_sub(listings.fetched) < LISTINGS_AGE.as_secs()
-        && keys.iter().all(|(key, _)| listings.lists.contains_key(key));
     let mut failed = Vec::new();
-    if !fresh {
-        for (key, kind) in &keys {
-            match list(kind) {
-                Ok(listed) => {
-                    listings.lists.insert(key.clone(), listed);
-                }
-                Err(error) => failed.push(format!("{}: {error}", kind.repo)),
+    let mut listed_any = false;
+    for (key, kind) in &keys {
+        if !refresh && listings.is_fresh(key, now()) {
+            continue;
+        }
+        listed_any = true;
+        match list(kind) {
+            Ok(listed) => {
+                listings.lists.insert(key.clone(), listed);
+                listings.fetched_each.insert(key.clone(), now());
             }
+            // The last list stays in use; only this one is asked for again next time.
+            Err(error) => failed.push(format!("{}: {error}", kind.repo)),
         }
-        if failed.is_empty() {
-            listings.fetched = now();
-        }
-        if let Ok(file) = &file {
-            let _ = json_file::save(file, &listings);
-        }
+    }
+    if listed_any && let Ok(file) = &file {
+        let _ = json_file::save(file, &listings);
     }
     let versions = catalog
         .kinds
@@ -411,49 +472,73 @@ fn available(kind: &Kind, listed: &[Listed]) -> Vec<Available> {
     versions
 }
 
-/// The kind's repository's tags, or releases with their assets. Blocking: one web request.
+/// GitHub's largest page, and the most pages read for one list.
+const PAGE_SIZE: usize = 100;
+const MOST_PAGES: usize = 10;
+
+/// The kind's repository's tags, or releases with their assets, every page of them. Blocking: one
+/// web request a page (100 tags or releases).
 fn list(kind: &Kind) -> Result<Vec<Listed>> {
+    let mut all = Vec::new();
+    for page in 1..=MOST_PAGES {
+        let (listed, full) = list_page(kind, page)?;
+        all.extend(listed);
+        if !full {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+/// One page of `list`, and whether it was full (so another may follow).
+fn list_page(kind: &Kind, page: usize) -> Result<(Vec<Listed>, bool)> {
     let base = format!("https://api.github.com/repos/{}", kind.repo);
-    let listed = match kind.source {
-        Source::Files => get_json(&format!("{base}/tags?per_page=100"))?
-            .as_array()
-            .map(|tags| {
-                tags.iter()
-                    .filter_map(|tag| {
-                        Some(Listed {
-                            tag: tag["name"].as_str()?.to_owned(),
-                            assets: Vec::new(),
-                        })
-                    })
-                    .collect()
-            }),
-        Source::Release => get_json(&format!("{base}/releases?per_page=100"))?
-            .as_array()
-            .map(|releases| {
-                releases
-                    .iter()
-                    .filter(|release| !release["draft"].as_bool().unwrap_or(false))
-                    .filter_map(|release| {
-                        let assets = release["assets"]
-                            .as_array()?
-                            .iter()
-                            .filter_map(|asset| {
-                                Some(ListedAsset {
-                                    name: asset["name"].as_str()?.to_owned(),
-                                    size: asset["size"].as_u64()?,
-                                    url: asset["browser_download_url"].as_str()?.to_owned(),
-                                })
-                            })
-                            .collect();
-                        Some(Listed {
-                            tag: release["tag_name"].as_str()?.to_owned(),
-                            assets,
-                        })
-                    })
-                    .collect()
-            }),
+    let query = format!("per_page={PAGE_SIZE}&page={page}");
+    let answer = match kind.source {
+        Source::Files => get_json(&format!("{base}/tags?{query}"))?,
+        Source::Release => get_json(&format!("{base}/releases?{query}"))?,
     };
-    listed.ok_or(Error::NoRelease { url: base })
+    let full = answer
+        .as_array()
+        .is_some_and(|items| items.len() >= PAGE_SIZE);
+    let listed = match kind.source {
+        Source::Files => answer.as_array().map(|tags| {
+            tags.iter()
+                .filter_map(|tag| {
+                    Some(Listed {
+                        tag: tag["name"].as_str()?.to_owned(),
+                        assets: Vec::new(),
+                    })
+                })
+                .collect()
+        }),
+        Source::Release => answer.as_array().map(|releases| {
+            releases
+                .iter()
+                .filter(|release| !release["draft"].as_bool().unwrap_or(false))
+                .filter_map(|release| {
+                    let assets = release["assets"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(|asset| {
+                            Some(ListedAsset {
+                                name: asset["name"].as_str()?.to_owned(),
+                                size: asset["size"].as_u64()?,
+                                url: asset["browser_download_url"].as_str()?.to_owned(),
+                            })
+                        })
+                        .collect();
+                    Some(Listed {
+                        tag: release["tag_name"].as_str()?.to_owned(),
+                        assets,
+                    })
+                })
+                .collect()
+        }),
+    };
+    listed
+        .map(|listed| (listed, full))
+        .ok_or(Error::NoRelease { url: base })
 }
 
 /// A version in the cache.
@@ -527,12 +612,13 @@ pub fn download(kind: &Kind, available: &Available) -> Result<()> {
 
 /// Removes a version from the cache; the games it was swapped into keep their copies. Blocking.
 pub fn delete_download(kind: &str, version: &str) -> Result<()> {
-    // A folder of the cache, never a path out of it.
-    let is_name = |name: &str| !name.is_empty() && !name.contains(['\\', '/', ':']) && name != "..";
+    // A folder of the cache, never a path out of it: no separators, and not "." or "..".
+    let is_name = |name: &str| !name.contains(['\\', '/', ':']) && name.chars().any(|c| c != '.');
     if !is_name(kind) || !is_name(version) || kind == WORK_FOLDER {
-        return Err(Error::NotInstallable(format!(
-            "{kind} {version} is not a download."
-        )));
+        return Err(Error::NotADownload {
+            kind: kind.to_owned(),
+            version: version.to_owned(),
+        });
     }
     let folder = cache_folder()?.join(kind).join(version);
     if folder.is_dir() {
@@ -764,8 +850,7 @@ impl Swap {
 }
 
 fn same_folder(a: &Path, b: &Path) -> bool {
-    a.to_string_lossy().to_lowercase().trim_end_matches('\\')
-        == b.to_string_lossy().to_lowercase().trim_end_matches('\\')
+    crate::folder_key(a) == crate::folder_key(b)
 }
 
 /// The game's swap of `kind` in `folder`, if any.
@@ -1030,6 +1115,29 @@ mod tests {
     }
 
     #[test]
+    fn only_a_cached_version_is_deleted() {
+        // Refused before anything is touched: separators, "." and "..", and the work folder.
+        for (kind, version) in [
+            (".", "3.1"),
+            ("..", "3.1"),
+            ("dlss", "."),
+            ("dlss", ".."),
+            (r"dlss\..", "3.1"),
+            ("dlss", "C:"),
+            ("dlss", ""),
+            (WORK_FOLDER, "3.1"),
+        ] {
+            assert!(
+                matches!(
+                    delete_download(kind, version),
+                    Err(Error::NotADownload { .. })
+                ),
+                "{kind} {version}"
+            );
+        }
+    }
+
+    #[test]
     fn the_shipped_catalog_is_valid() {
         let catalog = shipped();
         assert!(catalog.kinds.len() >= 11);
@@ -1088,6 +1196,34 @@ mod tests {
         assert_eq!(v("v3.1.0a").to_string(), "3.1.0a");
         assert_eq!(Version::parse("fsr3-v3.0.4"), None);
         assert_eq!(Version::parse("v2.0.0-beta"), None);
+        // Trailing zeros don't count, but still show.
+        assert_eq!(v("3.1"), v("v3.1.0"));
+        assert_eq!(v("3.1.0.0").cmp(&v("3.1")), std::cmp::Ordering::Equal);
+        assert!(v("3.1.0.1") > v("3.1"));
+        assert!(v("3.10") > v("3.1"));
+        assert_eq!(v("v3.1.0").to_string(), "3.1.0");
+        let set: std::collections::HashSet<Version> = [v("3.1"), v("3.1.0")].into();
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn each_list_keeps_its_own_age() {
+        let day = LISTINGS_AGE.as_secs();
+        let mut listings = Listings::default();
+        listings.lists.insert("NVIDIA/DLSS tags".into(), Vec::new());
+        listings.lists.insert("intel/xess tags".into(), Vec::new());
+        // An older file's lists count from its one date.
+        listings.fetched = 1_000;
+        assert!(listings.is_fresh("intel/xess tags", 1_000 + day - 1));
+        assert!(!listings.is_fresh("intel/xess tags", 1_000 + day));
+        // A list read again counts from then; one that failed stays old, and is asked alone.
+        listings
+            .fetched_each
+            .insert("NVIDIA/DLSS tags".into(), 1_000 + day);
+        assert!(listings.is_fresh("NVIDIA/DLSS tags", 1_000 + day + 5));
+        assert!(!listings.is_fresh("intel/xess tags", 1_000 + day + 5));
+        // A list never read isn't fresh.
+        assert!(!listings.is_fresh("NVIDIA-RTX/Streamline releases", 1_000));
     }
 
     #[test]
@@ -1198,6 +1334,15 @@ mod tests {
         assert!(!matches("sl.*.dll", "nvngx_dlss.dll"));
         assert!(matches("nvngx_dlss.dll", "NVNGX_DLSS.dll"));
         assert!(!matches("nvngx_dlss.dll", "nvngx_dlssg.dll"));
+        // Several stars, each matching any text or none.
+        assert!(matches("amd_*_*.dll", "amd_fidelityfx_upscaler_dx12.dll"));
+        assert!(matches("amd_*_*.dll", "amd__.dll"));
+        assert!(!matches("amd_*_*.dll", "amd_fidelityfx.dll"));
+        assert!(matches("*", "anything.dll") && matches("sl.*", "sl."));
+        assert!(
+            !matches("sl.*.dll", "sl.dll"),
+            "the head and the tail don't overlap"
+        );
         assert!(matches(
             "amd_fidelityfx_*_dx12.dll",
             "amd_fidelityfx_upscaler_dx12.dll"

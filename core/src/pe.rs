@@ -4,6 +4,7 @@
 //! 32-bit program Large Address Aware, with a valid checksum.
 
 use crate::Arch;
+use crate::bytes::{u16_at, u32_at};
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -282,18 +283,6 @@ fn read_at(file: &mut (impl Read + Seek), offset: u64, len: usize) -> Option<Vec
     let mut buffer = vec![0; len];
     file.read_exact(&mut buffer).ok()?;
     Some(buffer)
-}
-
-fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(
-        bytes.get(offset..offset + 2)?.try_into().ok()?,
-    ))
-}
-
-fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        bytes.get(offset..offset + 4)?.try_into().ok()?,
-    ))
 }
 
 #[cfg(test)]

@@ -173,7 +173,7 @@ impl GameManager {
             return;
         }
         self.hdr_mod_configs_pending = true;
-        context.spawn_background(|_cancel| {
+        context.spawn_background(|| {
             Message::HdrModConfigsLoaded(dxvk::hdr_mod_configs().map_err(|e| e.to_string()))
         });
     }
@@ -192,7 +192,7 @@ impl GameManager {
         }
         let (game, mods) = (game.clone(), self.mods.clone());
         self.laa_pending.insert(game.id.clone());
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let status = gm_core::mods::laa::status(&game, &mods).map_err(|e| e.to_string());
             Message::LaaLoaded(game.id, status)
         });
@@ -210,7 +210,7 @@ impl GameManager {
         }
         let (game, mods) = (game.clone(), self.mods.clone());
         self.reshade_pending.insert(game.id.clone());
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let status = reshade::status(&game, &mods);
             Message::ReshadeLoaded(game.id, status)
         });

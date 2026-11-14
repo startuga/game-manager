@@ -29,12 +29,14 @@
 //! asked: the game's id (by id), or its id and the letters of its name (by name). A lookup that
 //! found nothing leaves an empty `.none` file and is not asked again for a week; a failed request
 //! leaves nothing and is tried again at the next start. Files are written whole, through a
-//! temporary file of their own (`json_file::write_whole`); `prune` leaves a temporary file
+//! temporary file of their own (`whole_file::write`); `prune` leaves a temporary file
 //! younger than ten minutes, which may be a download still being written.
 
 use crate::picture::{self, Format};
 use crate::text::{fnv1a, letters};
-use crate::{Error, Game, Result, Store, epic, gog, http, json_file, steam, ubisoft, xbox};
+use crate::{
+    Error, Game, Result, Store, epic, gog, http, json_file, steam, ubisoft, whole_file, xbox,
+};
 use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::fs;
@@ -418,14 +420,25 @@ fn find_own(dir: &Path, game_id: &str) -> Option<PathBuf> {
     own_files(dir, game_id).find(|file| read_picture(file).is_some())
 }
 
+/// The largest picture file chosen as a cover: a 64-megapixel bitmap, the most `picture` decodes.
+const LARGEST_OWN_COVER_MB: u64 = 256;
+
 fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
     let not_a_picture = || Error::NotAPicture(image.to_path_buf());
+    // Read whole only when it can be a picture: a huge file would take all the memory.
+    let length = fs::metadata(image).map_err(Error::io(image))?.len();
+    if length > LARGEST_OWN_COVER_MB << 20 {
+        return Err(Error::FileTooLarge {
+            path: image.to_path_buf(),
+            limit_mb: LARGEST_OWN_COVER_MB,
+        });
+    }
     let bytes = fs::read(image).map_err(Error::io(image))?;
     let format = picture::format(&bytes).ok_or_else(not_a_picture)?;
     picture::decode(&bytes).map_err(|_| not_a_picture())?;
     fs::create_dir_all(dir).map_err(Error::io(dir))?;
     let file = dir.join(format!("{}.{}", safe_name(game_id), format.extension()));
-    json_file::write_whole(&file, &bytes).map_err(Error::io(&file))?;
+    whole_file::write(&file, &bytes).map_err(Error::io(&file))?;
     // The earlier choice, in another format.
     for other in own_files(dir, game_id).filter(|other| *other != file) {
         let _ = fs::remove_file(other);
@@ -527,7 +540,7 @@ impl Cache {
         {
             let _ = fs::remove_file(other);
         }
-        let written = json_file::write_whole(&file, bytes).is_ok();
+        let written = whole_file::write(&file, bytes).is_ok();
         let _ = fs::remove_file(self.miss_file(identity));
         written.then_some(file)
     }
@@ -563,7 +576,7 @@ impl Cache {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| EXTENSIONS.contains(&ext) || ext == "none");
-            if (cached && !used.contains(&path)) || json_file::is_stale_temp(&path) {
+            if (cached && !used.contains(&path)) || whole_file::is_stale_temp(&path) {
                 let _ = fs::remove_file(&path);
             }
         }
@@ -840,6 +853,13 @@ mod tests {
         let error = set_own_in(&own, &tool.id, &text).unwrap_err();
         assert!(matches!(error, Error::NotAPicture(file) if file == text));
         assert!(own_files(&own, &tool.id).all(|file| !file.exists()));
+        // Too large to be one: refused before it is read (its length set, nothing written to it).
+        let huge = dir.join("huge.png");
+        let file = fs::File::create(&huge).unwrap();
+        file.set_len((LARGEST_OWN_COVER_MB << 20) + 1).unwrap();
+        drop(file);
+        let error = set_own_in(&own, &tool.id, &huge).unwrap_err();
+        assert!(matches!(error, Error::FileTooLarge { .. }), "{error}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -75,7 +75,7 @@ impl GameManager {
     /// no game uses any more.
     pub(crate) fn load_icons(games: Vec<Game>, prune: bool, context: &Ctx<Message>) {
         let scale = context.scale();
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let read = if prune {
                 gm_core::icon::refresh_all(&games)
             } else {
@@ -110,7 +110,7 @@ impl GameManager {
         if sources.is_empty() {
             return;
         }
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             IconMessage::Decoded(scale.to_bits(), decode(sources, scale)).into()
         });
     }

@@ -125,7 +125,7 @@ impl GameManager {
             return;
         }
         self.upscalers.driver_pending = true;
-        context.spawn_background(|_cancel| UpscalerMessage::DriverLoaded(load_driver()).into());
+        context.spawn_background(|| UpscalerMessage::DriverLoaded(load_driver()).into());
     }
 
     /// The NVIDIA overrides tab is listed: an NVIDIA driver was found, or reading it failed.
@@ -165,7 +165,7 @@ impl GameManager {
             choice,
             state: None,
         });
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let read = dlss_override::state(&game, &catalog).map_err(|e| e.to_string());
             UpscalerMessage::OverridesLoaded(game.id, read).into()
         });
@@ -248,9 +248,11 @@ impl GameManager {
         if draft.choice == saved && !changed_elsewhere {
             return;
         }
-        self.mod_job = Some((game.id.clone(), ModKind::Overrides));
+        if !self.begin_mod_job(&game.id, ModKind::Overrides) {
+            return;
+        }
         let choice = draft.choice.clone();
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let saved = dlss_override::save(&game, &catalog, choice);
             Message::ModJobDone(saved.map_err(|e| e.to_string()))
         });

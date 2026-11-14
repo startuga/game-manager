@@ -10,7 +10,7 @@
 //! - **A new mode** (resolution or refresh rate) is a trial: Windows applies it without saving it
 //!   (`pc::try_mode`). Once it has, a dialog asks to keep it and counts down from
 //!   `TRIAL_SECONDS`; Keep saves it (`pc::keep_mode`), and no answer, Go back or Escape put the old
-//!   mode back. Unsaved, it can't outlive the app or a restart. The countdown is a one-second background tick carrying the trial's token, so a
+//!   mode back. Unsaved, it can't outlive the app or a restart. The countdown is a one-second timer (`Ctx::after`) carrying the trial's token, so a
 //!   tick of an earlier trial does nothing.
 //! - **GPU scheduling** asks for administrator rights (`gm_core::pc::set_gpu_scheduling`) and
 //!   applies after a restart, which the page says.
@@ -118,8 +118,7 @@ impl GameManager {
                     return;
                 }
                 state.pending = true;
-                context
-                    .spawn_background(|_cancel| MyPcMessage::Loaded(Arc::new(pc::read())).into());
+                context.spawn_background(|| MyPcMessage::Loaded(Arc::new(pc::read())).into());
             }
             MyPcMessage::Loaded(snapshot) => {
                 state.pending = false;
@@ -131,7 +130,7 @@ impl GameManager {
                     .unwrap_or_default();
                 state.brightness.clear();
                 state.snapshot = Some(snapshot);
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     MyPcMessage::BrightnessRead(
                         displays
                             .iter()
@@ -162,7 +161,7 @@ impl GameManager {
                     seconds: TRIAL_SECONDS,
                     token: state.trials,
                 });
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     MyPcMessage::ModeApplied(
                         pc::try_mode(&display, after).map_err(|e| e.to_string()),
                     )
@@ -251,7 +250,7 @@ impl GameManager {
                     .brightness
                     .insert(name.clone(), Some(percent))
                     .flatten();
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let set = pc::set_brightness(&display, percent).map_err(|e| e.to_string());
                     MyPcMessage::BrightnessSet(name, before.unwrap_or(percent), set).into()
                 });
@@ -296,7 +295,7 @@ fn change(
         return;
     }
     state.busy = true;
-    context.spawn_background(move |_cancel| {
+    context.spawn_background(move || {
         let result = work().map_err(|e| e.to_string());
         std::thread::sleep(settle);
         MyPcMessage::Changed(result, Arc::new(pc::read())).into()
@@ -305,10 +304,7 @@ fn change(
 
 /// One second of a trial.
 fn tick(token: u64, context: &Ctx<Message>) {
-    context.spawn_background(move |_cancel| {
-        std::thread::sleep(Duration::from_secs(1));
-        MyPcMessage::Tick(token).into()
-    });
+    context.after(Duration::from_secs(1), MyPcMessage::Tick(token).into());
 }
 
 /// A display's resolutions, largest first, each once.

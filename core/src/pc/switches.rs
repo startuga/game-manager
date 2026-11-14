@@ -78,9 +78,9 @@ pub fn set_gpu_scheduling(on: bool) -> Result<()> {
     }
 }
 
-/// Runs `--gpu-scheduling on|off`. The result is the program's exit code: 0, or the HRESULT of
-/// what failed.
-pub fn run_encoded(argument: &str) -> u32 {
+/// Runs `--gpu-scheduling on|off` (an argument, not encoded work like the other elevated modes').
+/// The result is the program's exit code: 0, or the HRESULT of what failed.
+pub fn run_gpu_scheduling(argument: &str) -> u32 {
     const INVALID_PARAMETER: WIN32_ERROR = WIN32_ERROR(87);
     const INVALID_FUNCTION: WIN32_ERROR = WIN32_ERROR(1);
     let on = match argument {
@@ -125,19 +125,24 @@ pub(crate) fn flag(settings: &str, name: &str) -> Option<bool> {
         .map(|value| value & 1 == 1)
 }
 
-/// `settings` with the flag's lowest bit set or cleared, every other flag kept in its place.
+/// `settings` with the flag's lowest bit set or cleared. Every other part stays as it was written,
+/// in its place (one without `=` too); a value that isn't a number becomes 0 or 1.
 pub(crate) fn with_flag(settings: &str, name: &str, on: bool) -> String {
     let mut found = false;
-    let mut parts: Vec<String> = entries(settings)
-        .map(|(key, value)| {
-            if key.eq_ignore_ascii_case(name) {
+    let mut parts: Vec<String> = settings
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| match part.split_once('=') {
+            Some((key, value)) if key.trim().eq_ignore_ascii_case(name) => {
                 found = true;
-                let number = value.parse::<i64>().unwrap_or(0);
-                let number = if on { number | 1 } else { number & !1 };
-                format!("{key}={number}")
-            } else {
-                format!("{key}={value}")
+                let number = match value.trim().parse::<i64>() {
+                    Ok(number) if on => number | 1,
+                    Ok(number) => number & !1,
+                    Err(_) => i64::from(on),
+                };
+                format!("{}={number}", key.trim())
             }
+            _ => part.to_owned(),
         })
         .collect();
     if !found {
@@ -194,5 +199,10 @@ mod tests {
             "VRROptimizeEnable=1;AutoHDREnable=1;"
         );
         assert_eq!(with_flag("", "AutoHDREnable", false), "AutoHDREnable=0;");
+        // Other parts as they were written: one without "=", odd spacing, an unknown value.
+        assert_eq!(
+            with_flag("Odd; Spaced = x ;AutoHDREnable=on;", "AutoHDREnable", true),
+            "Odd; Spaced = x ;AutoHDREnable=1;"
+        );
     }
 }

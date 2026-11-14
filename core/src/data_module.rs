@@ -4,12 +4,14 @@
 //! `LoadLibraryExW` with `LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE` only maps the
 //! file; resources are read in place (`resource`) and listed in the file's own order (`names`).
 //! The module is freed when the value is dropped, and the resources' bytes borrow it, so none
-//! outlives it.
+//! outlives it. A resource's size is checked against what Windows mapped (`VirtualQuery`), so a
+//! damaged or crafted program that states more can't make the app read past its mapping.
 
 use std::path::Path;
 use windows::Win32::{
     FindResourceW, FreeLibrary, HMODULE, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-    LONG_PTR, LoadLibraryExW, LoadResource, LockResource, SizeofResource,
+    LONG_PTR, LoadLibraryExW, LoadResource, LockResource, MEM_COMMIT, MEMORY_BASIC_INFORMATION,
+    PAGE_GUARD, PAGE_NOACCESS, SizeofResource, VirtualQuery,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR};
 
@@ -75,8 +77,13 @@ impl DataModule {
         if data.is_null() {
             return None;
         }
+        // A damaged or crafted file can state a size past its mapping: read only what is there.
+        if !readable(data.cast_const(), size) {
+            return None;
+        }
         // SAFETY: LockResource points to the resource's `size` bytes, mapped read-only while the
-        // module is loaded; the returned slice borrows `self`, so it cannot outlive the module.
+        // module is loaded (checked just above); the returned slice borrows `self`, so it cannot
+        // outlive the module.
         Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) })
     }
 
@@ -96,6 +103,38 @@ impl DataModule {
         };
         names
     }
+}
+
+/// Whether the `size` bytes at `data` are all mapped and readable, in one mapping: what a resource
+/// claims is checked against what Windows mapped, page range by page range (`VirtualQuery`).
+fn readable(data: *const std::ffi::c_void, size: usize) -> bool {
+    let Some(end) = (data as usize).checked_add(size) else {
+        return false;
+    };
+    let mut at = data as usize;
+    let mut mapping = None;
+    while at < end {
+        let mut region = MEMORY_BASIC_INFORMATION::default();
+        // SAFETY: a plain query of this process's memory at `at`; `region` is a valid buffer of
+        // the size given.
+        let written = unsafe {
+            VirtualQuery(
+                Some(std::ptr::without_provenance(at)),
+                &mut region,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        let protect = region.Protect;
+        let ok = written != 0
+            && region.State == MEM_COMMIT as u32
+            && protect & (PAGE_NOACCESS | PAGE_GUARD) as u32 == 0
+            && *mapping.get_or_insert(region.AllocationBase) == region.AllocationBase;
+        if !ok || region.RegionSize == 0 {
+            return false;
+        }
+        at = (region.BaseAddress as usize).saturating_add(region.RegionSize);
+    }
+    true
 }
 
 /// `EnumResourceNamesW`'s callback: copies each name into the `Vec` `lparam` points to.
@@ -126,5 +165,31 @@ impl Drop for DataModule {
     fn drop(&mut self) {
         // SAFETY: loaded by `load`, freed once, here; no slice from `resource` outlives `self`.
         let _ = unsafe { FreeLibrary(self.0) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_mapped_bytes_are_read() {
+        let bytes = vec![7u8; 4096];
+        let data = bytes.as_ptr().cast::<std::ffi::c_void>();
+        assert!(readable(data, bytes.len()));
+        // Past what is mapped there, at no address, or past the end of memory.
+        assert!(!readable(data, 1 << 40));
+        assert!(!readable(std::ptr::null(), 16));
+        assert!(!readable(data, usize::MAX));
+        // A program's resource read through the check: Windows' own notepad has icons.
+        let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let module = DataModule::load(&system.join(r"System32\notepad.exe")).unwrap();
+        let groups = module.names(int_resource(14));
+        let first = groups.first().unwrap();
+        assert!(
+            module
+                .resource(first.as_pcwstr(), int_resource(14))
+                .is_some()
+        );
     }
 }

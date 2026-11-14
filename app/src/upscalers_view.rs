@@ -188,9 +188,11 @@ impl GameManager {
                 let Some(available) = self.chosen_version(&key, &found).cloned() else {
                     return;
                 };
-                self.mod_job = Some((game.id.clone(), ModKind::Upscaler));
+                if !self.begin_mod_job(&game.id, ModKind::Upscaler) {
+                    return;
+                }
                 self.upscalers.row = Some(key);
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::ModJobDone(
                         upscalers::swap(&game, &found, &available).map_err(|e| e.to_string()),
                     )
@@ -200,9 +202,11 @@ impl GameManager {
                 let Some((game, found)) = self.upscaler_row(&key) else {
                     return;
                 };
-                self.mod_job = Some((game.id.clone(), ModKind::Upscaler));
+                if !self.begin_mod_job(&game.id, ModKind::Upscaler) {
+                    return;
+                }
                 self.upscalers.row = Some(key);
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     Message::ModJobDone(
                         upscalers::restore(&game, &found.kind, &found.folder)
                             .map_err(|e| e.to_string()),
@@ -230,7 +234,7 @@ impl GameManager {
                     return;
                 };
                 self.upscalers.download = Some((kind, version));
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let done = upscalers::download(&found_kind, &available)
                         .map(|()| upscalers::downloaded())
                         .map_err(|e| e.to_string());
@@ -238,7 +242,7 @@ impl GameManager {
                 });
             }
             UpscalerMessage::Delete(kind, version) => {
-                context.spawn_background(move |_cancel| {
+                context.spawn_background(move || {
                     let done = upscalers::delete_download(&kind, &version)
                         .map(|()| upscalers::downloaded())
                         .map_err(|e| e.to_string());
@@ -278,7 +282,7 @@ impl GameManager {
         self.upscalers.row = None;
         self.upscalers.overrides = None;
         if matches!(self.upscalers.library, Some(Ok(_))) {
-            context.spawn_background(|_cancel| {
+            context.spawn_background(|| {
                 UpscalerMessage::DownloadsChanged(Ok(upscalers::downloaded())).into()
             });
         }
@@ -289,9 +293,8 @@ impl GameManager {
             return;
         }
         self.upscalers.library_pending = true;
-        context.spawn_background(move |_cancel| {
-            UpscalerMessage::LibraryLoaded(load_library(refresh)).into()
-        });
+        context
+            .spawn_background(move || UpscalerMessage::LibraryLoaded(load_library(refresh)).into());
     }
 
     /// While the Upscalers or NVIDIA overrides tab is open: the library once, and the selected
@@ -313,7 +316,7 @@ impl GameManager {
         }
         let (game, mods) = (game.clone(), self.mods.clone());
         self.upscalers.pending.insert(game.id.clone());
-        context.spawn_background(move |_cancel| {
+        context.spawn_background(move || {
             let found = upscalers::catalog()
                 .map(|catalog| upscalers::scan(&game, &catalog, &mods))
                 .unwrap_or_default();
