@@ -37,8 +37,9 @@
 //!   `App::look_changed`.
 //! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`).
 //! - **Animated pictures** (`ui::animation`) play while the window is in front and Windows shows
-//!   animations (`window::animations_shown`, followed through `WM_SETTINGCHANGE`). A frame due
-//!   within `SOON` is drawn at the next refresh; a later one gets a timer (`ANIMATION_TIMER`), so a
+//!   animations (`window::animations_shown`, followed through `WM_SETTINGCHANGE`). The window is
+//!   drawn when a frame is due (`wait_for_frame`): a timer (`ANIMATION_TIMER`) wakes the loop
+//!   shortly before, then it waits for the display's refreshes without drawing (`DwmFlush`), so a
 //!   24-frame animation draws 24 times a second, not at the display's rate.
 //! - **UI Automation**: `WM_GETOBJECT` and the actions it posts (`ui::uia`).
 //!
@@ -59,12 +60,12 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DragAcceptFiles, DragFinish, DragQueryFileW,
-    GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
-    IDC_IBEAM, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED,
+    DwmFlush, GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON,
+    HTMINBUTTON, IDC_IBEAM, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED,
     SPI_SETCLIENTAREAANIMATION, SW_SHOWNORMAL, SetCapture, SetCursor, SetFocus,
     SetProcessDpiAwarenessContext, SetTimer, ShowWindow, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
     TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR,
@@ -105,7 +106,8 @@ const TRIM_TIMER: usize = 3;
 const TRIM_DELAY_MS: u32 = 2000;
 /// Fires when an animation's next frame is due (`render::Drawn::next_frame`).
 const ANIMATION_TIMER: usize = 4;
-/// A frame due this soon is drawn at the display's next refresh instead of by a timer.
+/// Within this of an animation's next frame, the loop waits for the display's refreshes instead
+/// of a timer (a timer is only good to about 16 ms).
 const SOON: Duration = Duration::from_millis(20);
 
 /// The F of Ctrl+F (its virtual-key code is its letter's).
@@ -306,6 +308,8 @@ struct Shell<A: App> {
     /// pictures play.
     in_front: bool,
     animations_shown: bool,
+    /// When an animation's next frame is due.
+    frame_due: Option<Instant>,
     tracking: bool,
     /// The text box a dialog opened with (its first control), given the keyboard once.
     dialog_edit: Option<u64>,
@@ -370,6 +374,7 @@ impl<A: App> Shell<A> {
             minimized: false,
             in_front: true,
             animations_shown: window::animations_shown(),
+            frame_due: None,
             tracking: false,
             dialog_edit: None,
             near: HashSet::new(),
@@ -508,6 +513,11 @@ impl<A: App> Shell<A> {
             self.layout();
             self.follow_near();
         }
+        if !self.redraw
+            && let Some(keep_going) = self.wait_for_frame()
+        {
+            return Ok(keep_going);
+        }
         if !self.redraw {
             return Ok(false);
         }
@@ -531,15 +541,10 @@ impl<A: App> Shell<A> {
         };
         renderer.resize(self.size.0, self.size.1, self.dpi as f32)?;
         let drawn = renderer.draw(frame, &self.ui, &self.text)?;
-        // An animation's next frame: at the next refresh when it is due soon, else by a timer.
-        let soon = drawn.next_frame.is_some_and(|next| next <= SOON);
-        if let Some(next) = drawn.next_frame.filter(|_| !soon) {
-            let ms = u32::try_from(next.as_millis()).unwrap_or(u32::MAX);
-            // SAFETY: a timer on our own window; the same id restarts a running one.
-            unsafe { SetTimer(Some(hwnd(self.hwnd)), ANIMATION_TIMER, ms, None) };
-        }
-        let animating = drawn.animating || soon;
-        self.redraw = animating;
+        // An animation's next frame is waited for (`wait_for_frame`).
+        self.frame_due = drawn.next_frame.map(|next| Instant::now() + next);
+        let animating = drawn.animating || self.frame_due.is_some();
+        self.redraw = drawn.animating;
         if drawn.dropped {
             // SAFETY: a timer on our own window; the same id restarts a running one.
             unsafe { SetTimer(Some(hwnd(self.hwnd)), TRIM_TIMER, TRIM_DELAY_MS, None) };
@@ -551,6 +556,31 @@ impl<A: App> Shell<A> {
             return Ok(true);
         }
         Ok(animating)
+    }
+
+    /// Waits for the animation frame due at `frame_due`: `None` when there is none, or it is due
+    /// (`redraw` is then set). Within `SOON` of it, waits for the display's next refresh without
+    /// drawing (`DwmFlush`) and asks to be called again (`Some(true)`); earlier, sets a timer for
+    /// then and lets the loop sleep (`Some(false)`).
+    fn wait_for_frame(&mut self) -> Option<bool> {
+        let due = self.frame_due?;
+        let now = Instant::now();
+        if now >= due {
+            self.redraw = true;
+            return None;
+        }
+        let left = due - now;
+        if left <= SOON {
+            // SAFETY: takes nothing; it returns once the compositor has shown its next frame.
+            let _ = unsafe { DwmFlush() };
+            return Some(true);
+        }
+        let ms = u32::try_from((left - SOON).as_millis())
+            .unwrap_or(u32::MAX)
+            .max(1);
+        // SAFETY: a timer on our own window; the same id restarts a running one.
+        unsafe { SetTimer(Some(hwnd(self.hwnd)), ANIMATION_TIMER, ms, None) };
+        Some(false)
     }
 
     /// Animated pictures play, or keep still, as `in_front` and `animations_shown` now say.
@@ -693,9 +723,8 @@ impl<A: App> Shell<A> {
                 Some(0)
             }
             WM_TIMER if wparam == ANIMATION_TIMER => {
-                // SAFETY: stops our own timer; the next frame sets it again.
+                // SAFETY: stops our own timer; `wait_for_frame`, after this message, takes over.
                 let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), ANIMATION_TIMER) };
-                self.redraw = true;
                 Some(0)
             }
             WM_TIMER if wparam == TRIM_TIMER => {

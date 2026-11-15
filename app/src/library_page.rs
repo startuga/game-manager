@@ -11,7 +11,9 @@
 //!   icon made into one as Steam makes covers from wide pictures (the icon across the top part,
 //!   its edges drawn out around it and blurred: `picture::capsule`), and its icon on a card until
 //!   that is ready. A pin on a dark chip when it is pinned, and its name on one line under it
-//!   (whole in the tooltip). An animated cover plays while the pointer is on its tile. Under the pointer a light tint goes over all of it
+//!   (whole in the tooltip). An animated cover plays as Settings ▸ Appearance ▸ Animated covers
+//!   says: the first on screen up to a limit and the one under the pointer (Automatic), all on
+//!   screen (Always), only under the pointer, or never. Under the pointer a light tint goes over all of it
 //!   (`hover_overlay`: the picture would hide a fill). A click opens the game's page; a
 //!   right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`).
 //! - **The grid**: as many tiles a row as the page's width holds (`library::columns`): 4 at the
@@ -26,6 +28,7 @@ use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{hint, page_header, working};
 use crate::{GameManager, Message};
 use gm_core::Game;
+use gm_core::appearance::AnimatedCovers;
 
 /// The space between tiles: 4 fit across at the window's first size.
 const TILE_GAP: f32 = theme::space::L;
@@ -86,6 +89,12 @@ impl GameManager {
     /// pinned, and its name on one line under it. A click opens its page.
     fn tile(&self, game: &Game) -> El<Message> {
         let id = game.id.clone();
+        let cover_play = match self.appearance.animated_covers {
+            AnimatedCovers::Automatic => Some(Play::Limited),
+            AnimatedCovers::Always => Some(Play::Always),
+            AnimatedCovers::Hovered => Some(Play::OnHover),
+            AnimatedCovers::Never => None,
+        };
         // Decoded while the tile is near the screen (`.watch()`), else its icon meanwhile.
         let picture = match (self.covers.picture(&game.id), self.covers.capsule(&game.id)) {
             (Some(cover), _) => Some(("cover", cover)),
@@ -95,10 +104,12 @@ impl GameManager {
             Some((kind, picture)) => image(format!("{kind}:{}", game.id), picture.clone())
                 .cover()
                 .radius(theme::RADIUS_CARD)
-                // An animated cover plays under the pointer.
+                // An animated cover plays as Settings say.
                 .animate(
-                    self.covers.animation(&game.id).filter(|_| kind == "cover"),
-                    Play::OnHover,
+                    self.covers
+                        .animation(&game.id)
+                        .filter(|_| kind == "cover" && cover_play.is_some()),
+                    cover_play.unwrap_or(Play::OnHover),
                 ),
             None => row([self.icon(game, crate::icons::LARGE)])
                 .justify(Align::Center)

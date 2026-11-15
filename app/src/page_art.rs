@@ -20,8 +20,8 @@
 //!   picks a picture for the background or the logo (`page_art::set_own`), Reset drops it
 //!   (`clear_own`); either way the game's art is read again (`reload`) while what shows stays.
 //! - **Animated art** (an animated WebP background or logo, the user's own): its first frame shows
-//!   until it plays, and it plays whenever the window is in front (`ui::animation`,
-//!   `el::Play::Always`). A background's frames are made no larger than `BACKGROUND_FRAMES`; a
+//!   until it plays, and it plays whenever the window is in front, unless Settings say animated
+//!   covers never play (`game_page.rs`, `ui::animation`, `el::Play::Always`). A background's frames are made no larger than `BACKGROUND_FRAMES`; a
 //!   logo's as large as it is drawn (`theme::ART_LOGO_MAX`), and not cut to what shows, as its
 //!   frames could each be cut differently.
 //! - Pictures are kept only for the game still selected; a stand-in never replaces an original
@@ -417,14 +417,17 @@ impl GameManager {
 fn decode(art: &PageArt, scale: f32) -> ArtPictures {
     let read = |part: &Option<page_art::Art>| std::fs::read(&part.as_ref()?.file).ok();
     let own = |part: &Option<page_art::Art>| part.as_ref().is_some_and(|art| art.own);
+    // An animation is played from its file.
+    let animation =
+        |part: &Option<page_art::Art>, size| Animation::open(&part.as_ref()?.file, size);
     let background_bytes = read(&art.background);
     let background = background_bytes
         .as_deref()
         .and_then(image::decode_cover)
         .map(Arc::new);
     let background_animation = background_bytes
-        .filter(|_| background.is_some())
-        .and_then(|bytes| Animation::new(bytes, BACKGROUND_FRAMES));
+        .filter(|bytes| background.is_some() && picture::is_animated(bytes))
+        .and_then(|_| animation(&art.background, BACKGROUND_FRAMES));
     let (logo, logo_animation) = match read(&art.logo) {
         Some(bytes) if picture::is_animated(&bytes) => {
             let logo = image::decode_cover(&bytes).map(Arc::new);
@@ -435,8 +438,8 @@ fn decode(art: &PageArt, scale: f32) -> ArtPictures {
                 let fit = (most_w / w).min(most_h / h) * scale;
                 ((w * fit).round() as u32, (h * fit).round() as u32)
             });
-            let animation = logo.as_ref().and_then(|_| Animation::new(bytes, size));
-            (logo, animation)
+            let logo_animation = logo.as_ref().and_then(|_| animation(&art.logo, size));
+            (logo, logo_animation)
         }
         Some(bytes) => (image::decode_logo(&bytes).map(Arc::new), None),
         None => (None, None),

@@ -1,6 +1,9 @@
 //! The Settings page (the sidebar's last page). Its Appearance card sets how the window looks:
 //! Theme (as Windows' apps are, light or dark), Background (Mica, Mica Alt or the theme's solid
-//! colour) and Accent colour (Windows' or Game Manager's red). By default it follows Windows.
+//! colour), Accent colour (Windows' or Game Manager's red), and when animated covers play
+//! (Automatic, Always, When hovered, Never; `gm_core::appearance::AnimatedCovers`, used by the
+//! Library's tiles and the game page's band). By default it follows Windows and lets the app
+//! decide.
 //!
 //! - **Saved** in `game-settings.json` (`gm_core::config::save_appearance`) in the background, and
 //!   applied at once (`apply_appearance`): the palette the views draw with (`theme::set_palette`,
@@ -14,11 +17,12 @@
 //!   (`App::look_changed`), and Windows' look is read again in the background (`WindowsChanged`,
 //!   then `WindowsRead`).
 
-use gm_core::appearance::{Accent, Appearance, Backdrop, Theme, WindowsLook};
+use gm_core::appearance::{Accent, AnimatedCovers, Appearance, Backdrop, Theme, WindowsLook};
 use windows_canvas::ColorF;
 
 use crate::shell::ctx::{Ctx, WindowCommand};
 use crate::shell::window::{self, Look};
+use crate::ui::animation;
 use crate::ui::el::{El, col, row};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{card, card_header, hint, page_header, segmented};
@@ -199,6 +203,47 @@ impl GameManager {
             (Accent::GameManager, _) => "Game Manager's own red.",
         };
 
+        let covers = segmented(
+            [
+                ("Automatic", AnimatedCovers::Automatic),
+                ("Always", AnimatedCovers::Always),
+                ("When hovered", AnimatedCovers::Hovered),
+                ("Never", AnimatedCovers::Never),
+            ]
+            .into_iter()
+            .map(|(label, animated_covers)| {
+                (
+                    label,
+                    now.animated_covers == animated_covers,
+                    choose(Appearance {
+                        animated_covers,
+                        ..now
+                    }),
+                )
+            })
+            .collect(),
+        );
+        let covers_hint = format!(
+            "{} They keep still while another window is in front, and while Windows' animation \
+             effects are off (Accessibility ▸ Visual effects).",
+            match now.animated_covers {
+                AnimatedCovers::Automatic => format!(
+                    "The app decides: the first covers on screen play, up to {} at once on this \
+                     PC, and the one under the pointer always.",
+                    animation::automatic_limit()
+                ),
+                AnimatedCovers::Always => {
+                    "Every cover on screen plays. Many at once can keep a processor core or more \
+                     busy."
+                        .to_owned()
+                }
+                AnimatedCovers::Hovered => "Only the cover under the pointer plays.".to_owned(),
+                AnimatedCovers::Never => {
+                    "Covers show their first frame, and the game page's art keeps still.".to_owned()
+                }
+            }
+        );
+
         let setting = |label: &str, control: El<Message>, line: &str| {
             col([field_label(label), control, hint(line.to_owned()).wrap()]).gap(theme::space::S)
         };
@@ -216,6 +261,7 @@ impl GameManager {
                 row([accents, swatch]).gap(theme::space::M),
                 accent_hint,
             ),
+            setting("Animated covers", covers, &covers_hint),
         ])
         .gap(theme::space::L);
         col([
@@ -264,6 +310,7 @@ mod tests {
             theme: Theme::Light,
             backdrop: Backdrop::MicaAlt,
             accent: Accent::GameManager,
+            ..Appearance::default()
         };
         let look = resolve(&chosen, &windows);
         assert_eq!(look.backdrop, Some(window::Backdrop::MicaAlt));

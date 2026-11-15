@@ -1,4 +1,5 @@
-//! How the window looks: the user's choice in Settings (theme, background, accent), kept in
+//! How the window looks: the user's choice in Settings (theme, background, accent, and when
+//! animated covers play), kept in
 //! `game-settings.json` under `appearance` (`config::load_appearance`), and what Windows says
 //! (`windows_look`): whether apps are light or dark, whether transparency effects are on, and the
 //! accent palette Windows made from the user's accent colour.
@@ -56,6 +57,23 @@ pub enum Accent {
     GameManager,
 }
 
+/// When the Library's animated covers play (Settings ▸ Appearance). Whatever the choice, they keep
+/// still while the window is behind another and while Windows' animation effects are off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnimatedCovers {
+    /// The app decides: the first visible covers play, as many as the PC is given to (fewer on one
+    /// with few cores), and the one under the pointer always.
+    #[default]
+    Automatic,
+    /// Every visible cover plays.
+    Always,
+    /// Only the cover under the pointer plays.
+    Hovered,
+    /// None plays: covers show their first frame. The game page's art keeps still too.
+    Never,
+}
+
 /// The user's choice in Settings ▸ Appearance; by default the window follows Windows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -63,6 +81,7 @@ pub struct Appearance {
     pub theme: Theme,
     pub backdrop: Backdrop,
     pub accent: Accent,
+    pub animated_covers: AnimatedCovers,
 }
 
 /// What Windows' personalization settings say.
@@ -210,6 +229,7 @@ mod tests {
                 theme: Theme::Dark,
                 backdrop: Backdrop::MicaAlt,
                 accent: Accent::Windows,
+                animated_covers: AnimatedCovers::Automatic,
             }
         );
     }

@@ -1,6 +1,8 @@
 //! Animated pictures in the window (an animated WebP cover or page art), each frame decoded as it
 //! comes due, never all at once (`gm_core::picture::Frames`).
 //!
+//! - **From its file**: an animation keeps only its file open (`Frames::open`), not its bytes,
+//!   so the covers near the screen hold no more than their first frames until they play.
 //! - **One thread an animation**, started the first time it plays: it decodes the next frame
 //!   while the current one shows, made no larger than it is drawn (`image::decode_frame`), then
 //!   waits until that one is taken. Dropping the `Animation` (its tile far from the screen,
@@ -11,9 +13,18 @@
 //!   hasn't finished is looked for again a moment later (`LATE`), the current one still showing.
 //! - **Stopping** (the pointer leaves a tile that plays on hover, the window goes behind another)
 //!   shows the still picture again, and the next play starts from the first frame.
+//! - **One clock for all**: each animation keeps its own frames' times, but says its next frame is
+//!   due at the next tick of a shared 60 Hz clock (`on_tick`), so any number playing together have
+//!   the window drawn at most 60 times a second.
+//! - **How many play** is the views' choice (`el::Play`); with `Play::Limited` (Settings ▸
+//!   Appearance ▸ Animated covers ▸ Automatic) at most `automatic_limit` in a frame.
 
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 
 use gm_core::picture::Frames;
 
@@ -21,13 +32,37 @@ use super::image::{self, Picture};
 
 /// How soon to look again for a frame the thread hasn't finished.
 const LATE: Duration = Duration::from_millis(8);
+/// The shared clock's tick: 60 a second.
+const TICK: Duration = Duration::from_nanos(16_666_667);
+/// The most `Play::Limited` animations a frame plays.
+const LIMITED_MOST: usize = 6;
+
+/// How many `Play::Limited` animations play at once: half the processor's threads, from 1 to
+/// `LIMITED_MOST`, as each one keeps a thread decoding.
+pub fn automatic_limit() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |threads| threads.get() / 2)
+        .clamp(1, LIMITED_MOST)
+}
+
+/// The first tick of the shared clock at or after `at`.
+fn on_tick(at: Instant) -> Instant {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = *START.get_or_init(Instant::now);
+    let tick = TICK.as_nanos();
+    let ticks = at
+        .saturating_duration_since(start)
+        .as_nanos()
+        .div_ceil(tick);
+    start + Duration::from_nanos(u64::try_from(ticks * tick).unwrap_or(u64::MAX))
+}
 
 /// An animated picture, playing or not.
 pub struct Animation {
     shared: Arc<Shared>,
     clock: Mutex<Clock>,
-    /// The frames, until the first play hands them to the thread.
-    frames: Mutex<Option<Frames>>,
+    /// The frames, read from the file, until the first play hands them to the thread.
+    frames: Mutex<Option<Frames<BufReader<File>>>>,
     /// The size its frames are made to cover, in pixels.
     size: (u32, u32),
 }
@@ -62,10 +97,11 @@ struct Clock {
 }
 
 impl Animation {
-    /// `bytes` as an animation whose frames are made to cover `size` pixels; `None` when they
-    /// are no animated picture.
-    pub fn new(bytes: Vec<u8>, size: (u32, u32)) -> Option<Arc<Self>> {
-        let frames = Frames::new(bytes)?;
+    /// The animated picture in `file`, its frames made to cover `size` pixels and read from the
+    /// file as it plays; `None` when it is no animated picture. Blocking: the file is opened and
+    /// its chunks listed.
+    pub fn open(file: &Path, size: (u32, u32)) -> Option<Arc<Self>> {
+        let frames = Frames::open(file)?;
         Some(Arc::new(Self {
             shared: Arc::default(),
             clock: Mutex::default(),
@@ -111,7 +147,10 @@ impl Animation {
                 None => return (clock.shown.clone(), Some(LATE)),
             }
         }
-        let next = clock.due.map(|due| due.saturating_duration_since(now));
+        // Said on the shared clock; the frame itself is taken at its own time, which comes first.
+        let next = clock
+            .due
+            .map(|due| on_tick(due).saturating_duration_since(now));
         (clock.shown.clone(), next)
     }
 
@@ -142,7 +181,7 @@ impl Drop for Animation {
 
 /// The thread: decodes the next frame whenever the last one was taken, until the `Animation` is
 /// gone.
-fn decode_ahead(frames: &mut Frames, size: (u32, u32), shared: &Shared) {
+fn decode_ahead(frames: &mut Frames<BufReader<File>>, size: (u32, u32), shared: &Shared) {
     loop {
         {
             let Ok(mut slot) = shared.slot.lock() else {
@@ -184,5 +223,28 @@ fn decode_ahead(frames: &mut Frames, size: (u32, u32), shared: &Shared) {
             Some(frame) => slot.ready = Some(frame),
             None => slot.done = true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_are_said_due_on_one_clock_and_automatic_plays_a_few() {
+        // Any two times within one tick are said due at the same tick, never before their own.
+        let now = Instant::now();
+        let (a, b) = (
+            on_tick(now + Duration::from_millis(3)),
+            on_tick(now + Duration::from_millis(9)),
+        );
+        assert!(a >= now + Duration::from_millis(3));
+        assert!(b >= now + Duration::from_millis(9));
+        assert!(a == b || b.duration_since(a) == TICK);
+        // A time on a tick stays.
+        assert_eq!(on_tick(a), a);
+        assert!(on_tick(a + Duration::from_nanos(1)).duration_since(a) == TICK);
+        // At least one, at most `LIMITED_MOST`.
+        assert!((1..=LIMITED_MOST).contains(&automatic_limit()));
     }
 }

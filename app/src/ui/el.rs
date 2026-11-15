@@ -187,8 +187,11 @@ pub struct TextSpec {
 /// When an image's animation plays (`El::animate`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Play {
-    /// Whenever the window is in front.
+    /// Whenever it is drawn (and the window is in front).
     Always,
+    /// Whenever it is drawn among the first `animation::automatic_limit` of its kind in the frame
+    /// (top to bottom, left to right), and under the pointer.
+    Limited,
     /// While the pointer is on it, or on an element holding it (a tile).
     OnHover,
 }

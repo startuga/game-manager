@@ -992,7 +992,7 @@ mod tests {
 
     #[test]
     fn the_appearance_is_saved_with_the_other_choices() {
-        use crate::appearance::{Accent, Backdrop, Theme};
+        use crate::appearance::{Accent, AnimatedCovers, Backdrop, Theme};
         let dir = temp_dir("appearance");
         let file = dir.join(SETTINGS_FILE);
         assert_eq!(load_appearance_from(&file).unwrap(), Appearance::default());
@@ -1004,17 +1004,30 @@ mod tests {
             theme: Theme::Light,
             backdrop: Backdrop::Solid,
             accent: Accent::GameManager,
+            animated_covers: AnimatedCovers::Hovered,
         };
         save_appearance_in(&file, &light).unwrap();
         assert_eq!(
             saved()["appearance"],
-            serde_json::json!({ "theme": "light", "backdrop": "solid", "accent": "gameManager" })
+            serde_json::json!({
+                "theme": "light",
+                "backdrop": "solid",
+                "accent": "gameManager",
+                "animatedCovers": "hovered"
+            })
         );
         assert_eq!(load_appearance_from(&file).unwrap(), light);
         // The rest of the file stays; the library view keeps it.
         assert_eq!(saved()["later"], 1);
         save_library_view_in(&file, &LibraryView::default()).unwrap();
         assert_eq!(load_appearance_from(&file).unwrap(), light);
+        // A file from before the choice existed: covers play as the app decides.
+        fs::write(&file, r#"{ "appearance": { "theme": "dark" } }"#).unwrap();
+        let older = load_appearance_from(&file).unwrap();
+        assert_eq!(
+            (older.theme, older.animated_covers),
+            (Theme::Dark, AnimatedCovers::Automatic)
+        );
         // A newer version's choice: the default; back to the default, the entry goes.
         fs::write(&file, r#"{ "appearance": { "theme": "sepia" } }"#).unwrap();
         assert_eq!(load_appearance_from(&file).unwrap(), Appearance::default());

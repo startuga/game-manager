@@ -91,7 +91,8 @@ holds the rules and facts that span them.
   - `picture_cache.rs` (a folder of downloaded pictures kept byte for byte, with week-long
     misses, for covers and page art).
   - `appearance.rs` (how the window looks: the user's choice of theme, background and accent,
-    saved by `config::save_appearance` under `appearance`; Windows' light or dark apps,
+    and when animated covers play (`AnimatedCovers`), saved by `config::save_appearance` under
+    `appearance`; Windows' light or dark apps,
     transparency effects, accent palette and whether it has Mica, read from the registry).
   - `security.rs` (the user's SID, whether elevated, granting file rights, `owner_is_admin`).
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its

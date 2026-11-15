@@ -26,6 +26,7 @@
 //! `upscaler_versions.rs`), and NVIDIA overrides (`dlss_override_view.rs`), listed only once an
 //! NVIDIA driver was found.
 
+use gm_core::appearance::AnimatedCovers;
 use gm_core::game_data::{Folder, FolderKind};
 use gm_core::graphics::GraphicsSource;
 use gm_core::mods::dxvk;
@@ -159,6 +160,8 @@ impl GameManager {
     /// drawn for it, so the band keeps the dark palette in either theme.
     fn art_band(&self, game: &Game, window: &WindowInfo) -> El<Message> {
         let shown = self.page_art.shown(&game.id);
+        // Animated art plays unless Settings say covers never do.
+        let art_plays = self.appearance.animated_covers != AnimatedCovers::Never;
         let dark = theme::DARK;
         let width = (window.size.0 - self.sidebar_width).max(1.0);
         let height = (width / theme::ART_BAND_RATIO)
@@ -188,7 +191,10 @@ impl GameManager {
             picture.push(
                 image(format!("art:{}", game.id), Arc::clone(background))
                     .cover()
-                    .animate(shown.background_animation, Play::Always)
+                    .animate(
+                        shown.background_animation.filter(|_| art_plays),
+                        Play::Always,
+                    )
                     .fill_width()
                     .height(height),
             );
@@ -228,7 +234,7 @@ impl GameManager {
             .height(height)
             .fade_out(theme::ART_FADE_FROM);
         let title = match shown.logo {
-            Some(logo) => art_logo(game, logo, shown.logo_animation),
+            Some(logo) => art_logo(game, logo, shown.logo_animation.filter(|_| art_plays)),
             None => row([
                 self.icon(game, crate::icons::LARGE),
                 text(game.name.clone())

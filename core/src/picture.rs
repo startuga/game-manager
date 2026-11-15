@@ -30,7 +30,9 @@
 //!   blurred. The icon is cut to what shows first and laid over its average colour for the blur,
 //!   so its clear corners lend it no black.
 //! - **Animations** (`Frames`): an animated WebP is read one frame at a time as it plays, never
-//!   all at once: a 600 × 900 cover is 2 MB a frame, a four-second loop hundreds of MB. `decode`
+//!   all at once: a 600 × 900 cover is 2 MB a frame, a four-second loop hundreds of MB. It is read
+//!   from its file (`Frames::open`), so the file isn't held in memory either (a 600 × 900 one can
+//!   be 32 MB), and its frame buffer is made only once it plays. `decode`
 //!   gives its first frame, the picture shown while it doesn't play. Each frame is the whole
 //!   picture (image-webp lays it over the ones before), shown for its own duration; 10 ms or
 //!   less counts as 100 ms, as browsers show such GIFs. It plays as many times as the file says.
@@ -43,7 +45,9 @@ use crate::icon;
 use fast_image_resize::images::Image;
 use fast_image_resize::{FilterType, MulDiv, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use std::fmt;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Seek};
+use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -811,32 +815,48 @@ pub fn is_animated(bytes: &[u8]) -> bool {
             .is_ok_and(|decoder| decoder.is_animated() && decoder.num_frames() > 1)
 }
 
-/// An animated picture's frames, read one at a time as it plays (see the module's doc).
-pub struct Frames {
-    decoder: image_webp::WebPDecoder<Cursor<Vec<u8>>>,
+/// An animated picture's frames, read one at a time as it plays (see the module's doc), from a
+/// file (`open`) or bytes (`new`).
+pub struct Frames<R> {
+    decoder: image_webp::WebPDecoder<R>,
     width: u32,
     height: u32,
     /// How many times it plays in all; `None`: forever.
     plays: Option<u32>,
     /// How many times it has started.
     started: u32,
-    /// The decoder's output: RGBA, or RGB when the picture has no alpha.
+    /// The decoder's output: RGBA, or RGB when the picture has no alpha; empty until the first
+    /// frame.
     buffer: Vec<u8>,
+    /// The buffer's length.
+    length: usize,
 }
 
-impl Frames {
-    /// The frames of an animated WebP; `None` when `bytes` are no such picture, or one too large.
+impl Frames<Cursor<Vec<u8>>> {
+    /// The frames of an animated WebP's bytes; `None` when they are no such picture, or one too
+    /// large.
     pub fn new(bytes: Vec<u8>) -> Option<Self> {
-        if format(&bytes) != Some(Format::Webp) {
-            return None;
-        }
-        let decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+        Self::read(Cursor::new(bytes))
+    }
+}
+
+impl Frames<BufReader<File>> {
+    /// The frames of an animated WebP file, read from it as they play; `None` when it is no such
+    /// picture, one too large, or can't be opened. Blocking: its chunks are listed.
+    pub fn open(path: &Path) -> Option<Self> {
+        Self::read(BufReader::new(File::open(path).ok()?))
+    }
+}
+
+impl<R: BufRead + Seek> Frames<R> {
+    fn read(reader: R) -> Option<Self> {
+        let decoder = image_webp::WebPDecoder::new(reader).ok()?;
         if !decoder.is_animated() || decoder.num_frames() < 2 {
             return None;
         }
         let (width, height) = decoder.dimensions();
         check_size(width, height).ok()?;
-        let buffer = vec![0; decoder.output_buffer_size()?];
+        let length = decoder.output_buffer_size()?;
         let plays = match decoder.loop_count() {
             image_webp::LoopCount::Forever => None,
             image_webp::LoopCount::Times(times) => Some(u32::from(times.get())),
@@ -847,7 +867,8 @@ impl Frames {
             height,
             plays,
             started: 1,
-            buffer,
+            buffer: Vec::new(),
+            length,
         })
     }
 
@@ -860,6 +881,9 @@ impl Frames {
     /// many times as the file says; `None` once it has played them all (its last frame stays).
     pub fn next_frame(&mut self) -> Result<Option<(Rgba, Duration)>, PictureError> {
         let fail = |error: image_webp::DecodingError| damaged(Format::Webp, error);
+        if self.buffer.is_empty() {
+            self.buffer = vec![0; self.length];
+        }
         let ms = match self.decoder.read_frame(&mut self.buffer) {
             Ok(ms) => ms,
             Err(image_webp::DecodingError::NoMoreFrames) => {
@@ -1685,6 +1709,18 @@ mod tests {
         for _ in 0..7 {
             assert!(forever.next_frame().unwrap().is_some());
         }
+        // From a file, read as it plays.
+        let path = std::env::temp_dir().join(format!("gm-frames-{}.webp", std::process::id()));
+        std::fs::write(
+            &path,
+            animated_webp(4, 4, &[(red.clone(), 50), (BLUE.repeat(16), 50)], 1),
+        )
+        .unwrap();
+        let mut from_file = Frames::open(&path).unwrap();
+        assert_eq!(from_file.next_frame().unwrap().unwrap().0.pixels, red);
+        drop(from_file);
+        std::fs::remove_file(&path).unwrap();
+        assert!(Frames::open(&path).is_none());
         // A still picture is no animation.
         let mut still = Vec::new();
         image_webp::WebPEncoder::new(&mut still)

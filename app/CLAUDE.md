@@ -40,8 +40,9 @@ samples in `crates/samples/`) instead of guessing.
     PCGamingWiki names (`gm_core::game_data`, `request_game_folders`, `GameFoldersLoaded`), looked
     up again whenever the game is selected or a scan ends; when the folder isn't there they are
     disabled and their tooltip says why. The game menu has all four too.
-  - `settings_page.rs` (Settings: Appearance, how the window looks: theme, background, accent;
-    saved in `game-settings.json`, read before the window opens, following Windows' changes).
+  - `settings_page.rs` (Settings: Appearance, how the window looks: theme, background, accent,
+    and when animated covers play (Automatic, Always, When hovered, Never); saved in
+    `game-settings.json`, read before the window opens, following Windows' changes).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA
@@ -166,11 +167,15 @@ samples in `crates/samples/`) instead of guessing.
     others' pixels: off the Library none are held.
   - A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
   - **Animated** (`El::animate`, `ui::animation`): an animated WebP (the user's own cover or page
-    art) shows its first frame, and plays `Play::Always` (the page's band) or `Play::OnHover`
-    (a tile, under the pointer), only while the window is in front and Windows shows animations.
-    Frames are decoded one ahead on the animation's own thread, never all at once, and go into
-    the same bitmap (`CopyFromMemory`) without rebuilding the view; the shell draws again when
-    the next is due (`Drawn::next_frame`, a timer). A capture shows the still pictures.
+    art) shows its first frame, and plays as Settings ▸ Appearance ▸ Animated covers says:
+    `Play::Limited` (Automatic: the first `animation::automatic_limit` drawn, and the one under
+    the pointer), `Play::Always`, `Play::OnHover`, or not at all (Never; the page's band plays
+    unless it is Never). Only while the window is in front and Windows shows animations.
+    Frames are read from the file (no bytes held) and decoded one ahead on the animation's own
+    thread, never all at once, and go into the same bitmap (`CopyFromMemory`) without
+    rebuilding the view. The shell draws again when the next is due (`Drawn::next_frame`, said
+    on a shared 60 Hz clock; a timer, then `DwmFlush`). A capture shows the still pictures.
+    Measured with an optimized build: a 600 × 900, 32 MB animation took about 12% of one core.
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).
 - **Sliders** (`el::slider`): a press or drag moves the thumb in `UiState::sliding` (drawn only);

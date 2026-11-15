@@ -283,6 +283,8 @@ pub struct Renderer {
     start: Instant,
     /// Animations may play: the window is in front and Windows shows animations.
     play: bool,
+    /// How many `Play::Limited` animations play in a frame (`animation::automatic_limit`).
+    limit: usize,
 }
 
 impl Renderer {
@@ -315,6 +317,7 @@ impl Renderer {
             frames: 0,
             start: Instant::now(),
             play: true,
+            limit: super::animation::automatic_limit(),
         })
     }
 
@@ -374,6 +377,7 @@ impl Renderer {
             play: self.play,
             within_hover: false,
             next_frame: None,
+            limited: self.limit,
         };
         painter.element(&frame.root, &frame.placed, ui);
         painter.overlays(frame, ui);
@@ -453,6 +457,7 @@ impl Renderer {
                 play: false,
                 within_hover: false,
                 next_frame: None,
+                limited: 0,
             };
             painter.element(&frame.root, &frame.placed, ui);
             painter.overlays(frame, ui);
@@ -512,6 +517,8 @@ pub struct Painter<'a> {
     within_hover: bool,
     /// The soonest an animation's next frame is due.
     next_frame: Option<Duration>,
+    /// How many more `Play::Limited` animations may play in this frame.
+    limited: usize,
 }
 
 /// `from` moved towards `to` by `amount` (0–1); a missing colour is the other one, transparent.
@@ -1099,7 +1106,22 @@ impl Painter<'_> {
         play: Play,
         picture: &Arc<Picture>,
     ) -> Arc<Picture> {
-        let playing = self.play && (play == Play::Always || self.within_hover);
+        let playing = self.play
+            && match play {
+                Play::Always => true,
+                Play::OnHover => self.within_hover,
+                // Under the pointer it plays whatever the limit; else while some is left.
+                Play::Limited => {
+                    self.within_hover
+                        || match self.limited.checked_sub(1) {
+                            Some(left) => {
+                                self.limited = left;
+                                true
+                            }
+                            None => false,
+                        }
+                }
+            };
         let (frame, next) = animation.frame(self.now, playing);
         if let Some(next) = next {
             self.next_frame = Some(self.next_frame.map_or(next, |soonest| soonest.min(next)));

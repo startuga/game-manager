@@ -18,8 +18,8 @@
 //!   too. Direct2D scales each cover into its tile as it draws it (`el::El::cover`), so the display
 //!   scaling changes nothing here. A tile shows its icon until its cover is decoded.
 //! - **Animated covers** (an animated WebP, the user's own): the tile shows its first frame, and
-//!   plays it while the pointer is on the tile (`ui::animation`, `el::Play::OnHover`), its frames
-//!   made no larger than the tile's pixels. The animation is kept with the decoded cover and goes
+//!   plays it as Settings say (`library_page.rs`, `ui::animation`), its frames made no larger than
+//!   the tile's pixels. The animation is kept with the decoded cover and goes
 //!   with it.
 //! - **Generations**: each new source of a game (the original after a stand-in, the user's own)
 //!   gets a new generation, and a decoded cover is kept only for the generation it was decoded
@@ -42,6 +42,7 @@ use std::sync::Arc;
 
 use gm_core::Game;
 use gm_core::covers::Cover;
+use gm_core::picture;
 
 use crate::shell::ctx::{Ctx, FilePicker};
 use crate::ui::animation::Animation;
@@ -386,9 +387,11 @@ impl GameManager {
                 for (id, cover, generation) in list {
                     let bytes = gm_core::covers::read(&cover);
                     let picture = bytes.as_deref().and_then(image::decode_cover).map(Arc::new);
-                    let animation = bytes
-                        .filter(|_| picture.is_some())
-                        .and_then(|bytes| Animation::new(bytes, tile));
+                    // Played from its file: the bytes go once the first frame is made.
+                    let animated = bytes.is_some_and(|bytes| picture::is_animated(&bytes));
+                    let animation = (animated && picture.is_some())
+                        .then(|| Animation::open(&cover.file, tile))
+                        .flatten();
                     send(CoverMessage::Decoded(id, generation, picture, animation).into());
                 }
             });
