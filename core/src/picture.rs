@@ -24,6 +24,11 @@
 //!   on a 1280 × 720 transparent canvas); `blurred` makes a cover small (`fit`) and softens it
 //!   with a box blur three times over, to be drawn stretched across the page when a game has no
 //!   wide picture.
+//! - **Capsules** (`capsule`): a game with no cover gets its icon made into one, the way Steam
+//!   makes a portrait cover for a game that has only a wide picture: the picture across the
+//!   cover's width in its upper part, and around it its own edges drawn out to the cover's and
+//!   blurred. The icon is cut to what shows first and laid over its average colour for the blur,
+//!   so its clear corners lend it no black.
 //! - **Writing**: `encode_png` only, for the window's capture. Nothing else is ever re-encoded:
 //!   covers and page art are kept as the stores' files are (`covers.rs`, `page_art.rs`).
 
@@ -579,7 +584,12 @@ pub fn unpremultiply(picture: Rgba) -> Result<Rgba, PictureError> {
 /// when it already has that size, else scaled with Catmull-Rom (see the module's doc).
 pub fn fit(picture: Rgba, size: u32) -> Result<Rgba, PictureError> {
     let (width, height) = fitted(picture.width, picture.height, size);
-    let premultiplied = premultiply(picture)?;
+    resized(premultiply(picture)?, width, height)
+}
+
+/// A premultiplied picture made `width` × `height` pixels with Catmull-Rom, or as it is when it
+/// already has that size.
+fn resized(premultiplied: Rgba, width: u32, height: u32) -> Result<Rgba, PictureError> {
     if (width, height) == (premultiplied.width, premultiplied.height) {
         return Ok(premultiplied);
     }
@@ -647,6 +657,119 @@ pub fn blurred(picture: Rgba, size: u32) -> Result<Rgba, PictureError> {
         small.pixels = box_blur(&across, width, height, (0, 1));
     }
     Ok(small)
+}
+
+/// A capsule's size in pixels: Steam's are 600 × 900.
+pub const CAPSULE_WIDTH: u32 = 600;
+pub const CAPSULE_HEIGHT: u32 = 900;
+/// Of the height the icon leaves free, the share above it: Steam puts its 280-pixel wide picture
+/// 132 pixels down a capsule, 488 above its bottom.
+const CAPSULE_ABOVE: f64 = 132.0 / 620.0;
+/// An icon is enlarged at most this many times: a 256-pixel one spans the capsule, a 48-pixel one
+/// stays small rather than blurred.
+const CAPSULE_ENLARGE: u32 = 3;
+/// The width the capsule's backdrop is blurred at, before it is stretched over all of it.
+const BACKDROP_WIDTH: u32 = 32;
+
+/// A game's icon (straight RGBA) made into a cover as Steam makes one from a wide picture (see the
+/// module's doc): `CAPSULE_WIDTH` × `CAPSULE_HEIGHT`, premultiplied and opaque.
+pub fn capsule(icon: Rgba) -> Result<Rgba, PictureError> {
+    let icon = trimmed(icon);
+    let (width, height) = (CAPSULE_WIDTH, CAPSULE_HEIGHT);
+    let size = width.min(icon.width.max(icon.height).saturating_mul(CAPSULE_ENLARGE));
+    let (w, h) = fitted(icon.width, icon.height, size);
+    let (x, y) = (
+        (width - w) / 2,
+        (f64::from(height - h) * CAPSULE_ABOVE).round() as u32,
+    );
+
+    // The backdrop, small: the icon over its average colour, its edge pixels drawn out to the
+    // capsule's edges, blurred, then stretched over the capsule.
+    let shrink = f64::from(BACKDROP_WIDTH) / f64::from(width);
+    let small_size = ((f64::from(size) * shrink).round() as u32).max(1);
+    let small = fit(flattened(&icon), small_size)?;
+    let (back_width, back_height) = (
+        BACKDROP_WIDTH as usize,
+        (f64::from(height) * shrink).round() as usize,
+    );
+    let (left, top) = (
+        (f64::from(x) * shrink).round() as usize,
+        (f64::from(y) * shrink).round() as usize,
+    );
+    let (small_width, small_height) = (small.width as usize, small.height as usize);
+    let mut pixels = Vec::with_capacity(back_width * back_height * 4);
+    for row in 0..back_height {
+        let from_y = row.saturating_sub(top).min(small_height - 1);
+        for column in 0..back_width {
+            let from_x = column.saturating_sub(left).min(small_width - 1);
+            pixels.extend_from_slice(&small.pixels[(from_y * small_width + from_x) * 4..][..4]);
+        }
+    }
+    for _ in 0..BLUR_PASSES {
+        let across = box_blur(&pixels, back_width, back_height, (1, 0));
+        pixels = box_blur(&across, back_width, back_height, (0, 1));
+    }
+    let backdrop = Rgba {
+        width: back_width as u32,
+        height: back_height as u32,
+        pixels,
+    };
+    let mut capsule = resized(backdrop, width, height)?;
+
+    // The icon over it, sharp.
+    let sharp = fit(icon, size)?;
+    let (w, x, y, width) = (w as usize, x as usize, y as usize, width as usize);
+    for (row, line) in sharp.pixels.chunks_exact(w * 4).enumerate() {
+        let start = ((y + row) * width + x) * 4;
+        for (under, over) in capsule.pixels[start..start + w * 4]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(line.as_chunks::<4>().0)
+        {
+            let keep = 255 - u32::from(over[3]);
+            for channel in 0..4 {
+                let below = (u32::from(under[channel]) * keep + 127) / 255;
+                under[channel] = (u32::from(over[channel]) + below).min(255) as u8;
+            }
+        }
+    }
+    Ok(capsule)
+}
+
+/// A straight-RGBA picture made opaque over its own average colour (weighted by alpha): blurred,
+/// its clear parts then take its colour, not black.
+fn flattened(picture: &Rgba) -> Rgba {
+    let (mut sum, mut weight) = ([0u64; 3], 0u64);
+    for pixel in picture.pixels.as_chunks::<4>().0 {
+        let alpha = u64::from(pixel[3]);
+        for channel in 0..3 {
+            sum[channel] += u64::from(pixel[channel]) * alpha;
+        }
+        weight += alpha;
+    }
+    let average = sum.map(|total| (total / weight.max(1)) as u8);
+    let pixels = picture
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|pixel| {
+            let alpha = u32::from(pixel[3]);
+            let mix = |channel: usize| {
+                ((u32::from(pixel[channel]) * alpha
+                    + u32::from(average[channel]) * (255 - alpha)
+                    + 127)
+                    / 255) as u8
+            };
+            [mix(0), mix(1), mix(2), 255]
+        })
+        .collect();
+    Rgba {
+        width: picture.width,
+        height: picture.height,
+        pixels,
+    }
 }
 
 /// Each channel of each pixel averaged with its two neighbours one `step` (x, y) away on either
@@ -1274,5 +1397,94 @@ mod tests {
         assert!(blur.pixels.chunks(4).all(|p| p[3] == 255));
         // Rows hold no stripes: a column is the same from top to bottom.
         assert_eq!(pixel(8, 0), pixel(8, 7));
+    }
+
+    #[test]
+    fn an_icon_becomes_a_capsule_across_its_width_with_its_edges_drawn_out() {
+        // A 256-pixel icon with a clear margin of 28 around a 200-pixel square: its left half red,
+        // its right half blue.
+        let pixels = (0..256 * 256)
+            .flat_map(|i| {
+                let (x, y) = (i % 256, i / 256);
+                if !(28..228).contains(&x) || !(28..228).contains(&y) {
+                    [0, 0, 0, 0]
+                } else if x < 128 {
+                    RED
+                } else {
+                    BLUE
+                }
+            })
+            .collect();
+        let capsule = capsule(Rgba {
+            width: 256,
+            height: 256,
+            pixels,
+        })
+        .unwrap();
+        assert_eq!(
+            (capsule.width, capsule.height),
+            (CAPSULE_WIDTH, CAPSULE_HEIGHT)
+        );
+        let pixel = |x: usize, y: usize| &capsule.pixels[(y * 600 + x) * 4..][..4];
+        // Trimmed and enlarged three times, it spans the capsule, 64 pixels down (Steam's share
+        // of the 300 left free above it): sharp, its halves still red and blue.
+        let close = |p: &[u8], q: [u8; 4]| p.iter().zip(q).all(|(a, b)| a.abs_diff(b) <= 2);
+        for (x, y, colour) in [
+            (10, 64, RED),
+            (589, 663, BLUE),
+            (290, 364, RED),
+            (310, 364, BLUE),
+        ] {
+            assert!(close(pixel(x, y), colour), "{x}, {y}: {:?}", pixel(x, y));
+        }
+        // Above and below, its edges drawn out and blurred: red on the left, blue on the
+        // right, and opaque everywhere.
+        for y in [5, 800] {
+            assert!(
+                pixel(20, y)[0] > 200 && pixel(20, y)[2] < 60,
+                "{:?}",
+                pixel(20, y)
+            );
+            assert!(
+                pixel(580, y)[2] > 200 && pixel(580, y)[0] < 60,
+                "{:?}",
+                pixel(580, y)
+            );
+        }
+        assert!(capsule.pixels.chunks(4).all(|p| p[3] == 255));
+    }
+
+    #[test]
+    fn a_small_icon_stays_small_and_its_clear_parts_lend_no_black() {
+        // A 48-pixel green dot on a clear ground.
+        let pixels = (0..48 * 48)
+            .flat_map(|i| {
+                let (x, y) = (i % 48, i / 48);
+                let (dx, dy) = (x - 24, y - 24);
+                if dx * dx + dy * dy < 20 * 20 {
+                    [0, 200, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            })
+            .collect();
+        let capsule = capsule(Rgba {
+            width: 48,
+            height: 48,
+            pixels,
+        })
+        .unwrap();
+        let pixel = |x: usize, y: usize| &capsule.pixels[(y * 600 + x) * 4..][..4];
+        // At most three times its size (the dot is 39 across once trimmed: 117 here), across the
+        // middle.
+        let middle = pixel(300, 225);
+        assert!(
+            middle[0] < 3 && middle[1].abs_diff(200) < 3 && middle[3] == 255,
+            "{middle:?}"
+        );
+        // The corners of the backdrop are the dot's green, never black.
+        for (x, y) in [(0, 0), (599, 0), (0, 899), (599, 899)] {
+            assert!(pixel(x, y)[1] > 150, "{:?}", pixel(x, y));
+        }
     }
 }

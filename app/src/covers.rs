@@ -9,7 +9,7 @@
 //!      most `FETCHERS` jobs that ask the stores' servers one game at a time, each cover arriving
 //!      on its own (`Fetched`). A game is asked for once at a time (`fetching`); once a request
 //!      fails for want of a connection, the job stops asking for the rest. Failures show nothing:
-//!      the tile keeps its icon, and the next start tries again.
+//!      the tile keeps its capsule, and the next start tries again.
 //! - **Pixels only near the screen**: a cover is the store's original file, and only its path is
 //!   kept (`CoverState::sources`). The shell says which tiles are on the screen or within one
 //!   window height of it (`App::near_screen`, tiles made with `El::watch`): their covers are
@@ -22,6 +22,12 @@
 //!   from, so a stand-in decoded late never hides the original.
 //! - **Stand-ins**: a smaller copy the store keeps on this PC shows until the original has
 //!   arrived; such a game stays among those `load_covers` asks for (`CoverState::wants`).
+//! - **Capsules**: a game the local job found nothing for (`NoneHere`, `CoverState::bare`) has
+//!   its icon made into a cover, as Steam makes one from a wide picture: the icon across the
+//!   cover's top part, its edges drawn out around it and blurred (`image::decode_capsule`). Like a
+//!   cover it is made only while its tile is near the screen, in the decoders' jobs (`Capsule`),
+//!   and again when the icon changes (a scan reads it again; the same bytes count as the same
+//!   icon). A cover found later replaces it once decoded.
 //! - **Choose cover…** opens the Open dialog for a picture, which becomes the game's own cover
 //!   (`covers::set_own`); **Reset cover** drops it and what was downloaded for the game, and
 //!   looks its cover up afresh.
@@ -61,6 +67,11 @@ pub(crate) enum CoverMessage {
     Near(HashSet<String>),
     /// A cover decoded from the source of that generation; `None` when it couldn't be.
     Decoded(String, u64, Option<Arc<Picture>>),
+    /// The games the local job found no cover for, not even a stand-in.
+    NoneHere(Vec<String>),
+    /// A game's icon made into a capsule, with the icon it was made from; `None` when it couldn't
+    /// be.
+    Capsule(String, Arc<Vec<u8>>, Option<Arc<Picture>>),
     /// The game menu's Choose cover….
     Choose(String),
     /// The picture picked for the game; `None` when the dialog was cancelled.
@@ -94,12 +105,28 @@ pub(crate) struct CoverState {
     fetching: HashSet<String>,
     /// The last generation given out.
     generation: u64,
+    /// Games the local job found no cover for, and none found since: their tiles show capsules.
+    bare: HashSet<String>,
+    /// Capsules, only for games near the screen, with the icon each was made from.
+    capsules: HashMap<String, (Arc<Picture>, Arc<Vec<u8>>)>,
+    /// The icons being made into capsules, by game.
+    capsuling: HashMap<String, Arc<Vec<u8>>>,
+}
+
+/// Whether two icons are the same: the same bytes, read again or not.
+fn same_icon(a: &Arc<Vec<u8>>, b: &Arc<Vec<u8>>) -> bool {
+    Arc::ptr_eq(a, b) || a == b
 }
 
 impl CoverState {
     /// The cover to draw on a game's tile, once decoded.
     pub fn picture(&self, id: &str) -> Option<&Arc<Picture>> {
         self.pictures.get(id).map(|(picture, _)| picture)
+    }
+
+    /// A game's icon made into a cover, for its tile while it has none (or until it is decoded).
+    pub fn capsule(&self, id: &str) -> Option<&Arc<Picture>> {
+        self.capsules.get(id).map(|(capsule, _)| capsule)
     }
 
     /// The file of a game's cover, once found (the game page blurs it when it has no wide picture).
@@ -120,6 +147,7 @@ impl CoverState {
     /// A game's new cover, as a new generation. Its picture stays until the new one is decoded.
     fn set_source(&mut self, id: String, cover: Cover) {
         self.generation += 1;
+        self.bare.remove(&id);
         self.sources.insert(id, (cover, self.generation));
     }
 
@@ -127,12 +155,80 @@ impl CoverState {
         self.sources.remove(id);
         self.pictures.remove(id);
         self.decoding.remove(id);
+        self.bare.remove(id);
+        self.capsules.remove(id);
+        self.capsuling.remove(id);
     }
 
     /// The games now near the screen: the others' pictures are dropped.
     fn set_near(&mut self, near: HashSet<String>) {
         self.pictures.retain(|id, _| near.contains(id));
+        self.capsules.retain(|id, _| near.contains(id));
         self.near = near;
+    }
+
+    /// The games the local job found nothing for: those still without a cover get capsules.
+    fn none_here(&mut self, ids: Vec<String>) {
+        for id in ids {
+            if !self.sources.contains_key(&id) {
+                self.bare.insert(id);
+            }
+        }
+    }
+
+    /// The icons to make into capsules (`icon` gives a game's): games near the screen without a
+    /// cover whose capsule is missing or from another icon, and not being made from this one
+    /// already. They are marked as being made.
+    fn start_capsules(
+        &mut self,
+        icon: impl Fn(&str) -> Option<Arc<Vec<u8>>>,
+    ) -> Vec<(String, Arc<Vec<u8>>)> {
+        let mut wanted = Vec::new();
+        for id in self.near.intersection(&self.bare) {
+            let Some(bytes) = icon(id) else {
+                continue;
+            };
+            let made = self
+                .capsules
+                .get(id)
+                .is_some_and(|(_, from)| same_icon(from, &bytes));
+            let making = self
+                .capsuling
+                .get(id)
+                .is_some_and(|from| same_icon(from, &bytes));
+            if !made && !making {
+                wanted.push((id.clone(), bytes));
+            }
+        }
+        for (id, bytes) in &wanted {
+            self.capsuling.insert(id.clone(), Arc::clone(bytes));
+        }
+        wanted
+    }
+
+    /// A capsule made from `from`: kept while its game is near the screen, still without a
+    /// cover, and `from` still its icon (`now`).
+    fn capsule_made(
+        &mut self,
+        id: String,
+        from: Arc<Vec<u8>>,
+        capsule: Option<Arc<Picture>>,
+        now: Option<&Arc<Vec<u8>>>,
+    ) {
+        if self
+            .capsuling
+            .get(&id)
+            .is_some_and(|making| Arc::ptr_eq(making, &from))
+        {
+            self.capsuling.remove(&id);
+        }
+        if let Some(capsule) = capsule
+            && self.near.contains(&id)
+            && self.bare.contains(&id)
+            && now.is_some_and(|now| same_icon(now, &from))
+        {
+            self.capsules.insert(id, (capsule, from));
+        }
     }
 
     /// The covers near the screen to decode: those whose picture is missing or older than their
@@ -165,6 +261,8 @@ impl CoverState {
             && current == Some(generation)
             && self.near.contains(&id)
         {
+            // The cover shows now: its capsule is done with.
+            self.capsules.remove(&id);
             self.pictures.insert(id, (picture, generation));
         }
     }
@@ -174,6 +272,9 @@ impl CoverState {
         self.sources.retain(|id, _| ids.contains(id.as_str()));
         self.pictures.retain(|id, _| ids.contains(id.as_str()));
         self.decoding.retain(|id, _| ids.contains(id.as_str()));
+        self.bare.retain(|id| ids.contains(id.as_str()));
+        self.capsules.retain(|id, _| ids.contains(id.as_str()));
+        self.capsuling.retain(|id, _| ids.contains(id.as_str()));
     }
 }
 
@@ -210,7 +311,9 @@ impl GameManager {
         let library = prune.then(|| self.games.clone());
         context.spawn_stream(move |send| {
             let mut batch = Vec::new();
+            let mut found = HashSet::new();
             let rest = gm_core::covers::load_local(&wanted, &mut |game, cover| {
+                found.insert(game.id.clone());
                 batch.push((game.id.clone(), cover));
                 if batch.len() >= BATCH {
                     send(CoverMessage::Loaded(std::mem::take(&mut batch)).into());
@@ -218,6 +321,14 @@ impl GameManager {
             });
             if !batch.is_empty() {
                 send(CoverMessage::Loaded(batch).into());
+            }
+            let none: Vec<String> = wanted
+                .iter()
+                .filter(|game| !found.contains(&game.id))
+                .map(|game| game.id.clone())
+                .collect();
+            if !none.is_empty() {
+                send(CoverMessage::NoneHere(none).into());
             }
             if let Some(library) = library {
                 gm_core::covers::prune(&library);
@@ -229,9 +340,10 @@ impl GameManager {
         });
     }
 
-    /// Decodes the covers near the screen that aren't yet, off the UI thread, each sent as soon
-    /// as it is ready.
-    fn decode_near_covers(&mut self, context: &Ctx<Message>) {
+    /// Decodes the covers near the screen that aren't yet, and makes the capsules of those near it
+    /// without a cover, off the UI thread, each sent as soon as it is ready. Also once icons have
+    /// been read (`icons.rs`): a capsule needs its game's.
+    pub(crate) fn decode_near_covers(&mut self, context: &Ctx<Message>) {
         for list in deal(self.covers.start_decoding(), DECODERS) {
             context.spawn_stream(move |send| {
                 for (id, cover, generation) in list {
@@ -239,6 +351,17 @@ impl GameManager {
                         .and_then(|bytes| image::decode_cover(&bytes))
                         .map(Arc::new);
                     send(CoverMessage::Decoded(id, generation, picture).into());
+                }
+            });
+        }
+        let capsules = self
+            .covers
+            .start_capsules(|id| self.icons.bytes(id).cloned());
+        for list in deal(capsules, DECODERS) {
+            context.spawn_stream(move |send| {
+                for (id, icon) in list {
+                    let capsule = image::decode_capsule(&icon).map(Arc::new);
+                    send(CoverMessage::Capsule(id, icon, capsule).into());
                 }
             });
         }
@@ -299,6 +422,14 @@ impl GameManager {
             }
             CoverMessage::Decoded(id, generation, picture) => {
                 self.covers.decoded(id, generation, picture);
+            }
+            CoverMessage::NoneHere(ids) => {
+                self.covers.none_here(ids);
+                self.decode_near_covers(context);
+            }
+            CoverMessage::Capsule(id, icon, capsule) => {
+                let now = self.icons.bytes(&id).cloned();
+                self.covers.capsule_made(id, icon, capsule, now.as_ref());
             }
             CoverMessage::Choose(id) => {
                 let Some(game) = self.games.iter().find(|game| game.id == id) else {
@@ -486,6 +617,87 @@ mod tests {
         state.forget("steam:220");
         assert!(state.picture("steam:220").is_none() && state.wants("steam:220"));
         assert!(!state.is_own("steam:220"));
+    }
+
+    fn icon(bytes: &[u8]) -> Arc<Vec<u8>> {
+        Arc::new(bytes.to_vec())
+    }
+
+    /// What `start_capsules` hands out when every game's icon is `icon`: game ids, sorted.
+    fn capsule_jobs(state: &mut CoverState, icon: &Arc<Vec<u8>>) -> Vec<String> {
+        let mut out: Vec<String> = state
+            .start_capsules(|_| Some(Arc::clone(icon)))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn games_without_a_cover_get_capsules_near_the_screen_until_one_is_decoded() {
+        let mut state = CoverState::default();
+        state.set_source("steam:220".into(), cover("hl2.jpg", false, false));
+        state.set_near(near(&["steam:220", "custom:1", "custom:2"]));
+        // Before the local job has answered, no game is known to have none.
+        let first = icon(b"one");
+        assert!(capsule_jobs(&mut state, &first).is_empty());
+        // A game with a cover is never made into one; one far from the screen waits.
+        state.none_here(vec![
+            "steam:220".into(),
+            "custom:1".into(),
+            "custom:3".into(),
+        ]);
+        assert_eq!(capsule_jobs(&mut state, &first), ["custom:1"]);
+        assert!(capsule_jobs(&mut state, &first).is_empty());
+        state.capsule_made(
+            "custom:1".into(),
+            Arc::clone(&first),
+            Some(picture()),
+            Some(&first),
+        );
+        assert!(state.capsule("custom:1").is_some());
+        // The same bytes read again by a scan are the same icon: nothing to make.
+        assert!(capsule_jobs(&mut state, &icon(b"one")).is_empty());
+        // Another icon: made again, the old capsule showing meanwhile.
+        let second = icon(b"two");
+        assert_eq!(capsule_jobs(&mut state, &second), ["custom:1"]);
+        assert!(state.capsule("custom:1").is_some());
+        // A capsule from an icon that has changed since is refused.
+        let shown = Arc::clone(state.capsule("custom:1").unwrap());
+        state.capsule_made(
+            "custom:1".into(),
+            Arc::clone(&first),
+            Some(picture()),
+            Some(&second),
+        );
+        assert!(Arc::ptr_eq(state.capsule("custom:1").unwrap(), &shown));
+        state.capsule_made(
+            "custom:1".into(),
+            Arc::clone(&second),
+            Some(picture()),
+            Some(&second),
+        );
+        assert!(!Arc::ptr_eq(state.capsule("custom:1").unwrap(), &shown));
+        // Scrolled away: its pixels go; back near, made again.
+        state.set_near(near(&["steam:220"]));
+        assert!(state.capsule("custom:1").is_none());
+        state.set_near(near(&["custom:1"]));
+        assert_eq!(capsule_jobs(&mut state, &second), ["custom:1"]);
+        state.capsule_made(
+            "custom:1".into(),
+            Arc::clone(&second),
+            Some(picture()),
+            Some(&second),
+        );
+        // A cover found later: no more capsules, and the one shown stays until it is decoded.
+        state.set_source("custom:1".into(), cover("found.jpg", false, false));
+        assert!(capsule_jobs(&mut state, &icon(b"three")).is_empty());
+        assert!(state.capsule("custom:1").is_some());
+        let generation = state.generation;
+        assert_eq!(decode(&mut state), [("custom:1".to_owned(), generation)]);
+        state.decoded("custom:1".into(), generation, Some(picture()));
+        assert!(state.capsule("custom:1").is_none() && state.picture("custom:1").is_some());
     }
 
     #[test]

@@ -25,6 +25,7 @@ samples in `crates/samples/`) instead of guessing.
   - `library_page.rs` (the Library grid: a cover tile per game, by store; the window opens on it)
     and `covers.rs` (the core's covers kept as their files, the stores' originals decoded at full
     size only while their tiles are near the screen, a stand-in until each original arrives;
+    a game with none gets its icon made into one, as Steam makes covers from wide pictures;
     Choose and Reset cover).
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).

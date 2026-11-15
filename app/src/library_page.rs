@@ -7,9 +7,11 @@
 //!   in the sidebar is folded here too: both headers send `ToggleStore`. While searching every
 //!   store shows open, and the headers can't fold. The caption over the count names the filters
 //!   or the collection that is on ("LIBRARY · STEAM, GOG").
-//! - **A tile**: the game's 200 × 300 cover with rounded corners (`covers.rs`), or its icon on a
-//!   card while it has none, a pin on a dark chip when it is pinned, and its name on one line
-//!   under it (whole in the tooltip). Under the pointer a light tint goes over all of it
+//! - **A tile**: the game's 200 × 300 cover with rounded corners (`covers.rs`); without one, its
+//!   icon made into one as Steam makes covers from wide pictures (the icon across the top part,
+//!   its edges drawn out around it and blurred: `picture::capsule`), and its icon on a card until
+//!   that is ready. A pin on a dark chip when it is pinned, and its name on one line under it
+//!   (whole in the tooltip). Under the pointer a light tint goes over all of it
 //!   (`hover_overlay`: the picture would hide a fill). A click opens the game's page; a
 //!   right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`).
 //! - **The grid**: as many tiles a row as the page's width holds (`library::columns`): 4 at the
@@ -80,13 +82,17 @@ impl GameManager {
         col(rows).gap(theme::space::M)
     }
 
-    /// A game's tile: its cover (or its icon on a card until it has one), a pin on a dark chip
-    /// when it is pinned, and its name on one line under it. A click opens its page.
+    /// A game's tile: its cover (or its icon made into one), a pin on a dark chip when it is
+    /// pinned, and its name on one line under it. A click opens its page.
     fn tile(&self, game: &Game) -> El<Message> {
         let id = game.id.clone();
         // Decoded while the tile is near the screen (`.watch()`), else its icon meanwhile.
-        let art = match self.covers.picture(&game.id) {
-            Some(picture) => image(format!("cover:{}", game.id), picture.clone())
+        let picture = match (self.covers.picture(&game.id), self.covers.capsule(&game.id)) {
+            (Some(cover), _) => Some(("cover", cover)),
+            (None, capsule) => capsule.map(|capsule| ("capsule", capsule)),
+        };
+        let art = match picture {
+            Some((kind, picture)) => image(format!("{kind}:{}", game.id), picture.clone())
                 .cover()
                 .radius(theme::RADIUS_CARD),
             None => row([self.icon(game, crate::icons::LARGE)])

@@ -9,6 +9,8 @@
 //! - **Covers** (`decode_cover`) are the stores' original files, decoded at their full size while
 //!   their tiles are near the screen (`covers.rs`). The renderer scales each into its tile as it
 //!   draws it (`el::El::cover`), so covers don't depend on the display's scaling.
+//! - **Capsules** (`decode_capsule`): a game with no cover gets its icon made into one, at a Steam
+//!   cover's size (`picture::capsule`), and drawn like a cover.
 //!
 //! Decoding runs on the background thread that read the bytes, so the UI thread only uploads
 //! ready pixels.
@@ -70,6 +72,14 @@ pub fn decode_cover(bytes: &[u8]) -> Option<Picture> {
     let straight = picture::decode(bytes).ok()?;
     let premultiplied = picture::premultiply(straight).ok()?;
     Some(Picture::from_premultiplied(premultiplied))
+}
+
+/// A game's icon made into a cover, as Steam makes one from a wide picture (`picture::capsule`):
+/// a Library tile's picture while the game has no cover. `None` when it is no picture.
+pub fn decode_capsule(bytes: &[u8]) -> Option<Picture> {
+    let icon = picture::icon(bytes, picture::CAPSULE_WIDTH).ok()?;
+    let capsule = picture::capsule(icon).ok()?;
+    Some(Picture::from_premultiplied(capsule))
 }
 
 /// A game's logo decoded at full size and cut to what shows (`picture::trimmed`); `None` when it is
