@@ -13,12 +13,10 @@ use crate::shell::{CAPTION_CLOSE, CAPTION_DRAG, CAPTION_MAX, CAPTION_MIN, Window
 use crate::ui::el::{Align, El, Font, TextAlign, col, glyph, layers, row, scroll, spacer, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, error_bar, icon_button, resize_grip, text_box, working,
+    accent_button, button, danger_button, error_bar, hint, icon_button, resize_grip, text_box,
+    working,
 };
 use crate::{DialogResult, GameManager, Message};
-
-/// The close button's hover colour, as Windows draws it.
-const CLOSE_HOVER: windows_canvas::ColorF = theme::argb(0xFFC4_2B1C);
 
 impl GameManager {
     pub(crate) fn root_view(&self, window: &WindowInfo) -> El<Message> {
@@ -30,7 +28,7 @@ impl GameManager {
                     error,
                     Message::DismissError,
                 )])
-                .pad_xy(12.0, 8.0),
+                .pad_xy(theme::space::M, theme::space::S),
             );
         }
         let grip = resize_grip("Resize the library", Message::SidebarWidth);
@@ -65,8 +63,8 @@ impl GameManager {
                 .on_click(Message::Window(command));
             if command == WindowCommand::Close {
                 button
-                    .hover_bg(CLOSE_HOVER)
-                    .pressed_bg(theme::argb(0xFFA0_2318))
+                    .hover_bg(theme::DANGER)
+                    .pressed_bg(theme::DANGER_PRESSED)
             } else {
                 button
                     .hover_bg(theme::subtle_hover())
@@ -82,7 +80,7 @@ impl GameManager {
             glyph(g::GAME, 16.0).color(theme::accent()),
             text("GAME MANAGER")
                 .font(Font::Display)
-                .text_size(13.0)
+                .text_size(theme::TEXT_SIZE)
                 .weight(700),
             status,
             spacer(),
@@ -98,8 +96,8 @@ impl GameManager {
             caption(max_icon, CAPTION_MAX, max_name, WindowCommand::Maximize),
             caption(g::CLOSE, CAPTION_CLOSE, "Close", WindowCommand::Close),
         ])
-        .gap(10.0)
-        .padding(crate::ui::el::Edges::new(14.0, 0.0, 0.0, 0.0))
+        .gap(theme::space::S)
+        .padding(crate::ui::el::Edges::new(theme::space::L, 0.0, 0.0, 0.0))
         .height(theme::TITLE_BAR_HEIGHT)
         .bg(theme::layer())
         .key(CAPTION_DRAG)
@@ -131,9 +129,7 @@ impl GameManager {
         if let Some(draft) = &self.draft {
             let has_name = !draft.name.trim().is_empty();
             let body = vec![
-                text(draft.program.display().to_string())
-                    .color(theme::text_tertiary())
-                    .wrap(),
+                hint(draft.program.display().to_string()),
                 field_label("Name"),
                 text_box(
                     "draft:name",
@@ -166,16 +162,19 @@ impl GameManager {
                 .find(|game| game.id == *id)
                 .map(|game| game.name.clone())
                 .unwrap_or_default();
-            return Some(dialog(
+            return Some(removal_dialog(
                 window,
                 &format!("Remove {name}?"),
                 vec![
                     text("It is removed from the library only. The game's files are not deleted.")
                         .wrap(),
                 ],
-                Some(("Remove", true, Message::RemoveClosed(DialogResult::Primary))),
+                ("Remove", Message::RemoveClosed(DialogResult::Primary)),
                 Message::RemoveClosed(DialogResult::Cancel),
             ));
+        }
+        if let Some(page_art) = self.page_art_dialog(window) {
+            return Some(page_art);
         }
         self.mod_dialog_view(window)
     }
@@ -185,7 +184,7 @@ impl GameManager {
 pub(crate) fn field_label(label: &str) -> El<Message> {
     text(label)
         .bold()
-        .padding(crate::ui::el::Edges::new(0.0, 6.0, 0.0, 0.0))
+        .padding(crate::ui::el::Edges::new(0.0, theme::space::S, 0.0, 0.0))
 }
 
 /// A modal dialog: a dimmed backdrop and a card with a title, a body (scrolled when it doesn't fit
@@ -209,14 +208,36 @@ pub(crate) fn dialog_with(
     primary: Option<(&str, bool, Message)>,
     (cancel_label, cancel): (&str, Message),
 ) -> El<Message> {
+    let primary = primary
+        .map(|(label, enabled, message)| accent_button(label).enabled(enabled).on_click(message));
+    dialog_card(window, title, body, primary, (cancel_label, cancel))
+}
+
+/// A dialog that asks before something is removed: its main button is red (`danger_button`),
+/// then Cancel. Every removal that loses something a click can't bring back asks this way.
+pub(crate) fn removal_dialog(
+    window: &WindowInfo,
+    title: &str,
+    body: Vec<El<Message>>,
+    (label, remove): (&str, Message),
+    cancel: Message,
+) -> El<Message> {
+    let primary = danger_button(label).on_click(remove);
+    dialog_card(window, title, body, Some(primary), ("Cancel", cancel))
+}
+
+/// The dialog's card over the dimmed window: the title, the body, the main button and the one
+/// that closes it.
+fn dialog_card(
+    window: &WindowInfo,
+    title: &str,
+    body: Vec<El<Message>>,
+    primary: Option<El<Message>>,
+    (cancel_label, cancel): (&str, Message),
+) -> El<Message> {
     let mut buttons = vec![spacer()];
-    if let Some((label, enabled, message)) = primary {
-        buttons.push(
-            accent_button(label)
-                .enabled(enabled)
-                .on_click(message)
-                .min_width(96.0),
-        );
+    if let Some(primary) = primary {
+        buttons.push(primary.min_width(96.0));
     }
     buttons.push(button(cancel_label).on_click(cancel).min_width(96.0));
     // The title, the buttons and the padding take about 170 DIPs.
@@ -224,19 +245,19 @@ pub(crate) fn dialog_with(
     let body = scroll(
         "dialog:body",
         col(body)
-            .gap(6.0)
-            .padding(crate::ui::el::Edges::new(0.0, 0.0, 12.0, 0.0)),
+            .gap(theme::space::S)
+            .padding(crate::ui::el::Edges::new(0.0, 0.0, theme::space::M, 0.0)),
     )
     .max_height(body_height);
     let card = col([
-        text(title).text_size(theme::TEXT_SUBTITLE + 3.0).bold(),
+        text(title).text_size(theme::TEXT_HEADLINE).bold(),
         body,
         row(buttons)
-            .gap(8.0)
-            .padding(crate::ui::el::Edges::new(0.0, 12.0, 0.0, 0.0)),
+            .gap(theme::space::S)
+            .padding(crate::ui::el::Edges::new(0.0, theme::space::M, 0.0, 0.0)),
     ])
-    .gap(12.0)
-    .pad(24.0)
+    .gap(theme::space::M)
+    .pad(theme::space::XL)
     .width(520.0)
     .bg(theme::flyout())
     .stroke(theme::flyout_stroke(), 1.0)

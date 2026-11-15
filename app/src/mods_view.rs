@@ -2,19 +2,21 @@
 //! card: its installed version (a link to the page it was downloaded from), Info, Install or
 //! Reinstall, Settings and the red ✕, then a line saying what Install does, what is installed, or
 //! why it can't be. Then the dialogs these open (Info or settings), as modal layers: one at a
-//! time, and the mod buttons wait while one is open.
+//! time, and the mod buttons wait while one is open. Uninstalling ReShade or DXVK, and deleting a
+//! shader profile, ask first (`Confirm`, a red `removal_dialog`): ReShade's uninstall deletes its
+//! preset with the user's changes.
 //!
 //! The ReShade tab has three views (`ReshadeView`), switched by pills under the tab strip:
 //! ReShade (its card), Shaders and Add-ons (`reshade_panel.rs`; `main.rs` opens and leaves them).
 
-use crate::app_view::{dialog, field_label};
+use crate::app_view::{dialog, field_label, removal_dialog};
 use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, card, hint, icon_button, icon_square, icon_text_button, link,
-    radio_group, remove_button, segmented, text_box, toggle, working, working_button,
+    accent_button, button, card, card_header, hint, icon_button, icon_square, icon_text_button,
+    link, radio_group, remove_button, segmented, text_box, toggle, working, working_button,
 };
 use crate::{DialogResult, GameManager, Message, ReshadeView};
 use gm_core::graphics::GraphicsApi;
@@ -28,6 +30,8 @@ use windows_canvas::ColorF;
 
 /// The open mod dialog.
 pub(crate) enum ModDialog {
+    /// A removal waiting for a yes.
+    Confirm(Confirm),
     Info,
     Settings(DxvkSettings),
     LaaInfo,
@@ -36,6 +40,18 @@ pub(crate) enum ModDialog {
     ReshadeSettings(ReshadeVariant),
     UpscalerInfo,
     OverridesInfo,
+}
+
+/// A removal that loses what a click can't bring back (an uninstall that deletes ReShade's
+/// preset, a profile), waiting for the user's yes in a `removal_dialog`: what is asked, what goes,
+/// the red button's label, and the message it sends. Putting a game's own file back (LAA, an
+/// upscaler) loses nothing and doesn't ask.
+#[derive(Clone)]
+pub(crate) struct Confirm {
+    pub title: String,
+    pub text: String,
+    pub action: &'static str,
+    pub then: Box<Message>,
 }
 
 /// Which mod a job works on, so only its row shows "Working…".
@@ -218,7 +234,10 @@ impl GameManager {
 
     /// Any dialog is open: one at a time.
     pub(crate) fn dialog_open(&self) -> bool {
-        self.mod_dialog.is_some() || self.draft.is_some() || self.removing.is_some()
+        self.mod_dialog.is_some()
+            || self.draft.is_some()
+            || self.removing.is_some()
+            || self.page_art.editing.is_some()
     }
 
     /// Any work that the mod buttons wait for.
@@ -261,11 +280,11 @@ pub(crate) fn mod_card(card_spec: ModCard) -> El<Message> {
                 text(card_spec.title).text_size(theme::TEXT_SUBTITLE).bold(),
                 card_spec.status,
             ])
-            .gap(2.0)
+            .gap(theme::space::XXS)
             .fill_width(),
-            row(card_spec.actions).gap(8.0),
+            row(card_spec.actions).gap(theme::space::S),
         ])
-        .gap(12.0),
+        .gap(theme::space::M),
         hint(card_spec.hint),
     ])
 }
@@ -313,8 +332,10 @@ impl GameManager {
         let body = match view {
             ReshadeView::Install => {
                 let choose = card([
-                    text("Shaders and add-ons").bold(),
-                    hint(
+                    card_header(
+                        g::PUZZLE,
+                        theme::violet(),
+                        "Shaders and add-ons",
                         "Chosen for every game with ReShade, or for this game alone, in Shaders \
                          and Add-ons; Install and Reinstall bring them.",
                     ),
@@ -324,9 +345,9 @@ impl GameManager {
                         icon_text_button(g::PUZZLE, "Choose add-ons")
                             .on_click(Message::ReshadeView(ReshadeView::Addons)),
                     ])
-                    .gap(8.0),
+                    .gap(theme::space::S),
                 ]);
-                col([self.reshade_card(game), choose]).gap(16.0)
+                col([self.reshade_card(game), choose]).gap(theme::space::L)
             }
             // The panel opens in `update` (`open_reshade_view`); a Deploy closes it until done.
             ReshadeView::Shaders | ReshadeView::Addons => {
@@ -339,7 +360,7 @@ impl GameManager {
                 })
             }
         };
-        col([views, body]).gap(16.0)
+        col([views, body]).gap(theme::space::L)
     }
 
     /// ReShade's card, and below it what Install does, what is installed, or why it can't be.
@@ -378,7 +399,16 @@ impl GameManager {
                 .on_click(Message::ShowReshadeSettings),
             remove_button("Uninstall ReShade")
                 .enabled(!busy && (installed.is_some() || on_layer))
-                .on_click(Message::UninstallReshade),
+                .on_click(Message::AskFirst(Confirm {
+                    title: format!("Uninstall ReShade from {}?", game.name),
+                    text: "ReShade's DLL goes and the game's own comes back, or the game leaves \
+                           the Vulkan layer's list. ReShade.ini, ReShadePreset.ini, ReShade.log \
+                           and the reshade-shaders folder are deleted too, with any changes made \
+                           in ReShade's overlay."
+                        .to_owned(),
+                    action: "Uninstall",
+                    then: Box::new(Message::UninstallReshade),
+                })),
         ];
 
         let layer_note = |apps: usize| {
@@ -467,7 +497,7 @@ impl GameManager {
     pub(crate) fn mods_tab(&self, game: &Game) -> El<Message> {
         let mut cards = vec![self.dxvk_card(game)];
         cards.extend(self.laa_card(game));
-        col(cards).gap(16.0)
+        col(cards).gap(theme::space::L)
     }
 
     /// LAA's card for a 32-bit game: its status, Info, Enable and ✕, then what Enable does or
@@ -602,7 +632,13 @@ impl GameManager {
                 .on_click(Message::ShowDxvkSettings),
             remove_button("Uninstall DXVK")
                 .enabled(!busy && installed.is_some())
-                .on_click(Message::UninstallDxvk),
+                .on_click(Message::AskFirst(Confirm {
+                    title: format!("Uninstall DXVK from {}?", game.name),
+                    text: "DXVK's DLLs and its dxvk.conf go, and the game's own files come back."
+                        .to_owned(),
+                    action: "Uninstall",
+                    then: Box::new(Message::UninstallDxvk),
+                })),
         ];
 
         // The HDR-mod config an HDR-mod install brings.
@@ -669,6 +705,16 @@ impl GameManager {
             dialog(window, title, body, None, close.clone())
         };
         Some(match self.mod_dialog.as_ref()? {
+            ModDialog::Confirm(confirm) => removal_dialog(
+                window,
+                &confirm.title,
+                vec![text(confirm.text.clone()).wrap()],
+                (
+                    confirm.action,
+                    Message::ModDialogClosed(DialogResult::Primary),
+                ),
+                close,
+            ),
             ModDialog::OverridesInfo => {
                 info("NVIDIA overrides", gm_core::mods::dlss_override::INFO, None)
             }
@@ -773,10 +819,10 @@ impl GameManager {
                         },
                     ),
                 ])
-                .gap(4.0)
+                .gap(theme::space::XS)
                 .width(220.0),
             ])
-            .gap(24.0),
+            .gap(theme::space::XL),
         );
         let huds = Hud::ALL.map(|hud| hud.label().to_owned()).to_vec();
         rows.push(
@@ -787,7 +833,7 @@ impl GameManager {
                 })
                 .name("HUD"),
             ])
-            .gap(4.0),
+            .gap(theme::space::XS),
         );
         rows.push(hint(
             "The version is used by the next Install or Reinstall. The other settings are \
@@ -882,8 +928,8 @@ impl GameManager {
                     .on_click(Message::DxvkSettingsEdited(DxvkSettingsEdit::ResetNvidia))]),
                 hint(note),
             ])
-            .gap(6.0)
-            .padding(crate::ui::el::Edges::new(0.0, 8.0, 0.0, 0.0)),
+            .gap(theme::space::S)
+            .padding(crate::ui::el::Edges::new(0.0, theme::space::S, 0.0, 0.0)),
         )
     }
 
@@ -930,6 +976,6 @@ impl GameManager {
         })
         .enabled(enabled)
         .name("HDR-mod config");
-        col([field_label("HDR-mod config"), picker, hint(note)]).gap(4.0)
+        col([field_label("HDR-mod config"), picker, hint(note)]).gap(theme::space::XS)
     }
 }

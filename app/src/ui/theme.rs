@@ -7,8 +7,9 @@
 //! (`set_palette`), with Windows' accent or Game Manager's red (`with_accent`); views read each
 //! colour when they are built (`theme::text()`), so a change shows at the next frame.
 //!
-//! Sizes keep the compact density the WinUI window had: controls about 24–32 DIPs high, 4–8 DIPs
-//! apart within a group and 12–24 between groups.
+//! Sizes keep the compact density the WinUI window had: controls about 24–32 DIPs high, spaced on
+//! a 4-point scale (`space`: 4–8 within a group, 12–24 between groups), text on one ramp (caption
+//! 11 to hero 32). Views use these tokens only; the test at the end holds them to it.
 
 use std::cell::RefCell;
 
@@ -173,7 +174,8 @@ pub fn set_palette(palette: Palette) {
     CURRENT.with(|current| *current.borrow_mut() = palette);
 }
 
-/// The palette drawn with now.
+/// The palette drawn with now (the tests check what `set_palette` was given).
+#[cfg(test)]
 pub fn palette() -> Palette {
     CURRENT.with(|current| *current.borrow())
 }
@@ -267,14 +269,38 @@ pub const fn wash(tint: ColorF) -> ColorF {
     with_alpha(tint, 0x26)
 }
 
-/// Corner radii.
+/// Colours that sit over pictures (covers, art) and look the same in either theme.
+/// The tint over a cover tile under the pointer.
+pub const OVER_PICTURE_HOVER: ColorF = argb(0x1FFF_FFFF);
+/// A small dark chip over a cover (the pin).
+pub const OVER_PICTURE_CHIP: ColorF = argb(0xC717_181C);
+/// Windows' own red, in either theme: the title bar's close button under the pointer, and the
+/// button that removes something (`widgets::danger_button`), with white text; and pressed.
+pub const DANGER: ColorF = argb(0xFFC4_2B1C);
+pub const DANGER_PRESSED: ColorF = argb(0xFFA0_2318);
+
+/// Corner radii: controls, cards and flyouts, tabs, and a picture's small chip.
 pub const RADIUS_CONTROL: f32 = 4.0;
 pub const RADIUS_CARD: f32 = 8.0;
 pub const RADIUS_TAB: f32 = 7.0;
 pub const RADIUS_FLYOUT: f32 = 8.0;
+pub const RADIUS_CHIP: f32 = 6.0;
 
-/// Spacing within a group (12–24 between groups).
-pub const GAP: f32 = 8.0;
+/// Spacing, on a 4-point scale. Views space and pad with these only (a test holds them to it).
+pub mod space {
+    /// Between a line and the one it belongs to (a title and its subtitle).
+    pub const XXS: f32 = 2.0;
+    /// Inside a small control, between a glyph and its label.
+    pub const XS: f32 = 4.0;
+    /// Within a group: buttons in a row, a label and its control, chips.
+    pub const S: f32 = 8.0;
+    /// Between the parts of a group (a card's rows).
+    pub const M: f32 = 12.0;
+    /// Between groups and cards; a card's padding.
+    pub const L: f32 = 16.0;
+    /// Around a page, and between its sections.
+    pub const XL: f32 = 24.0;
+}
 
 /// Control heights.
 pub const CONTROL_HEIGHT: f32 = 30.0;
@@ -285,11 +311,18 @@ pub const SIDEBAR_WIDTH: f32 = 300.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 220.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 480.0;
 
-/// Text sizes.
-pub const TEXT_SIZE: f32 = 13.0;
-pub const TEXT_SMALL: f32 = 12.0;
+/// The type ramp, smallest first; views use these sizes only.
+/// Section labels, chips, counts.
 pub const TEXT_CAPTION: f32 = 11.0;
+/// Hints and secondary lines.
+pub const TEXT_SMALL: f32 = 12.0;
+/// Body text and controls.
+pub const TEXT_SIZE: f32 = 13.0;
+/// A card's or a list item's title.
 pub const TEXT_SUBTITLE: f32 = 15.0;
+/// A dialog's title, a card's main fact.
+pub const TEXT_HEADLINE: f32 = 18.0;
+/// A page's title.
 pub const TEXT_TITLE: f32 = 22.0;
 /// A game's name over its art, at the top of its page.
 pub const TEXT_HERO: f32 = 32.0;
@@ -363,4 +396,104 @@ pub mod glyph {
     pub const VIEW: &str = "\u{E890}";
     pub const FILTER: &str = "\u{E71C}";
     pub const REMOVE: &str = "\u{E738}";
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// The views (`app/src/*.rs`) spell no spacing, padding, text size, radius or colour of their
+    /// own: those come from this module (`app/CLAUDE.md`, Design system). 0 is allowed; test
+    /// modules aren't checked. The toolkit (`ui/`) keeps its components' own measures.
+    #[test]
+    fn views_use_the_design_tokens() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let source = std::fs::read_to_string(&path).unwrap();
+            // The code as one line, so a call the formatter spread over several is read whole.
+            let code = source
+                .lines()
+                .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
+                .map(str::trim)
+                .filter(|line| !line.starts_with("//"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            found.extend(
+                literals(&code)
+                    .into_iter()
+                    .map(|problem| format!("{name}: {problem}")),
+            );
+        }
+        assert!(
+            found.is_empty(),
+            "views spell their own measures; use theme's tokens:\n{}",
+            found.join("\n")
+        );
+    }
+
+    /// What `code` spells of its own, each with the call that does.
+    fn literals(code: &str) -> Vec<String> {
+        let number = |arg: &str| arg.starts_with(|c: char| c.is_ascii_digit()) && arg != "0.0";
+        let args = |at: usize, call: &str| {
+            code[at + call.len()..]
+                .split(')')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let mut problems = Vec::new();
+        for call in [
+            ".gap(",
+            ".pad(",
+            ".pad_xy(",
+            "Edges::new(",
+            "Edges::xy(",
+            "Edges::all(",
+        ] {
+            for (at, _) in code.match_indices(call) {
+                let args = args(at, call);
+                if args.split(',').map(str::trim).any(number) {
+                    problems.push(format!("{call}{args})"));
+                }
+            }
+        }
+        // A size or radius with any number in it: a literal, or a token plus some.
+        for call in [".text_size(", ".radius("] {
+            for (at, _) in code.match_indices(call) {
+                let args = args(at, call);
+                if args.contains(|c: char| c.is_ascii_digit()) {
+                    problems.push(format!("{call}{args})"));
+                }
+            }
+        }
+        for (at, _) in code.match_indices("argb(0x") {
+            problems.push(format!("argb({})", args(at, "argb(")));
+        }
+        problems
+    }
+
+    #[test]
+    fn literals_are_told_from_tokens() {
+        assert_eq!(literals(".gap(8.0)"), [".gap(8.0)"]);
+        assert!(literals(".gap(theme::space::S).pad(0.0)").is_empty());
+        assert_eq!(
+            literals("Edges::new( 24.0, 0.0, theme::space::XL, 0.0, )"),
+            ["Edges::new( 24.0, 0.0, theme::space::XL, 0.0, )"]
+        );
+        assert_eq!(
+            literals(".text_size(theme::TEXT_SUBTITLE + 2.0)"),
+            [".text_size(theme::TEXT_SUBTITLE + 2.0)"]
+        );
+        assert!(literals(".text_size(theme::TEXT_SMALL).radius(theme::RADIUS_CHIP)").is_empty());
+        assert_eq!(
+            literals("const X: ColorF = theme::argb(0xFF00_0000);"),
+            ["argb(0xFF00_0000)"]
+        );
+    }
 }

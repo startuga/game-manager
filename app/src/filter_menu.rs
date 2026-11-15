@@ -30,7 +30,7 @@ use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{Align, Edges, El, Role, col, glyph, layers, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{check_square, dropdown_button};
+use crate::ui::widgets::{check_square, dropdown_button, section_label};
 use crate::{GameManager, Message};
 
 /// The flyout's width, and its lines' heights.
@@ -121,13 +121,14 @@ impl Lines {
 
     /// A part's title, in small capitals.
     fn caption(&mut self, label: &str) {
-        let title = text(label.to_uppercase())
-            .text_size(theme::TEXT_CAPTION)
-            .weight(700)
-            .color(theme::text_tertiary());
         self.push(
-            row([title])
-                .padding(Edges::new(10.0, 4.0, 10.0, 0.0))
+            row([section_label(label)])
+                .padding(Edges::new(
+                    theme::space::S,
+                    theme::space::XS,
+                    theme::space::S,
+                    0.0,
+                ))
                 .height(CAPTION_HEIGHT),
             CAPTION_HEIGHT,
         );
@@ -135,7 +136,10 @@ impl Lines {
 
     fn separator(&mut self) {
         let line = col([]).height(1.0).bg(theme::divider());
-        self.push(col([line]).pad_xy(6.0, 4.0), SEPARATOR_HEIGHT);
+        self.push(
+            col([line]).pad_xy(theme::space::S, theme::space::XS),
+            SEPARATOR_HEIGHT,
+        );
     }
 
     /// One choice of several: a tick while it is on.
@@ -192,8 +196,8 @@ fn line(
         );
     }
     row(parts)
-        .gap(10.0)
-        .pad_xy(10.0, 0.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 0.0)
         .height(ITEM_HEIGHT)
         .hover_bg(theme::subtle_hover())
         .pressed_bg(theme::subtle_pressed())
@@ -294,8 +298,8 @@ impl GameManager {
             glyph(g::CLOSE, 10.0).width(18.0),
             text("Clear all").fill_width(),
         ])
-        .gap(10.0)
-        .pad_xy(10.0, 0.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 0.0)
         .height(ITEM_HEIGHT)
         .hover_bg(theme::subtle_hover())
         .pressed_bg(theme::subtle_pressed())

@@ -326,7 +326,8 @@ impl GameManager {
             .as_ref()
             .filter(|draft| draft.game == game.id)
         else {
-            return col([header, working("Reading the game's driver profile…")]).gap(16.0);
+            return col([header, working("Reading the game's driver profile…")])
+                .gap(theme::space::L);
         };
         let save = if saving {
             working_button()
@@ -347,9 +348,9 @@ impl GameManager {
                     .name("Reset NVIDIA overrides to original")
                     .on_click(UpscalerMessage::ResetOverrides.into()),
             ])
-            .gap(8.0),
+            .gap(theme::space::S),
         );
-        col([header, card(form)]).gap(16.0)
+        col([header, card(form)]).gap(theme::space::L)
     }
 
     fn overrides_form(&self, draft: &OverrideDraft) -> Vec<El<Message>> {
@@ -401,9 +402,17 @@ impl GameManager {
                     continue;
                 }
                 rows.push(
-                    col([text(group.name.as_str()).bold(), col(settings).gap(6.0)])
-                        .gap(6.0)
-                        .padding(crate::ui::el::Edges::new(0.0, 8.0, 0.0, 0.0)),
+                    col([
+                        text(group.name.as_str()).bold(),
+                        col(settings).gap(theme::space::S),
+                    ])
+                    .gap(theme::space::S)
+                    .padding(crate::ui::el::Edges::new(
+                        0.0,
+                        theme::space::S,
+                        0.0,
+                        0.0,
+                    )),
                 );
             }
         }
@@ -456,6 +465,6 @@ impl GameManager {
             .tooltip(setting.hint.as_str())
             .fill_width(),
         ])
-        .gap(8.0)
+        .gap(theme::space::S)
     }
 }

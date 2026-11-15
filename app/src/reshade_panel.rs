@@ -820,13 +820,13 @@ impl GameManager {
         .width(280.0);
         let mut rows = vec![
             row([text("Apply to").color(theme::text_secondary()), apply_to])
-                .gap(10.0)
+                .gap(theme::space::S)
                 .halign(Align::Start),
         ];
         if let Some(settings) = settings {
             rows.push(self.target_line(panel, settings));
         }
-        col(rows).gap(6.0)
+        col(rows).gap(theme::space::S)
     }
 
     /// What applying the page's choice does, for its target.
@@ -899,7 +899,7 @@ impl GameManager {
                     .on_click(Message::UseSharedChoice),
             );
         }
-        row(parts).gap(12.0)
+        row(parts).gap(theme::space::M)
     }
 
     /// The Add-ons view: the custom folder's link, a card per add-on, and Apply.
@@ -938,7 +938,7 @@ impl GameManager {
                 .on_click(Message::CloseAddons)])
             .justify(Align::End),
         );
-        col(rows).gap(12.0)
+        col(rows).gap(theme::space::M)
     }
 
     /// The Shaders view: the list of packs beside the profiles, then Deploy and Discard changes.
@@ -960,7 +960,7 @@ impl GameManager {
                     .width(PROFILES_WIDTH)
                     .valign(Align::Start),
             ])
-            .gap(20.0),
+            .gap(theme::space::XL),
             _ => working("Reading the shader packs…"),
         };
         let deploy_tip = match &panel.game {
@@ -983,9 +983,9 @@ impl GameManager {
                 .tooltip("Go back to the saved selection")
                 .on_click(Message::CloseReshadePanel),
         ])
-        .gap(8.0)
+        .gap(theme::space::S)
         .justify(Align::End);
-        col([header, body, buttons]).gap(14.0)
+        col([header, body, buttons]).gap(theme::space::L)
     }
 
     /// The toolbar and the packs by category.
@@ -1011,7 +1011,7 @@ impl GameManager {
                 .enabled(!draft.search.is_empty())
                 .on_click(Message::ShaderSearch(String::new())),
         ])
-        .gap(8.0);
+        .gap(theme::space::S);
 
         let mut rows: Vec<El<Message>> = vec![toolbar];
         for category in [Category::Essential, Category::Recommended] {
@@ -1037,7 +1037,7 @@ impl GameManager {
         if rows.len() == 1 {
             rows.push(hint("No pack or shader matches the search."));
         }
-        col(rows).gap(8.0)
+        col(rows).gap(theme::space::S)
     }
 
     /// A category's heading and the packs in it that match the search, by name.
@@ -1109,7 +1109,7 @@ impl GameManager {
                 Some(state != Some(true)),
             ))
             .valign(Align::Start);
-        let mut title = vec![text(name).text_size(15.0).weight(600)];
+        let mut title = vec![text(name).text_size(theme::TEXT_SUBTITLE).weight(600)];
         if cached && id != CUSTOM {
             title.push(
                 glyph(g::CHECK, 12.0)
@@ -1130,10 +1130,7 @@ impl GameManager {
         if downloading {
             title.push(spinner(14.0));
         }
-        let mut lines = vec![
-            row(title).gap(6.0),
-            text(description).color(theme::text_tertiary()).wrap(),
-        ];
+        let mut lines = vec![row(title).gap(theme::space::S), hint(description)];
         if expanded {
             let shown: Vec<&String> = effects
                 .iter()
@@ -1172,16 +1169,19 @@ impl GameManager {
                 lines.push(col(boxes).gap(0.0));
             }
         }
-        card([row([check, col(lines).gap(4.0).fill_width()]).gap(10.0)]).pad(12.0)
+        card([row([check, col(lines).gap(theme::space::XS).fill_width()]).gap(theme::space::S)])
+            .pad(theme::space::M)
     }
 }
 
-/// A category's heading in the shader list.
+/// A category's heading in the shader list, as every section is labelled.
 fn section_heading(label: &str) -> El<Message> {
-    text(label)
-        .text_size(theme::TEXT_SUBTITLE + 2.0)
-        .bold()
-        .padding(crate::ui::el::Edges::new(0.0, 10.0, 0.0, 2.0))
+    crate::ui::widgets::section_label(label).padding(crate::ui::el::Edges::new(
+        0.0,
+        theme::space::M,
+        0.0,
+        theme::space::XXS,
+    ))
 }
 
 /// Profiles (each with ✎ and ✕; Save, New), Export and Import, and Open custom folder.
@@ -1189,11 +1189,7 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
     let wide = |icon: &str, label: &str, message: Message| {
         crate::ui::widgets::icon_text_button(icon, label).on_click(message)
     };
-    let mut rows: Vec<El<Message>> = vec![
-        text("Profiles")
-            .text_size(theme::TEXT_SUBTITLE + 2.0)
-            .bold(),
-    ];
+    let mut rows: Vec<El<Message>> = vec![text("Profiles").text_size(theme::TEXT_SUBTITLE).bold()];
     let current = library.settings.profile.as_deref();
     if library.settings.profiles.is_empty() {
         rows.push(hint("No profiles yet: Save keeps the selection as one."));
@@ -1214,7 +1210,7 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
                 icon_button(g::CLOSE, "Keep the name")
                     .on_click(Message::ProfileRename(String::new())),
             ])
-            .gap(4.0),
+            .gap(theme::space::XS),
             _ => {
                 let label = text(name.as_str())
                     .weight(if current == Some(profile.name.as_str()) {
@@ -1225,7 +1221,7 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
                     .fill_width();
                 row([
                     row([label])
-                        .pad_xy(8.0, 0.0)
+                        .pad_xy(theme::space::S, 0.0)
                         .height(theme::CONTROL_HEIGHT)
                         .radius(theme::RADIUS_CONTROL)
                         .hover_bg(theme::subtle_hover())
@@ -1236,10 +1232,18 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
                         .fill_width(),
                     icon_button(g::EDIT, format!("Rename {name}"))
                         .on_click(Message::ProfileRename(name.clone())),
-                    remove_button(format!("Delete {name}"))
-                        .on_click(Message::ProfileDelete(name.clone())),
+                    remove_button(format!("Delete {name}")).on_click(Message::AskFirst(
+                        crate::mods_view::Confirm {
+                            title: format!("Delete the profile {name}?"),
+                            text: "The profile and the selection it keeps are deleted. The \
+                                   shaders themselves stay where they are."
+                                .to_owned(),
+                            action: "Delete",
+                            then: Box::new(Message::ProfileDelete(name.clone())),
+                        },
+                    )),
                 ])
-                .gap(2.0)
+                .gap(theme::space::XXS)
             }
         };
         rows.push(line);
@@ -1263,12 +1267,16 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
     if let Some(note) = &draft.note {
         rows.push(hint(note.clone()));
     }
-    card(rows).gap(8.0)
+    card(rows).gap(theme::space::S)
 }
 
 /// One add-on: its name, version ✓ when downloaded, description and How to use, and its switch.
 fn addon_card(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
-    let mut title = vec![text(addon.name.as_str()).text_size(15.0).weight(600)];
+    let mut title = vec![
+        text(addon.name.as_str())
+            .text_size(theme::TEXT_SUBTITLE)
+            .weight(600),
+    ];
     if let Some(version) = library.cached.get(&addon.id) {
         if let Some(version) = version {
             title.push(text(version.as_str()).color(theme::text_tertiary()));
@@ -1280,10 +1288,8 @@ fn addon_card(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
         );
     }
     let mut lines = vec![
-        row(title).gap(8.0),
-        text(addon.description.as_str())
-            .color(theme::text_tertiary())
-            .wrap(),
+        row(title).gap(theme::space::S),
+        hint(addon.description.as_str()),
     ];
     if let Some(page) = &addon.repository {
         lines.push(row([link(
@@ -1299,7 +1305,8 @@ fn addon_card(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
     )
     .name(addon.name.as_str())
     .width(96.0);
-    card([row([col(lines).gap(4.0).fill_width(), switch]).gap(16.0)]).pad(14.0)
+    card([row([col(lines).gap(theme::space::XS).fill_width(), switch]).gap(theme::space::L)])
+        .pad(theme::space::L)
 }
 
 #[cfg(test)]

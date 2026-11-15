@@ -19,7 +19,9 @@ use crate::mods_view::{ModDialog, ModKind, shown_path};
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{button, card, hint, icon_square, remove_button, working, working_button};
+use crate::ui::widgets::{
+    button, card, card_header, hint, icon_square, remove_button, working, working_button,
+};
 use crate::{GameManager, Message};
 use gm_core::Game;
 use gm_core::mods::dlss_override::OverrideState;
@@ -361,7 +363,10 @@ impl GameManager {
     /// The Upscalers tab: what it does, a card per place with upscaler DLLs, and Versions.
     pub(crate) fn upscalers_tab(&self, game: &Game) -> El<Message> {
         let mut cards = vec![card([row([
-            hint(
+            card_header(
+                g::CHIP,
+                theme::cyan(),
+                "Upscalers",
                 "The DLSS, FSR 3.1+, XeSS and Streamline DLLs in this game's folder. Swap one for \
                  another of its vendor's versions; ✕ puts the game's own back.",
             )
@@ -371,7 +376,7 @@ impl GameManager {
                 .name("Upscalers information")
                 .on_click(UpscalerMessage::ShowInfo.into()),
         ])
-        .gap(12.0)])];
+        .gap(theme::space::M)])];
         if let Some(Ok(library)) = &self.upscalers.library
             && !library.failed.is_empty()
         {
@@ -393,7 +398,7 @@ impl GameManager {
             }
         }
         cards.push(self.versions_section());
-        col(cards).gap(16.0)
+        col(cards).gap(theme::space::L)
     }
 
     /// One place's DLLs: name and state, the version drop-down, Swap and ✕.
@@ -526,13 +531,13 @@ impl GameManager {
                     text(name).text_size(theme::TEXT_SUBTITLE).bold(),
                     text(state).color(theme::text_secondary()).wrap(),
                 ])
-                .gap(2.0)
+                .gap(theme::space::XXS)
                 .fill_width(),
                 picker,
                 swap,
                 restore,
             ])
-            .gap(10.0),
+            .gap(theme::space::S),
             hint(place),
         ])
     }

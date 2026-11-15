@@ -49,6 +49,12 @@ pub(crate) struct IconState {
 }
 
 impl IconState {
+    /// The bytes of a game's icon, as the core read them (the page's band blurs them when the
+    /// game has nothing better).
+    pub fn bytes(&self, id: &str) -> Option<&Arc<Vec<u8>>> {
+        self.sources.get(id)
+    }
+
     /// A game that is gone.
     pub fn forget(&mut self, id: &str) {
         self.sources.remove(id);

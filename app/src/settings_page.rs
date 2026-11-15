@@ -21,7 +21,7 @@ use crate::shell::ctx::{Ctx, WindowCommand};
 use crate::shell::window::{self, Look};
 use crate::ui::el::{El, col, row};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{card, card_header, heading, hint, segmented};
+use crate::ui::widgets::{card, card_header, hint, page_header, segmented};
 use crate::{GameManager, Message, app_view::field_label};
 
 #[derive(Clone)]
@@ -200,7 +200,7 @@ impl GameManager {
         };
 
         let setting = |label: &str, control: El<Message>, line: &str| {
-            col([field_label(label), control, hint(line.to_owned()).wrap()]).gap(6.0)
+            col([field_label(label), control, hint(line.to_owned()).wrap()]).gap(theme::space::S)
         };
         let appearance = card([
             card_header(
@@ -213,12 +213,16 @@ impl GameManager {
             setting("Background", backdrops, backdrop_hint),
             setting(
                 "Accent colour",
-                row([accents, swatch]).gap(12.0),
+                row([accents, swatch]).gap(theme::space::M),
                 accent_hint,
             ),
         ])
-        .gap(14.0);
-        col([heading("Settings"), appearance]).gap(18.0)
+        .gap(theme::space::L);
+        col([
+            page_header("Settings", "Game Manager", None, Vec::new()),
+            appearance,
+        ])
+        .gap(theme::space::L)
     }
 }
 

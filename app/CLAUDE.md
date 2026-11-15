@@ -29,9 +29,11 @@ samples in `crates/samples/`) instead of guessing.
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
-    scroll position). The header is a band of the game's art from edge to edge when it has some
-    (`page_art.rs`: the selected game's wide background and logo, decoded in the background,
-    else its cover blurred; the plain header otherwise). The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
+    scroll position). The header is a band of the game's art from edge to edge on every game
+    (`page_art.rs`: the selected game's wide background and logo, the user's own or the
+    stores', decoded in the background; else its cover, else its icon, blurred; the store's
+    colour until one is ready), with a Page art button (and Page art… in the game menu) for the
+    user's own background and logo. The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
     one in the background (`OpenNexusMods`, then `NexusModsFound` opens it), as finding it reads
     the game's folder and may download Nexus's list. Saves and Config open the folders
     PCGamingWiki names (`gm_core::game_data`, `request_game_folders`, `GameFoldersLoaded`), looked
@@ -85,8 +87,21 @@ samples in `crates/samples/`) instead of guessing.
   has no fill of its own; layers, cards and controls are translucent over it. Text is then
   antialiased in grayscale. Don't extend the frame into the client area: Windows then drew its own
   caption buttons beside the view's.
-- **Design tokens only**: colours, sizes and fonts come from `theme.rs`; controls from
-  `widgets.rs`.
+- **Design system**: every view looks alike because it builds from the same parts.
+  - **Tokens** (`theme.rs`): colours from the palette (`theme::text()`, or `theme::DARK`'s over
+    art), the spacing scale `theme::space` (XXS 2, XS 4, S 8, M 12, L 16, XL 24), the type ramp
+    (caption 11, small 12, body 13, subtitle 15, headline 18, title 22, hero 32), radii
+    (`RADIUS_CONTROL`, `RADIUS_CARD`, `RADIUS_CHIP`, …), and colours over pictures and Windows'
+    red (`OVER_PICTURE_*`, `DANGER`). A view spells none of its own: `theme::tests` fails on a
+    literal gap, padding, text size, radius or colour in `app/src/*.rs` (0 is allowed; a
+    measure that isn't spacing, like an indent, gets a named constant).
+  - **Components** (`widgets.rs`): `page_header` (caption, title, line, actions) on Library, My
+    PC and Settings; `section_label` (+ `count_badge`) for every section and group; cards with
+    `card_header`; `hint` for every secondary line; `working` for every lookup still running.
+  - **Behaviour**: the selected item is the accent's wash (with a bar in lists); Info sits at
+    the right of its card; a removal that loses what a click can't bring back asks first in a
+    `removal_dialog` with a red `danger_button` (`mods_view::Confirm`, `Message::AskFirst`),
+    while putting a game's own file back (the ✕ of LAA and upscalers) doesn't ask.
 - **Layout**: `Size::Px`, `Auto` or `Fill(weight)` along a row or column; `halign`/`valign`
   across (both among `layers`). `row` centres its children vertically unless they say otherwise,
   so a column that must fill a row's height needs `fill_height()`. A `scroll` clips its content.

@@ -22,7 +22,9 @@ use crate::game_menu::MenuMessage;
 use crate::library::{self, Section, SectionKind};
 use crate::ui::el::{El, Role, col, glyph, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{divider, hint, nav_item, search_box, subtle_button, working};
+use crate::ui::widgets::{
+    count_badge, divider, hint, nav_item, search_box, section_label, subtle_button, working,
+};
 use crate::{GameManager, Message, Page};
 
 /// The search box's key, which Ctrl+F looks for (`App::search_box`).
@@ -38,7 +40,7 @@ impl GameManager {
             Message::SearchSubmit,
             Message::ClearSearch,
         );
-        let search = row([search.fill_width(), self.filter_button()]).gap(6.0);
+        let search = row([search.fill_width(), self.filter_button()]).gap(theme::space::S);
         let searching = !self.query.trim().is_empty();
         let pages = col([
             nav_item(
@@ -60,7 +62,7 @@ impl GameManager {
                 Message::Page(Page::Settings),
             ),
         ])
-        .gap(2.0);
+        .gap(theme::space::XXS);
         let add = subtle_button(g::ADD, "Add a game")
             .enabled(self.can_add_game())
             .tooltip("Or drop a game's .exe or its shortcut on the window")
@@ -71,13 +73,16 @@ impl GameManager {
             let shown = self.shown_games().len();
             let total = library::total(&self.games, &self.view);
             items.push(
-                text(match shown {
+                hint(match shown {
                     0 => "No game matches".to_owned(),
                     n => format!("{n} of {}", library::games_label(total)),
                 })
-                .text_size(theme::TEXT_SMALL)
-                .color(theme::text_tertiary())
-                .padding(crate::ui::el::Edges::new(4.0, 0.0, 0.0, 0.0)),
+                .padding(crate::ui::el::Edges::new(
+                    theme::space::XS,
+                    0.0,
+                    0.0,
+                    0.0,
+                )),
             );
         }
         items.extend([
@@ -88,8 +93,8 @@ impl GameManager {
             add,
         ]);
         col(items)
-            .gap(8.0)
-            .pad(10.0)
+            .gap(theme::space::S)
+            .pad(theme::space::S)
             .width(self.sidebar_width)
             .fill_height()
             .bg(theme::layer())
@@ -102,11 +107,11 @@ impl GameManager {
             } else {
                 hint("No games found yet. Add one, or drop its .exe or shortcut here.")
             }])
-            .pad(8.0);
+            .pad(theme::space::S);
         }
         let shown = self.shown_games();
         if shown.is_empty() {
-            return col([hint(library::empty_hint(&self.view, &self.query))]).pad(8.0);
+            return col([hint(library::empty_hint(&self.view, &self.query))]).pad(theme::space::S);
         }
         let mut rows = Vec::new();
         for section in library::sections(&self.games, &shown, &self.view) {
@@ -121,7 +126,7 @@ impl GameManager {
                 );
             }
         }
-        scroll("games", col(rows).gap(1.0))
+        scroll("games", col(rows).gap(theme::space::XXS))
     }
 
     /// A section's header, and whether the section is folded: PINNED, a store's (which folds,
@@ -149,8 +154,8 @@ impl GameManager {
             self.icon(game, crate::icons::SMALL),
             text(game.name.clone()).fill_width(),
         ])
-        .gap(10.0)
-        .pad_xy(8.0, 0.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 0.0)
         .height(36.0)
         .radius(theme::RADIUS_CONTROL)
         .hover_bg(theme::subtle_hover())
@@ -217,21 +222,9 @@ pub(crate) fn games_header(key: &str, count: usize) -> El<Message> {
 /// A group's header: a glyph in a narrow slot (a chevron, a pin), its label in capitals and a
 /// count badge.
 fn group_header(lead: El<Message>, label: &str, count: usize) -> El<Message> {
-    row([
-        lead.width(12.0),
-        text(label.to_uppercase())
-            .text_size(theme::TEXT_CAPTION)
-            .weight(700)
-            .color(theme::text_secondary()),
-        row([text(count.to_string())
-            .text_size(theme::TEXT_CAPTION)
-            .color(theme::text_tertiary())])
-        .pad_xy(6.0, 1.0)
-        .bg(theme::control())
-        .radius(8.0),
-    ])
-    .gap(8.0)
-    .pad_xy(6.0, 0.0)
-    .height(30.0)
-    .radius(theme::RADIUS_CONTROL)
+    row([lead.width(12.0), section_label(label), count_badge(count)])
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 0.0)
+        .height(30.0)
+        .radius(theme::RADIUS_CONTROL)
 }

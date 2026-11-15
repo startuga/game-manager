@@ -140,7 +140,7 @@ pub fn describe(game: &Game) -> String {
     let cached = |identity: &str| cache.as_ref().and_then(|c| c.existing_file(identity));
     let missed = |identity: &str| cache.as_ref().is_some_and(|c| c.missed(identity));
     if let Ok(dir) = own_dir()
-        && let Some(file) = own_files(&dir, &game.id).find(|file| file.is_file())
+        && let Some(file) = own_files(&dir, &safe_name(&game.id)).find(|file| file.is_file())
     {
         return format!(
             "your own picture ({}): {}",
@@ -262,7 +262,7 @@ fn local_cover(
     own: Option<&Path>,
     stores: &Stores,
 ) -> (Option<Cover>, bool) {
-    if let Some(file) = own.and_then(|dir| find_own(dir, &game.id)) {
+    if let Some(file) = own.and_then(|dir| find_own(dir, &safe_name(&game.id))) {
         return (Some(Cover::new(file, true, false)), false);
     }
     let net = net_identity(game);
@@ -381,7 +381,7 @@ fn own_dir() -> Result<PathBuf> {
 }
 
 /// A game id as a file name: "steam:220" is "steam_220".
-fn safe_name(game_id: &str) -> String {
+pub(crate) fn safe_name(game_id: &str) -> String {
     game_id
         .chars()
         .map(|c| {
@@ -394,47 +394,52 @@ fn safe_name(game_id: &str) -> String {
         .collect()
 }
 
-/// Where the user's own cover of a game may be: one file, under its format's extension.
-fn own_files<'a>(dir: &'a Path, game_id: &str) -> impl Iterator<Item = PathBuf> + 'a {
-    let name = safe_name(game_id);
+/// Where the user's own picture named `stem` may be in `dir`: one file, under its format's
+/// extension.
+pub(crate) fn own_files<'a>(dir: &'a Path, stem: &str) -> impl Iterator<Item = PathBuf> + 'a {
+    let stem = stem.to_owned();
     EXTENSIONS
         .into_iter()
-        .map(move |extension| dir.join(format!("{name}.{extension}")))
+        .map(move |extension| dir.join(format!("{stem}.{extension}")))
 }
 
-/// The user's own cover of a game: the file that holds a picture of the format its name says.
-fn find_own(dir: &Path, game_id: &str) -> Option<PathBuf> {
-    own_files(dir, game_id).find(|file| read_picture(file).is_some())
+/// The user's own picture named `stem`: the file that holds a picture of the format its name says.
+pub(crate) fn find_own(dir: &Path, stem: &str) -> Option<PathBuf> {
+    own_files(dir, stem).find(|file| read_picture(file).is_some())
 }
 
-/// The largest picture file chosen as a cover: a 64-megapixel bitmap, the most `picture` decodes.
-const LARGEST_OWN_COVER_MB: u64 = 256;
+/// The largest picture file the user may choose: a 64-megapixel bitmap, the most `picture` decodes.
+const LARGEST_OWN_PICTURE_MB: u64 = 256;
 
-fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
+/// Keeps the picture in `image` as the user's own, named `stem` in `dir`, byte for byte, and
+/// drops an earlier choice in another format. A file too large to be one, or no picture, is
+/// refused and nothing is written.
+pub(crate) fn save_own(dir: &Path, stem: &str, image: &Path) -> Result<PathBuf> {
     let not_a_picture = || Error::NotAPicture(image.to_path_buf());
     // Read whole only when it can be a picture: a huge file would take all the memory.
     let length = fs::metadata(image).map_err(Error::io(image))?.len();
-    if length > LARGEST_OWN_COVER_MB << 20 {
+    if length > LARGEST_OWN_PICTURE_MB << 20 {
         return Err(Error::FileTooLarge {
             path: image.to_path_buf(),
-            limit_mb: LARGEST_OWN_COVER_MB,
+            limit_mb: LARGEST_OWN_PICTURE_MB,
         });
     }
     let bytes = fs::read(image).map_err(Error::io(image))?;
     let format = picture::format(&bytes).ok_or_else(not_a_picture)?;
     picture::decode(&bytes).map_err(|_| not_a_picture())?;
     fs::create_dir_all(dir).map_err(Error::io(dir))?;
-    let file = dir.join(format!("{}.{}", safe_name(game_id), format.extension()));
+    let file = dir.join(format!("{stem}.{}", format.extension()));
     whole_file::write(&file, &bytes).map_err(Error::io(&file))?;
     // The earlier choice, in another format.
-    for other in own_files(dir, game_id).filter(|other| *other != file) {
+    for other in own_files(dir, stem).filter(|other| *other != file) {
         let _ = fs::remove_file(other);
     }
-    Ok(Cover::new(file, true, false))
+    Ok(file)
 }
 
-fn clear_own_in(dir: &Path, cache: Option<&PictureCache>, game: &Game) -> Result<()> {
-    for file in own_files(dir, &game.id) {
+/// Deletes the user's own picture named `stem` in `dir`, whatever its format; none is fine.
+pub(crate) fn remove_own(dir: &Path, stem: &str) -> Result<()> {
+    for file in own_files(dir, stem) {
         match fs::remove_file(&file) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                 return Err(Error::io(&file)(error));
@@ -442,6 +447,15 @@ fn clear_own_in(dir: &Path, cache: Option<&PictureCache>, game: &Game) -> Result
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn set_own_in(dir: &Path, game_id: &str, image: &Path) -> Result<Cover> {
+    save_own(dir, &safe_name(game_id), image).map(|file| Cover::new(file, true, false))
+}
+
+fn clear_own_in(dir: &Path, cache: Option<&PictureCache>, game: &Game) -> Result<()> {
+    remove_own(dir, &safe_name(&game.id))?;
     if let Some(cache) = cache {
         cache.forget(&net_identity(game));
         cache.forget(&name_identity(game));
@@ -604,11 +618,11 @@ mod tests {
         fs::write(&text, b"not a picture").unwrap();
         let error = set_own_in(&own, &tool.id, &text).unwrap_err();
         assert!(matches!(error, Error::NotAPicture(file) if file == text));
-        assert!(own_files(&own, &tool.id).all(|file| !file.exists()));
+        assert!(own_files(&own, &safe_name(&tool.id)).all(|file| !file.exists()));
         // Too large to be one: refused before it is read (its length set, nothing written to it).
         let huge = dir.join("huge.png");
         let file = fs::File::create(&huge).unwrap();
-        file.set_len((LARGEST_OWN_COVER_MB << 20) + 1).unwrap();
+        file.set_len((LARGEST_OWN_PICTURE_MB << 20) + 1).unwrap();
         drop(file);
         let error = set_own_in(&own, &tool.id, &huge).unwrap_err();
         assert!(matches!(error, Error::FileTooLarge { .. }), "{error}");

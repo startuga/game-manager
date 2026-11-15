@@ -21,15 +21,12 @@ use crate::library;
 use crate::shell::WindowInfo;
 use crate::ui::el::{Align, Edges, El, col, glyph, image, layers, row, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{heading, hint, working};
+use crate::ui::widgets::{hint, page_header, working};
 use crate::{GameManager, Message};
 use gm_core::Game;
 
 /// The space between tiles: 4 fit across at the window's first size.
-const TILE_GAP: f32 = 16.0;
-/// The tint over a tile under the pointer, and the chip behind a pinned tile's pin.
-const TILE_HOVER: windows_canvas::ColorF = theme::argb(0x1FFF_FFFF);
-const PIN_CHIP: windows_canvas::ColorF = theme::argb(0xC717_181C);
+const TILE_GAP: f32 = theme::space::L;
 
 impl GameManager {
     pub(crate) fn library_page(&self, window: &WindowInfo) -> El<Message> {
@@ -40,17 +37,11 @@ impl GameManager {
         } else {
             format!("{} of {}", visible.len(), library::games_label(total))
         };
-        let header = col([
-            text(match library::describe(&self.view) {
-                Some(what) => format!("LIBRARY · {}", what.to_uppercase()),
-                None => "LIBRARY".to_owned(),
-            })
-            .text_size(theme::TEXT_CAPTION)
-            .weight(700)
-            .color(theme::text_tertiary()),
-            heading(shown),
-        ])
-        .gap(4.0);
+        let caption = match library::describe(&self.view) {
+            Some(what) => format!("Library · {what}"),
+            None => "Library".to_owned(),
+        };
+        let header = page_header(&caption, shown, None, Vec::new());
         if self.games.is_empty() {
             return col([
                 header,
@@ -60,11 +51,11 @@ impl GameManager {
                     hint("No games found yet. Add one, or drop its .exe or shortcut here.")
                 },
             ])
-            .gap(16.0);
+            .gap(theme::space::L);
         }
         if visible.is_empty() {
             let nothing = library::empty_hint(&self.view, &self.query);
-            return col([header, hint(nothing)]).gap(16.0);
+            return col([header, hint(nothing)]).gap(theme::space::L);
         }
         let columns = library::columns(self.page_width(window), COVER_WIDTH, TILE_GAP);
         let mut rows = vec![header];
@@ -86,7 +77,7 @@ impl GameManager {
                 grid(&mut rows, &games);
             }
         }
-        col(rows).gap(12.0)
+        col(rows).gap(theme::space::M)
     }
 
     /// A game's tile: its cover (or its icon on a card until it has one), a pin on a dark chip
@@ -107,20 +98,30 @@ impl GameManager {
         let mut cover = vec![art.size(COVER_WIDTH, COVER_HEIGHT)];
         if game.pinned.is_some() {
             let chip = row([glyph(g::PIN, 11.0).color(theme::accent())])
-                .pad(6.0)
-                .bg(PIN_CHIP)
-                .radius(6.0);
-            cover.push(col([chip]).pad(8.0).halign(Align::End).valign(Align::Start));
+                .pad(theme::space::S)
+                .bg(theme::OVER_PICTURE_CHIP)
+                .radius(theme::RADIUS_CHIP);
+            cover.push(
+                col([chip])
+                    .pad(theme::space::S)
+                    .halign(Align::End)
+                    .valign(Align::Start),
+            );
         }
         col([
             layers(cover).size(COVER_WIDTH, COVER_HEIGHT),
             // One line, cut with "…"; the tooltip has it whole.
-            text(game.name.clone()).padding(Edges::new(4.0, 0.0, 4.0, 0.0)),
+            text(game.name.clone()).padding(Edges::new(
+                theme::space::XS,
+                0.0,
+                theme::space::XS,
+                0.0,
+            )),
         ])
-        .gap(8.0)
+        .gap(theme::space::S)
         .width(COVER_WIDTH)
         .radius(theme::RADIUS_CARD)
-        .hover_overlay(TILE_HOVER)
+        .hover_overlay(theme::OVER_PICTURE_HOVER)
         .role(crate::ui::el::Role::ListItem)
         .key(format!("{}{}", crate::covers::TILE_KEY, game.id))
         .watch()

@@ -9,7 +9,8 @@
 //!   ("Skip launcher"); Open folder, PCGamingWiki, Nexus Mods, Saves folder and Config folder (as
 //!   the game page's buttons; a folder not looked up yet is looked up, then opened or the error
 //!   bar says why not);
-//!   Rename…, Choose cover… (and Reset cover for a game with the user's own, `covers.rs`), Hide
+//!   Rename…, Choose cover… (and Reset cover for a game with the user's own, `covers.rs`), Page
+//!   art… (its background and logo, `page_art.rs`), Hide
 //!   from the list (or Show in the list);
 //!   Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups are
 //!   split by lines, and the two destructive items are red.
@@ -32,7 +33,7 @@ use gm_core::Store;
 use gm_core::game_data::FolderKind;
 use gm_core::uninstall::Route;
 
-use crate::app_view::dialog;
+use crate::app_view::{dialog, removal_dialog};
 use crate::covers::CoverMessage;
 use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
@@ -67,6 +68,8 @@ pub(crate) enum MenuAction {
     /// A picture of the user's as the game's cover (`covers.rs`), or back to the store's.
     ChooseCover,
     ResetCover,
+    /// The Page art dialog: the user's own background and logo (`page_art.rs`).
+    PageArt,
     /// Hides it from the list, or shows it again.
     Hide,
     Uninstall,
@@ -165,7 +168,10 @@ impl Rows {
 
     fn separator(&mut self) {
         let line = col([]).height(1.0).bg(theme::divider());
-        self.push(col([line]).pad_xy(6.0, 4.0), SEPARATOR_HEIGHT);
+        self.push(
+            col([line]).pad_xy(theme::space::S, theme::space::XS),
+            SEPARATOR_HEIGHT,
+        );
     }
 }
 
@@ -178,8 +184,8 @@ fn item(icon: &str, label: &str, name: String, action: MenuAction, danger: bool)
         label = label.color(theme::critical());
     }
     row([face, label])
-        .gap(10.0)
-        .pad_xy(10.0, 0.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 0.0)
         .height(ITEM_HEIGHT)
         .hover_bg(theme::subtle_hover())
         .pressed_bg(theme::subtle_pressed())
@@ -221,11 +227,11 @@ impl GameManager {
                     .text_size(theme::TEXT_CAPTION)
                     .color(theme::text_tertiary()),
             ])
-            .gap(2.0)
+            .gap(theme::space::XXS)
             .fill_width(),
         ])
-        .gap(10.0)
-        .pad_xy(10.0, 0.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 0.0)
         .height(HEADER_HEIGHT);
         rows.push(header, HEADER_HEIGHT);
         rows.separator();
@@ -317,6 +323,12 @@ impl GameManager {
             format!("Choose a cover for {}", game.name),
             MenuAction::ChooseCover,
         );
+        rows.item(
+            g::PICTURE,
+            "Page art…",
+            format!("Change the page art of {}", game.name),
+            MenuAction::PageArt,
+        );
         if self.covers.is_own(&game.id) {
             rows.item(
                 g::UNDO,
@@ -396,9 +408,31 @@ impl GameManager {
                 } => "Open Ubisoft Connect",
                 Route::StoreApp { .. } => "Open Installed apps",
             };
+            let body = vec![
+                text(uninstall.route.describe()).wrap(),
+                hint(
+                    "Mods Game Manager set up outside the game's folder stay: ReShade's \
+                     Vulkan layer entry and NVIDIA profile settings. Remove them from the \
+                     game's tabs first if you want them gone. Once the game is uninstalled, \
+                     Rescan takes it off the list.",
+                ),
+            ];
+            let title = format!("Uninstall {}?", game.name);
+            let confirm = MenuMessage::UninstallClosed(DialogResult::Primary).into();
+            let cancel = MenuMessage::UninstallClosed(DialogResult::Cancel).into();
+            // Uninstalling here is a removal; opening the store's app removes nothing yet.
+            if matches!(uninstall.route, Route::Steam(_) | Route::Uninstaller { .. }) {
+                return Some(removal_dialog(
+                    window,
+                    &title,
+                    body,
+                    (primary, confirm),
+                    cancel,
+                ));
+            }
             return Some(dialog(
                 window,
-                &format!("Uninstall {}?", game.name),
+                &title,
                 vec![
                     text(uninstall.route.describe()).wrap(),
                     hint(
@@ -539,6 +573,9 @@ impl GameManager {
             }
             MenuAction::ChooseCover => self.handle_cover(CoverMessage::Choose(id), context),
             MenuAction::ResetCover => self.handle_cover(CoverMessage::Reset(id), context),
+            MenuAction::PageArt => {
+                self.handle_page_art(crate::page_art::PageArtMessage::Edit(id), context);
+            }
             MenuAction::Hide => self.toggle_hidden(id, context),
             MenuAction::Uninstall => {
                 let game = game.clone();

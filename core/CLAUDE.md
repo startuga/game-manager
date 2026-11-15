@@ -34,8 +34,9 @@ holds the rules and facts that span them.
     kept byte for byte, never re-encoded; a `Cover` names its file, read with `covers::read` when
     a tile needs it). Each store's facts are
     in its own module (`steam::cached_cover`, `epic::cover_url`, `gog::cached_cover`, …).
-  - `page_art.rs` (the game page's wide background and logo, the same way: originals by id or by
-    name in their own cache, the stores' copies on this PC meanwhile; each store's sources in
+  - `page_art.rs` (the game page's wide background and logo, the same way: the user's own first
+    (`set_own`, in `%APPDATA%\Game Manager\page-art`), originals by id or by name in their own
+    cache, the stores' copies on this PC meanwhile; each store's sources in
     order, Epic's after the Steam store's; `steam::page_art_urls`, `gog::cached_background`, …).
   - `picture.rs` (pictures in pure Rust: JPEG, PNG and WebP through their crates, BMP and icon
     bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, logos trimmed, covers

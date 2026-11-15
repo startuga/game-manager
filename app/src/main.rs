@@ -302,6 +302,8 @@ enum Message {
     UseSharedChoice,
     /// The Info or settings dialog closed: `Primary` is the settings' Save.
     ModDialogClosed(DialogResult),
+    /// A removal asks first (`mods_view::Confirm`): its dialog opens.
+    AskFirst(mods_view::Confirm),
     /// The Upscalers tab and page (`upscalers_view.rs`).
     Upscalers(UpscalerMessage),
     /// The My PC page (`my_pc.rs`).
@@ -479,6 +481,8 @@ impl App for GameManager {
             Some(message)
         } else if self.my_pc.trial.is_some() {
             Some(MyPcMessage::RevertMode.into())
+        } else if self.page_art.editing.is_some() {
+            Some(PageArtMessage::CloseEdit.into())
         } else if self.mod_dialog.is_some() {
             Some(Message::ModDialogClosed(DialogResult::Cancel))
         } else if self.removing.is_some() {
@@ -857,7 +861,7 @@ impl GameManager {
             }
             Message::Menu(message) => self.handle_menu(message, context),
             Message::Cover(message) => self.handle_cover(message, context),
-            Message::PageArt(message) => self.handle_page_art(message),
+            Message::PageArt(message) => self.handle_page_art(message, context),
             Message::Settings(message) => self.handle_settings(message, context),
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),
@@ -1144,11 +1148,19 @@ impl GameManager {
                     *variant = chosen;
                 }
             }
+            Message::AskFirst(confirm) => self.mod_dialog = Some(ModDialog::Confirm(confirm)),
             Message::ModDialogClosed(result) => {
                 let dialog = self.mod_dialog.take();
                 if result != DialogResult::Primary {
                     return;
                 }
+                // A removal said yes to: what it asked about now runs.
+                let dialog = match dialog {
+                    Some(ModDialog::Confirm(confirm)) => {
+                        return self.handle(*confirm.then, context);
+                    }
+                    other => other,
+                };
                 let Some(game) = self.selected_game().cloned() else {
                     return;
                 };
@@ -1362,13 +1374,16 @@ impl GameManager {
                 if let Some(id) = self.removing.take()
                     && result == DialogResult::Primary
                 {
-                    // A pinned one leaves quick access too, and its cover goes.
+                    // A pinned one leaves quick access too, and its cover and page art go.
                     let game = self.games.iter().find(|game| game.id == id).cloned();
                     let pinned = game.as_ref().is_some_and(|game| game.pinned.is_some());
                     context.spawn_background(move || {
                         let removed = gm_core::custom::remove(&id).and_then(|()| {
                             if let Some(game) = &game {
                                 gm_core::covers::clear_own(game)?;
+                                for part in gm_core::page_art::Part::ALL {
+                                    gm_core::page_art::clear_own(&game.id, part)?;
+                                }
                             }
                             if pinned {
                                 gm_core::config::set_pinned(&id, false)

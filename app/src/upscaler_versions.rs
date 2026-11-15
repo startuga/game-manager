@@ -13,6 +13,9 @@ use crate::upscalers_view::{UpscalerLibrary, UpscalerMessage, megabytes};
 use crate::{GameManager, Message};
 use gm_core::mods::upscalers::{Available, Kind};
 
+/// How far a version's row is indented: past its kind's chevron, under its name.
+const VERSION_INDENT: f32 = 30.0;
+
 impl GameManager {
     /// The Versions card: its header (folds it, with what is downloaded), then, unfolded, Refresh
     /// list, Open cache folder and the kinds.
@@ -43,28 +46,26 @@ impl GameManager {
             .width(16.0),
             col([
                 text("Versions").text_size(theme::TEXT_SUBTITLE).bold(),
-                text(format!(
+                hint(format!(
                     "Download or delete the vendors' versions{}",
                     if summary.is_empty() {
                         String::new()
                     } else {
                         format!(" · {summary}")
                     }
-                ))
-                .text_size(theme::TEXT_SMALL)
-                .color(theme::text_tertiary()),
+                )),
             ])
-            .gap(2.0)
+            .gap(theme::space::XXS)
             .fill_width(),
         ])
-        .gap(10.0)
-        .pad_xy(4.0, 4.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::XS, theme::space::XS)
         .radius(theme::RADIUS_CONTROL)
         .hover_bg(theme::subtle_hover())
         .name("Versions")
         .on_click(UpscalerMessage::VersionsToggled.into());
         if !open {
-            return card([header]).pad(10.0);
+            return card([header]).pad(theme::space::S);
         }
         let busy = self.upscalers.library_pending || self.upscalers.download.is_some();
         let actions = row([
@@ -75,7 +76,7 @@ impl GameManager {
             icon_text_button(g::FOLDER, "Open cache folder")
                 .on_click(UpscalerMessage::OpenCacheFolder.into()),
         ])
-        .gap(8.0);
+        .gap(theme::space::S);
         let mut rows = vec![
             header,
             actions,
@@ -108,7 +109,7 @@ impl GameManager {
             }
             _ => rows.push(working("Listing the versions…")),
         }
-        card(rows).gap(12.0).pad(10.0)
+        card(rows).gap(theme::space::M).pad(theme::space::S)
     }
 
     /// A kind's section: a header that folds it, then its versions, each with Download or Delete.
@@ -140,19 +141,17 @@ impl GameManager {
                 text(kind.name.as_str())
                     .text_size(theme::TEXT_SUBTITLE)
                     .bold(),
-                text(format!(
+                hint(format!(
                     "{} · {} versions, {downloaded} downloaded",
                     kind.vendor,
                     versions.len()
-                ))
-                .text_size(theme::TEXT_SMALL)
-                .color(theme::text_tertiary()),
+                )),
             ])
-            .gap(2.0)
+            .gap(theme::space::XXS)
             .fill_width(),
         ])
-        .gap(10.0)
-        .pad_xy(4.0, 4.0)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::XS, theme::space::XS)
         .radius(theme::RADIUS_CONTROL)
         .hover_bg(theme::subtle_hover())
         .name(kind.name.as_str())
@@ -168,7 +167,7 @@ impl GameManager {
                     .map(|available| self.version_row(library, kind, available)),
             );
         }
-        card(lines).gap(4.0).pad(10.0)
+        card(lines).gap(theme::space::XS).pad(theme::space::S)
     }
 
     /// One version: its label, whether it is downloaded and used, and Download or Delete.
@@ -225,7 +224,12 @@ impl GameManager {
                 .color(theme::text_tertiary()),
             row([action]).width(140.0),
         ])
-        .gap(12.0)
-        .padding(crate::ui::el::Edges::new(30.0, 2.0, 4.0, 2.0))
+        .gap(theme::space::M)
+        .padding(crate::ui::el::Edges::new(
+            VERSION_INDENT,
+            theme::space::XXS,
+            theme::space::XS,
+            theme::space::XXS,
+        ))
     }
 }

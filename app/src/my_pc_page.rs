@@ -19,7 +19,8 @@ use crate::shell::WindowInfo;
 use crate::ui::el::{Align, El, col, dropdown, row, slider, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    card, card_header, chip, heading, hint, icon_text_button, link, meter, toggle, working,
+    card, card_header, chip, hint, icon_text_button, link, meter, page_header, section_label,
+    toggle, working,
 };
 use crate::{GameManager, Message};
 use gm_core::pc::{Display, DisplayMode, Drive, Gpu, Memory, Snapshot, format_bytes};
@@ -31,7 +32,7 @@ impl GameManager {
     pub(crate) fn my_pc_page(&self, window: &WindowInfo) -> El<Message> {
         let state = &self.my_pc;
         let Some(pc) = state.snapshot.as_deref() else {
-            return col([self.my_pc_header(None), working("Reading the PC…")]).gap(16.0);
+            return col([self.my_pc_header(None), working("Reading the PC…")]).gap(theme::space::L);
         };
         let wide = self.page_width(window) >= TWO_COLUMNS;
         let mut cards = Vec::new();
@@ -118,16 +119,16 @@ impl GameManager {
         let bottom = if wide {
             row([
                 col(displays)
-                    .gap(12.0)
+                    .gap(theme::space::M)
                     .fill_width_by(1.6)
                     .valign(Align::Start),
                 switches.fill_width().valign(Align::Start),
             ])
-            .gap(12.0)
+            .gap(theme::space::M)
         } else {
             let mut stack = displays;
             stack.push(switches);
-            col(stack).gap(12.0)
+            col(stack).gap(theme::space::M)
         };
         col([
             self.my_pc_header(Some(pc)),
@@ -136,7 +137,7 @@ impl GameManager {
             group_label("DISPLAYS AND WINDOWS SETTINGS"),
             bottom,
         ])
-        .gap(12.0)
+        .gap(theme::space::L)
     }
 
     /// "MY PC", the computer's name, its graphics card, processor and memory, and Refresh.
@@ -167,24 +168,12 @@ impl GameManager {
                 .tooltip("Read the hardware and the display settings again")
                 .on_click(MyPcMessage::Refresh.into())
         };
-        row([
-            col([
-                text("MY PC")
-                    .text_size(theme::TEXT_CAPTION)
-                    .weight(700)
-                    .color(theme::text_tertiary()),
-                heading(name),
-                hint(summary),
-            ])
-            .gap(4.0)
-            .fill_width(),
-            refresh.valign(Align::Start),
-        ])
-        .gap(12.0)
-        .pad(20.0)
-        .bg(theme::card())
-        .stroke(theme::card_stroke(), 1.0)
-        .radius(theme::RADIUS_CARD)
+        page_header(
+            "My PC",
+            name,
+            Some(summary).filter(|summary| !summary.is_empty()),
+            vec![refresh],
+        )
     }
 
     fn display_card(&self, display: &Display) -> El<Message> {
@@ -214,7 +203,7 @@ impl GameManager {
         if display.primary {
             header.push(chip("MAIN DISPLAY", theme::accent()));
         }
-        let mut lines = vec![row(header).gap(8.0)];
+        let mut lines = vec![row(header).gap(theme::space::S)];
         if display.gdi_name.is_empty() {
             lines.push(hint(
                 "Windows did not give this display's name: change its settings in Windows' \
@@ -392,7 +381,7 @@ impl GameManager {
                     MyPcMessage::OpenSettings("ms-settings:display-advancedcolor").into(),
                 ),
             ])
-            .gap(4.0),
+            .gap(theme::space::XS),
         );
         card(lines)
     }
@@ -486,7 +475,7 @@ impl GameManager {
                     MyPcMessage::OpenSettings("ms-settings:gaming-gamemode").into(),
                 ),
             ])
-            .gap(4.0),
+            .gap(theme::space::XS),
         );
         card(lines)
     }
@@ -611,7 +600,7 @@ fn storage_card(drives: &[Drive]) -> El<Message> {
                 hint(detail),
                 meter(ratio as f32),
             ])
-            .gap(3.0),
+            .gap(theme::space::XS),
         );
     }
     card(lines)
@@ -632,24 +621,25 @@ fn grid(cards: Vec<El<Message>>, columns: usize) -> El<Message> {
             .take(columns)
             .map(|card| card.fill_width().fill_height())
             .collect();
-        rows.push(row(line).gap(12.0));
+        rows.push(row(line).gap(theme::space::M));
     }
-    col(rows).gap(12.0)
+    col(rows).gap(theme::space::M)
 }
 
 /// A group's name over its cards ("HARDWARE").
 fn group_label(label: &str) -> El<Message> {
-    text(label)
-        .text_size(theme::TEXT_CAPTION)
-        .weight(700)
-        .color(theme::text_tertiary())
-        .padding(crate::ui::el::Edges::new(2.0, 8.0, 0.0, 0.0))
+    section_label(label).padding(crate::ui::el::Edges::new(
+        theme::space::XXS,
+        theme::space::S,
+        0.0,
+        0.0,
+    ))
 }
 
 /// The card's main fact, large.
 fn big(value: &str) -> El<Message> {
     text(value)
-        .text_size(theme::TEXT_SUBTITLE + 3.0)
+        .text_size(theme::TEXT_HEADLINE)
         .weight(600)
         .wrap()
 }
@@ -664,9 +654,9 @@ fn facts(rows: Vec<(&str, String)>) -> El<Message> {
                 text(label).color(theme::text_tertiary()).width(110.0),
                 text(value).wrap().fill_width(),
             ])
-            .gap(12.0)
+            .gap(theme::space::M)
         }))
-    .gap(4.0)
+    .gap(theme::space::XS)
 }
 
 /// A setting: its name and description on the left, its control on the right.
@@ -675,11 +665,11 @@ fn setting(title: &str, description: &str, control: Option<El<Message>>) -> El<M
     if !description.is_empty() {
         texts.push(hint(description.to_owned()));
     }
-    let mut items = vec![col(texts).gap(2.0).fill_width()];
+    let mut items = vec![col(texts).gap(theme::space::XXS).fill_width()];
     items.extend(control);
     row(items)
-        .gap(16.0)
-        .pad_xy(12.0, 10.0)
+        .gap(theme::space::L)
+        .pad_xy(theme::space::M, theme::space::S)
         .bg(theme::card())
         .radius(theme::RADIUS_CONTROL)
 }

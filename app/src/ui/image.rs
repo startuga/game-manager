@@ -89,6 +89,15 @@ pub fn decode_blurred(bytes: &[u8], size: u32) -> Option<Picture> {
     Some(Picture::from_premultiplied(blurred))
 }
 
+/// A game's icon (a PNG, or an `.ico` file's image for 256 pixels) made small and soft, like a
+/// cover (`decode_blurred`): the game page's background when the game has neither a wide picture
+/// nor a cover. `None` when it is no picture.
+pub fn decode_blurred_icon(bytes: &[u8], size: u32) -> Option<Picture> {
+    let straight = picture::icon(bytes, 256).ok()?;
+    let blurred = picture::blurred(straight, size).ok()?;
+    Some(Picture::from_premultiplied(blurred))
+}
+
 /// Writes premultiplied BGRA pixels to `path` as a PNG (the window's frame capture for checks,
 /// `shell::WM_CAPTURE`).
 pub fn save_png(pixels: &[u8], width: u32, height: u32, path: &Path) -> std::io::Result<()> {

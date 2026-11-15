@@ -1,16 +1,17 @@
 //! The page beside the sidebar: the Library grid (`library_page.rs`), the selected game, or My PC
 //! (`my_pc_page.rs`).
 //!
-//! The game page: a header with the icon, the name in the title
-//! font, the install folder and coloured chips (store, bitness, graphics APIs; DXVK's Vulkan). With
-//! page art (`page_art.rs`) the header is a band across the page from edge to edge: the game's
-//! wide picture (else its cover blurred, calmed with a shade) cut to fill it, as high as a share of
+//! The game page: its header is a band across the page from edge to edge, on every game
+//! (`page_art.rs`): the game's wide picture, the user's own or the store's (else its cover, else
+//! its icon, blurred and calmed with a shade; the store's colour until one is ready), cut to fill
+//! it, as high as a share of
 //! its width (`theme::ART_BAND_*`), darker on the left and towards the text's bottom (white text
 //! must read on light art: Half-Life 2's fog), and fading out from
 //! `theme::ART_FADE_FROM` down (`El::fade_out`, an opacity mask, so it melts into Mica as into the
 //! base colour). Over it, above the fade, the logo (else the icon and the name in the hero size),
 //! the folder and the chips, in the page's column, in the dark palette whatever the theme: art is
-//! mostly dark, and logos are drawn for it. Then a
+//! mostly dark, and logos are drawn for it. The band's top right has the Page art button (the
+//! user's own background and logo). Then a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
@@ -36,14 +37,15 @@ use crate::edit::{EditChoice, EditDraft, EditField};
 use crate::shell::WindowInfo;
 use std::sync::Arc;
 
+use crate::page_art::PageArtMessage;
 use crate::ui::el::{
-    Align, Edges, El, Font, Role, col, dropdown, image, layers, paint, row, scroll, text,
+    Align, Edges, El, Font, Role, col, dropdown, glyph, image, layers, paint, row, scroll, text,
 };
 use crate::ui::image::Picture;
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    PlayState, Tab, accent_button, button, card, card_header, chip, heading, hint,
-    icon_text_button, play_button, tabs, text_box,
+    PlayState, Tab, accent_button, button, card, card_header, chip, hint, icon_text_button,
+    play_button, section_label, tabs, text_box, working,
 };
 use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list, folder_tooltip};
 
@@ -68,14 +70,18 @@ impl GameManager {
 
     fn game_page(&self, window: &WindowInfo) -> El<Message> {
         let Some(game) = self.selected_game() else {
-            let message = if self.scanning {
-                "Looking for installed games…"
+            // A lookup still running shows as every one does: a spinner and what it is doing.
+            let status = if self.scanning {
+                working("Looking for installed games…")
             } else if self.games.is_empty() {
-                "No installed games were found. Use Add a game, or drop a game's .exe or its shortcut here."
+                hint(
+                    "No installed games were found. Use Add a game, or drop a game's .exe or its \
+                     shortcut here.",
+                )
             } else {
-                "Select a game in the library."
+                hint("Select a game in the library.")
             };
-            return col([hint(message)]).center().grow();
+            return col([status]).center().grow();
         };
         let mut strip = vec![
             tab(
@@ -127,38 +133,63 @@ impl GameManager {
         };
         let tab_strip = tabs(strip);
         let rest = [self.launch_bar(game), tab_strip, body];
-        match self.art_band(game, window) {
-            // The band spans the page from edge to edge, the rest in the page's column below it.
-            Some(band) => scroll(
-                "page:game",
-                col([
-                    band,
-                    page_column(col(rest).gap(18.0)).padding(Edges::new(24.0, 0.0, 24.0, 24.0)),
-                ]),
-            )
-            .grow(),
-            None => page(
-                "game",
-                col(std::iter::once(self.header(game)).chain(rest)).gap(18.0),
-            ),
-        }
+        // The band spans the page from edge to edge, the rest in the page's column below it.
+        scroll(
+            "page:game",
+            col([
+                self.art_band(game, window),
+                page_column(col(rest).gap(theme::space::L)).padding(Edges::new(
+                    theme::space::XL,
+                    0.0,
+                    theme::space::XL,
+                    theme::space::XL,
+                )),
+            ]),
+        )
+        .grow()
     }
 
-    /// The band across the top of the game page: the game's wide art (else its cover blurred),
-    /// fading out at the bottom into whatever is behind (Mica, or the base colour), with its logo
-    /// (else its icon and name), folder and chips over it, above the fade. Art is dark more often
-    /// than not and logos are drawn for it, so the band keeps the dark palette in either theme.
-    /// `None` while there is no background to draw: the plain header shows instead.
-    fn art_band(&self, game: &Game, window: &WindowInfo) -> Option<El<Message>> {
-        let shown = self.page_art.shown(&game.id)?;
+    /// The band across the top of every game page: the game's wide art (the user's own or the
+    /// store's), else its cover or icon blurred, over the store's colour (all that shows until a
+    /// picture is ready); fading out at the bottom into whatever is behind (Mica, or the base
+    /// colour), with its logo (else its icon and name), folder and chips over it, above the fade,
+    /// and the Page art button at its top right. Art is dark more often than not and logos are
+    /// drawn for it, so the band keeps the dark palette in either theme.
+    fn art_band(&self, game: &Game, window: &WindowInfo) -> El<Message> {
+        let shown = self.page_art.shown(&game.id);
         let dark = theme::DARK;
         let width = (window.size.0 - self.sidebar_width).max(1.0);
         let height = (width / theme::ART_BAND_RATIO)
             .clamp(theme::ART_BAND_MIN_HEIGHT, theme::ART_BAND_MAX_HEIGHT);
-        let art = image(format!("art:{}", game.id), Arc::clone(shown.background))
-            .cover()
-            .fill_width()
-            .height(height);
+        // Under everything: the base, and the store's colour while there is no picture (an
+        // icon's transparent parts show it too).
+        let tint = store_tint(game.store, &dark);
+        let bare = shown.background.is_none();
+        let ground = paint(move |painter, rect, _| {
+            painter.fill_rect(rect, dark.base);
+            if bare {
+                painter.fill_linear(
+                    rect,
+                    (0.0, 0.0),
+                    (1.0, 1.0),
+                    &[
+                        (0.0, theme::with_alpha(tint, 0x59)),
+                        (1.0, theme::with_alpha(tint, 0x0D)),
+                    ],
+                );
+            }
+        })
+        .fill_width()
+        .height(height);
+        let mut picture = vec![ground];
+        if let Some(background) = shown.background {
+            picture.push(
+                image(format!("art:{}", game.id), Arc::clone(background))
+                    .cover()
+                    .fill_width()
+                    .height(height),
+            );
+        }
         let blurred = shown.blurred;
         let scrim = paint(move |painter, rect, _| {
             let shade = |alpha| theme::with_alpha(dark.base, alpha);
@@ -188,7 +219,8 @@ impl GameManager {
         })
         .fill_width()
         .height(height);
-        let picture = layers([art, scrim])
+        picture.push(scrim);
+        let picture = layers(picture)
             .fill_width()
             .height(height)
             .fade_out(theme::ART_FADE_FROM);
@@ -204,14 +236,14 @@ impl GameManager {
                     .wrap()
                     .fill_width(),
             ])
-            .gap(16.0),
+            .gap(theme::space::L),
         };
         let info = col([
             title,
             self.folder_line(game, &dark),
-            row(self.chips(game, &dark)).gap(6.0),
+            row(self.chips(game, &dark)).gap(theme::space::S),
         ])
-        .gap(8.0)
+        .gap(theme::space::S)
         .fill_width()
         .max_width(PAGE_MAX_WIDTH)
         .halign(Align::Center);
@@ -219,13 +251,39 @@ impl GameManager {
         let over = col([info])
             .fill_width()
             .padding(Edges::new(
-                24.0,
+                theme::space::XL,
                 0.0,
-                24.0,
+                theme::space::XL,
                 height * (1.0 - theme::ART_FADE_FROM),
             ))
             .valign(Align::End);
-        Some(layers([picture, over]).fill_width().height(height))
+        // The Page art button, at the band's top right, in the page's column.
+        let edit = row([glyph(g::PICTURE, theme::ICON_SIZE).color(dark.text)])
+            .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
+            .center()
+            .hover_bg(dark.subtle_hover)
+            .pressed_bg(dark.subtle_pressed)
+            .radius(theme::RADIUS_CONTROL)
+            .role(Role::Button)
+            .tooltip("Page art: your own background and logo")
+            .name(format!("Change the page art of {}", game.name))
+            .on_click(PageArtMessage::Edit(game.id.clone()).into())
+            .halign(Align::End);
+        let corner = col([edit])
+            .fill_width()
+            .max_width(PAGE_MAX_WIDTH)
+            .halign(Align::Center)
+            .valign(Align::Start);
+        let corner = col([corner])
+            .fill_width()
+            .padding(Edges::new(
+                theme::space::XL,
+                theme::space::M,
+                theme::space::XL,
+                0.0,
+            ))
+            .valign(Align::Start);
+        layers([picture, over, corner]).fill_width().height(height)
     }
 
     /// Where the game is installed, as the header's second line.
@@ -238,22 +296,6 @@ impl GameManager {
             .text_size(theme::TEXT_SMALL)
             .color(palette.text_tertiary)
             .wrap()
-    }
-
-    /// The header without art: the icon beside the name, the folder and the chips.
-    fn header(&self, game: &Game) -> El<Message> {
-        let palette = theme::palette();
-        row([
-            self.icon(game, crate::icons::LARGE),
-            col([
-                heading(game.name.clone()).wrap(),
-                self.folder_line(game, &palette),
-                row(self.chips(game, &palette)).gap(6.0),
-            ])
-            .gap(6.0)
-            .fill_width(),
-        ])
-        .gap(16.0)
     }
 
     /// The store, the bitness, the graphics APIs and DXVK's Vulkan, as chips in `palette`'s tints.
@@ -394,7 +436,7 @@ impl GameManager {
                     .on_click(Message::OpenGameFolder(game.id.clone(), kind)),
             );
         }
-        row(items).gap(8.0)
+        row(items).gap(theme::space::S)
     }
 
     fn overview(&self, game: &Game) -> El<Message> {
@@ -402,7 +444,7 @@ impl GameManager {
             self.game_settings(game).fill_width().valign(Align::Start),
             self.details(game).width(320.0).valign(Align::Start),
         ])
-        .gap(16.0)
+        .gap(theme::space::L)
     }
 
     /// Game settings: name, launch program, arguments, game program, bitness and graphics API.
@@ -463,7 +505,7 @@ impl GameManager {
                 .enabled(!busy)
                 .name(title),
             ])
-            .gap(4.0)
+            .gap(theme::space::XS)
             .fill_width()
         };
         let title = if game.edits.is_some() {
@@ -490,7 +532,7 @@ impl GameManager {
                 ),
                 browse(EditField::Launch, "Browse for the launch .exe"),
             ])
-            .gap(8.0),
+            .gap(theme::space::S),
             hint(format!(
                 "The program Play starts. Leave it empty to start the game through {store}."
             )),
@@ -502,13 +544,13 @@ impl GameManager {
                 field(EditField::Program, "program", "Game program", String::new()),
                 browse(EditField::Program, "Browse for the game program"),
             ])
-            .gap(8.0),
+            .gap(theme::space::S),
             hint("The game's own .exe: used for its bitness, Folder and mods."),
             row([
                 choice(EditChoice::Bitness, "bitness", "Bitness", detected_arch),
                 choice(EditChoice::GraphicsApi, "api", "Graphics API", detected_api),
             ])
-            .gap(16.0),
+            .gap(theme::space::L),
             hint(
                 "Mods such as ReShade and DXVK need the game's bitness and the one graphics API it runs on.",
             ),
@@ -526,8 +568,8 @@ impl GameManager {
                     .name("Reset game settings")
                     .on_click(Message::ResetEdits),
             ])
-            .gap(8.0)
-            .padding(crate::ui::el::Edges::new(0.0, 6.0, 0.0, 0.0)),
+            .gap(theme::space::S)
+            .padding(crate::ui::el::Edges::new(0.0, theme::space::S, 0.0, 0.0)),
         ])
     }
 
@@ -545,14 +587,7 @@ impl GameManager {
             },
         );
         let line = |label: &str, value: String| {
-            col([
-                text(label)
-                    .text_size(theme::TEXT_CAPTION)
-                    .weight(700)
-                    .color(theme::text_tertiary()),
-                text(value).wrap(),
-            ])
-            .gap(2.0)
+            col([section_label(label), text(value).wrap()]).gap(theme::space::XXS)
         };
         card([
             card_header(g::INFO, theme::slate(), "Details", ""),
@@ -599,7 +634,11 @@ fn store_tint(store: Store, palette: &theme::Palette) -> ColorF {
 /// A page's content, scrolled and no wider than `PAGE_MAX_WIDTH`. Each page keeps its own scroll
 /// position (`key`), so the Library doesn't open where a game's page was scrolled to.
 fn page(key: &str, content: El<Message>) -> El<Message> {
-    scroll(format!("page:{key}"), page_column(content).pad(24.0)).grow()
+    scroll(
+        format!("page:{key}"),
+        page_column(content).pad(theme::space::XL),
+    )
+    .grow()
 }
 
 /// The page's column: as wide as the page, at most `PAGE_MAX_WIDTH`, centred.

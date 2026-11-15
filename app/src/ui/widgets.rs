@@ -1,5 +1,10 @@
 //! The window's controls, built from elements and theme tokens so every view looks the same.
 //!
+//! The design system's components (`app/CLAUDE.md` lists them): a page's header (`page_header`:
+//! a caption, a title, a line, actions), a section's label in small capitals (`section_label`,
+//! with a `count_badge`), cards with `card_header`, `hint` for every secondary line, and
+//! `working` for every lookup still running.
+//!
 //! Their look:
 //! rimless translucent buttons, chips on a tint's wash, cards with an icon square, a title and a
 //! subtitle, tabs with a tinted icon and a filled, underlined open tab,
@@ -49,6 +54,18 @@ pub fn accent_button<M>(label: impl Into<String>) -> El<M> {
         .bg(theme::accent())
         .hover_bg(lighten(theme::accent(), 0.10))
         .pressed_bg(darken(theme::accent(), 0.12))
+        .radius(theme::RADIUS_CONTROL)
+        .role(Role::Button)
+}
+
+/// The button that removes something, in a dialog that asks first: Windows' red, white text.
+pub fn danger_button<M>(label: impl Into<String>) -> El<M> {
+    row([text(label).bold().color(ColorF::WHITE)])
+        .pad_xy(14.0, 0.0)
+        .height(theme::CONTROL_HEIGHT)
+        .bg(theme::DANGER)
+        .hover_bg(lighten(theme::DANGER, 0.10))
+        .pressed_bg(theme::DANGER_PRESSED)
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
 }
@@ -265,14 +282,14 @@ pub fn chip<M>(label: impl Into<String>, tint: ColorF) -> El<M> {
         .color(tint)])
     .pad_xy(7.0, 2.0)
     .bg(theme::wash(tint))
-    .radius(4.0)
+    .radius(theme::RADIUS_CONTROL)
 }
 
 /// A card: a translucent panel with a faint outline.
 pub fn card<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {
     col(children)
-        .gap(theme::GAP)
-        .pad(16.0)
+        .gap(theme::space::S)
+        .pad(theme::space::L)
         .bg(theme::card())
         .stroke(theme::card_stroke(), 1.0)
         .radius(theme::RADIUS_CARD)
@@ -300,18 +317,13 @@ pub fn card_header<M>(
     let subtitle = subtitle.into();
     let mut lines = vec![text(title).text_size(theme::TEXT_SUBTITLE).bold()];
     if !subtitle.is_empty() {
-        lines.push(
-            text(subtitle)
-                .text_size(theme::TEXT_SMALL)
-                .color(theme::text_tertiary())
-                .wrap(),
-        );
+        lines.push(hint(subtitle));
     }
     row([
         icon_square(icon, tint, 32.0),
-        col(lines).gap(2.0).fill_width(),
+        col(lines).gap(theme::space::XXS).fill_width(),
     ])
-    .gap(12.0)
+    .gap(theme::space::M)
 }
 
 /// One tab of a tab strip.
@@ -327,7 +339,7 @@ pub struct Tab<M> {
 pub fn tabs<M>(tabs: Vec<Tab<M>>) -> El<M> {
     let items = tabs.into_iter().map(|tab| {
         let label = text(tab.label.clone())
-            .text_size(13.5)
+            .text_size(theme::TEXT_SIZE)
             .weight(if tab.selected { 600 } else { 400 })
             .color(if tab.selected {
                 theme::text()
@@ -486,6 +498,46 @@ pub fn heading<M>(label: impl Into<String>) -> El<M> {
         .font(Font::Display)
         .text_size(theme::TEXT_TITLE)
         .weight(600)
+}
+
+/// A label in small capitals over a part of a page, a list or a menu ("PINNED", "HARDWARE",
+/// "SORT").
+pub fn section_label<M>(label: &str) -> El<M> {
+    text(label.to_uppercase())
+        .text_size(theme::TEXT_CAPTION)
+        .weight(700)
+        .color(theme::text_tertiary())
+}
+
+/// How many a section holds, beside its label ("PINNED 3").
+pub fn count_badge<M>(count: usize) -> El<M> {
+    row([text(count.to_string())
+        .text_size(theme::TEXT_CAPTION)
+        .color(theme::text_tertiary())])
+    .pad_xy(6.0, 1.0)
+    .bg(theme::control())
+    .radius(theme::RADIUS_CARD)
+}
+
+/// A page's header: what the page is in small capitals (`caption`), its title, a line under it,
+/// and its actions on the right. Library, My PC and Settings share it; the game page has its own.
+pub fn page_header<M>(
+    caption: &str,
+    title: impl Into<String>,
+    line: Option<String>,
+    actions: Vec<El<M>>,
+) -> El<M> {
+    let mut lines = vec![section_label(caption), heading(title).wrap()];
+    if let Some(line) = line {
+        lines.push(hint(line));
+    }
+    let mut parts = vec![col(lines).gap(theme::space::XS).fill_width()];
+    parts.extend(
+        actions
+            .into_iter()
+            .map(|action| action.valign(Align::Start)),
+    );
+    row(parts).gap(theme::space::M)
 }
 
 /// A secondary line of explanation.

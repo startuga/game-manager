@@ -2,6 +2,9 @@
 //! it, as the stores' original files (the app draws them: `app/src/page_art.rs`).
 //!
 //! **Where each comes from**, the first that exists:
+//! 0. The user's own picture (the app's Page art dialog, `set_own`), kept as the file they chose in
+//!    `%APPDATA%\Game Manager\page-art\<game id>.<background|logo>.<ext>` (`:` as `_`), never
+//!    pruned; `clear_own` drops it, and the stores' art shows again.
 //! 1. The store's original, downloaded once into `%LOCALAPPDATA%\Game Manager\cache\page-art`
 //!    (`picture_cache`):
 //!    - by the game's own id: Steam's store API and the store's files beside it, GOG's API, the
@@ -25,23 +28,26 @@
 //! `local` needs no network and says whether the stores may still help; `fetch` asks them. Both
 //! block: call them off the UI thread.
 
-use crate::covers::{download, is_absent, store_number};
+use crate::covers::{download, find_own, is_absent, remove_own, safe_name, save_own, store_number};
 use crate::picture_cache::{PictureCache, describe_file, read_file};
 use crate::text::letters;
-use crate::{Game, Result, Store, epic, gog, picture, steam, xbox};
-use std::path::PathBuf;
+use crate::{Game, Result, Store, epic, gog, json_file, picture, steam, xbox};
+use std::path::{Path, PathBuf};
 
 /// Bump when what is cached changes, so art cached by an older version is not reused.
 const CACHE_FORMAT: u32 = 1;
-/// The page art's folder in `%LOCALAPPDATA%\Game Manager\cache`.
+/// The page art's folder in `%LOCALAPPDATA%\Game Manager\cache`, and the user's own in
+/// `%APPDATA%\Game Manager`.
 const CACHE: &str = "page-art";
 
-/// One picture of a game's page art: a file as the store has it.
+/// One picture of a game's page art: a file as the store (or the user) has it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Art {
     pub file: PathBuf,
     /// A copy the store keeps on this PC, shown until the original has arrived.
     pub stand_in: bool,
+    /// The user's own picture (`set_own`).
+    pub own: bool,
 }
 
 /// A game page's art; either part may be missing.
@@ -78,14 +84,17 @@ impl ArtUrls {
     }
 }
 
+/// The page art's two pictures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Part {
+pub enum Part {
+    /// The wide picture across the top of the page.
     Background,
+    /// The game's logo, drawn over it.
     Logo,
 }
 
 impl Part {
-    const ALL: [Part; 2] = [Part::Background, Part::Logo];
+    pub const ALL: [Part; 2] = [Part::Background, Part::Logo];
 
     fn name(self) -> &'static str {
         match self {
@@ -128,13 +137,35 @@ fn identity(source: Source, part: Part, game: &Game) -> String {
     }
 }
 
-/// The page art that needs no network: the originals in the cache, else the stores' copies on
-/// this PC; and whether the stores' servers may still have an original. Blocking.
+/// The page art that needs no network: the user's own, the originals in the cache, else the
+/// stores' copies on this PC; and whether the stores' servers may still have an original.
+/// Blocking.
 pub fn local(game: &Game) -> (PageArt, bool) {
     let Some(cache) = PictureCache::open(CACHE) else {
         return (PageArt::default(), false);
     };
-    local_in(game, &cache, &Copies::find())
+    local_in(game, own_dir().ok().as_deref(), &cache, &Copies::find())
+}
+
+/// Makes the picture in `image` the game's own `part`, whatever its store has: the file is kept
+/// as it is. Blocking.
+pub fn set_own(game_id: &str, part: Part, image: &Path) -> Result<()> {
+    save_own(&own_dir()?, &own_stem(game_id, part), image).map(|_| ())
+}
+
+/// Drops the game's own `part`, so the stores' shows again. Blocking.
+pub fn clear_own(game_id: &str, part: Part) -> Result<()> {
+    remove_own(&own_dir()?, &own_stem(game_id, part))
+}
+
+/// `%APPDATA%\Game Manager\page-art`: the user's own pictures.
+fn own_dir() -> Result<PathBuf> {
+    json_file::user_file(CACHE)
+}
+
+/// The name of a game's own `part` there, before its format's extension.
+fn own_stem(game_id: &str, part: Part) -> String {
+    format!("{}.{}", safe_name(game_id), part.name())
 }
 
 /// A game's page art from its store's servers (else from the Steam store, by name), cached, then
@@ -143,8 +174,9 @@ pub fn fetch(game: &Game) -> Result<PageArt> {
     let Some(cache) = PictureCache::open(CACHE) else {
         return Ok(PageArt::default());
     };
-    fetch_into(game, &cache)?;
-    Ok(local_in(game, &cache, &Copies::find()).0)
+    let own = own_dir().ok();
+    fetch_into(game, own.as_deref(), &cache)?;
+    Ok(local_in(game, own.as_deref(), &cache, &Copies::find()).0)
 }
 
 /// Deletes cached page art no game uses any more. For a full library only.
@@ -165,6 +197,7 @@ pub fn prune(games: &[Game]) {
 pub fn describe(game: &Game) -> String {
     let cache = PictureCache::existing(CACHE);
     let copies = Copies::find();
+    let own = own_dir().ok();
     let missed = |identity: &str| cache.as_ref().is_some_and(|cache| cache.missed(identity));
     let found = |identity: &str| cache.as_ref().and_then(|cache| cache.find(identity));
     Part::ALL
@@ -176,7 +209,16 @@ pub fn describe(game: &Game) -> String {
             let cached = sources(game.store).iter().find_map(|&source| {
                 found(&identity(source, part, game)).map(|file| (source, file))
             });
-            let text = if let Some((source, file)) = cached {
+            let mine = own
+                .as_deref()
+                .and_then(|dir| find_own(dir, &own_stem(&game.id, part)));
+            let text = if let Some(file) = mine {
+                format!(
+                    "your own picture ({}): {}",
+                    describe_file(&file),
+                    file.display()
+                )
+            } else if let Some((source, file)) = cached {
                 format!(
                     "{} ({}): {}",
                     from(source),
@@ -213,12 +255,29 @@ pub fn describe(game: &Game) -> String {
         .join(" | ")
 }
 
-/// For each part: the original in the cache (from the first source that has it), else the
-/// store's copy on this PC; and whether a source may still have an original of either.
-fn local_in(game: &Game, cache: &PictureCache, copies: &Copies) -> (PageArt, bool) {
+/// For each part: the user's own, else the original in the cache (from the first source that has
+/// it), else the store's copy on this PC; and whether a source may still have an original of a
+/// part the user has none of.
+fn local_in(
+    game: &Game,
+    own: Option<&Path>,
+    cache: &PictureCache,
+    copies: &Copies,
+) -> (PageArt, bool) {
     let mut art = PageArt::default();
     let mut ask = false;
     for part in Part::ALL {
+        if let Some(file) = own.and_then(|dir| find_own(dir, &own_stem(&game.id, part))) {
+            art.set(
+                part,
+                Some(Art {
+                    file,
+                    stand_in: false,
+                    own: true,
+                }),
+            );
+            continue;
+        }
         let identities: Vec<String> = sources(game.store)
             .iter()
             .map(|&source| identity(source, part, game))
@@ -238,6 +297,7 @@ fn local_in(game: &Game, cache: &PictureCache, copies: &Copies) -> (PageArt, boo
                 Some(Art {
                     file,
                     stand_in: false,
+                    own: false,
                 }),
             );
             continue;
@@ -248,6 +308,7 @@ fn local_in(game: &Game, cache: &PictureCache, copies: &Copies) -> (PageArt, boo
             .map(|file| Art {
                 file,
                 stand_in: true,
+                own: false,
             });
         art.set(part, copy);
     }
@@ -255,12 +316,16 @@ fn local_in(game: &Game, cache: &PictureCache, copies: &Copies) -> (PageArt, boo
 }
 
 /// Asks each source in turn for the parts no source before it has given and it hasn't given or
-/// said it has none of: one request a source, for both parts.
-fn fetch_into(game: &Game, cache: &PictureCache) -> Result<()> {
+/// said it has none of: one request a source, for both parts. A part the user has their own of
+/// isn't asked for.
+fn fetch_into(game: &Game, own: Option<&Path>, cache: &PictureCache) -> Result<()> {
     let order = sources(game.store);
+    let mine =
+        |part: Part| own.is_some_and(|dir| find_own(dir, &own_stem(&game.id, part)).is_some());
     for (index, &source) in order.iter().enumerate() {
         let open: Vec<Part> = Part::ALL
             .into_iter()
+            .filter(|&part| !mine(part))
             .filter(|&part| {
                 let mine = identity(source, part, game);
                 order[..index]
@@ -440,7 +505,8 @@ mod tests {
             steam: Some(steam),
             galaxy: Some(galaxy),
         };
-        let find = |game: &Game| found(local_in(game, &cache, &copies));
+        let own = dir.join("own");
+        let find = |game: &Game| found(local_in(game, Some(&own), &cache, &copies));
 
         // Steam's copies show while the originals are asked for.
         let half_life = game("steam:220", "Half-Life 2", Store::Steam);
@@ -513,6 +579,24 @@ mod tests {
             cache.mark_miss(&net_identity(part, &tool));
         }
         assert_eq!(find(&tool), (None, None, false));
+
+        // The user's own picture wins over everything, for its part alone, kept as chosen; the
+        // stores aren't asked for it.
+        let picked = dir.join("picked.png");
+        let mine = png(300, 100);
+        fs::write(&picked, &mine).unwrap();
+        let stem = own_stem(&half_life.id, Part::Background);
+        assert_eq!(stem, "steam_220.background");
+        let saved = save_own(&own, &stem, &picked).unwrap();
+        assert_eq!(fs::read(&saved).unwrap(), mine);
+        let art = local_in(&half_life, Some(&own), &cache, &copies).0;
+        let background = art.background.unwrap();
+        assert!(background.own && background.file == saved);
+        assert!(art.logo.is_some_and(|logo| !logo.own));
+        // Dropping it shows the store's again.
+        remove_own(&own, &stem).unwrap();
+        let art = local_in(&half_life, Some(&own), &cache, &copies).0;
+        assert!(art.background.is_some_and(|background| !background.own));
         fs::remove_dir_all(&dir).unwrap();
     }
 
