@@ -184,6 +184,15 @@ pub struct TextSpec {
     pub align: TextAlign,
 }
 
+/// When an image's animation plays (`El::animate`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Play {
+    /// Whenever the window is in front.
+    Always,
+    /// While the pointer is on it, or on an element holding it (a tile).
+    OnHover,
+}
+
 /// What an element is (its children are laid out by `El::axis` whatever it is).
 pub enum Kind<M> {
     /// Only a box: its fill, outline and children.
@@ -195,6 +204,8 @@ pub enum Kind<M> {
         key: String,
         picture: Arc<super::image::Picture>,
         cover: bool,
+        /// Plays instead of the picture, which shows while it doesn't (`El::animate`).
+        animation: Option<(Arc<super::animation::Animation>, Play)>,
     },
     /// A progress ring, turning while it is shown.
     Spinner,
@@ -452,6 +463,21 @@ impl<M> El<M> {
         }
         self
     }
+    /// An image plays `animation` when `play` says, its picture showing while it doesn't (the
+    /// first frame); the frames are the renderer's (`ui::animation`). `None` leaves it still.
+    pub fn animate(
+        mut self,
+        animation: Option<&Arc<super::animation::Animation>>,
+        play: Play,
+    ) -> Self {
+        if let Kind::Image {
+            animation: plays, ..
+        } = &mut self.kind
+        {
+            *plays = animation.map(|animation| (Arc::clone(animation), play));
+        }
+        self
+    }
     /// The app hears, by this element's `key`, whether it is on the screen or within one window
     /// height of it (`input::near_keys`, `App::near_screen`): a cover tile decodes its picture
     /// only then.
@@ -641,6 +667,7 @@ pub fn image<M>(key: impl Into<String>, picture: Arc<super::image::Picture>) -> 
         key: key.into(),
         picture,
         cover: false,
+        animation: None,
     })
 }
 

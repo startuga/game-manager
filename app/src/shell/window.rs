@@ -23,9 +23,10 @@ use windows::Win32::{
     DWMWA_USE_IMMERSIVE_DARK_MODE, DefWindowProcW, DwmSetWindowAttribute, GetClientRect,
     GetDpiForWindow, GetSystemMetricsForDpi, GetWindowPlacement, HTCLIENT, HTTOP, HTTOPLEFT,
     HTTOPRIGHT, HWND, MINMAXINFO, NCCALCSIZE_PARAMS, POINT, PostMessageW, RECT, SM_CXPADDEDBORDER,
-    SM_CYFRAME, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMAXIMIZED, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, ScreenToClient, SetWindowPos, ShowWindow,
-    WINDOWPLACEMENT, WM_CLOSE, WM_NCCALCSIZE, WM_NCHITTEST,
+    SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMAXIMIZED,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, ScreenToClient,
+    SetWindowPos, ShowWindow, SystemParametersInfoW, WINDOWPLACEMENT, WM_CLOSE, WM_NCCALCSIZE,
+    WM_NCHITTEST,
 };
 
 use super::ctx::WindowCommand;
@@ -84,6 +85,22 @@ fn set_attribute(window: isize, attribute: u32, value: &i32) -> bool {
         )
     }
     .is_ok()
+}
+
+/// Whether Windows shows animations (Settings, Accessibility, Visual effects, Animation effects):
+/// when it doesn't, animated art keeps still. Shown when the setting can't be read.
+pub fn animations_shown() -> bool {
+    let mut shown = windows_core::BOOL(1);
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to the pointer, which lives for the call.
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION as u32,
+            0,
+            (&raw mut shown).cast(),
+            0,
+        )
+    };
+    !read.as_bool() || shown.as_bool()
 }
 
 pub fn dpi(window: isize) -> u32 {

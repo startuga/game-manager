@@ -11,7 +11,7 @@
 //!   icon made into one as Steam makes covers from wide pictures (the icon across the top part,
 //!   its edges drawn out around it and blurred: `picture::capsule`), and its icon on a card until
 //!   that is ready. A pin on a dark chip when it is pinned, and its name on one line under it
-//!   (whole in the tooltip). Under the pointer a light tint goes over all of it
+//!   (whole in the tooltip). An animated cover plays while the pointer is on its tile. Under the pointer a light tint goes over all of it
 //!   (`hover_overlay`: the picture would hide a fill). A click opens the game's page; a
 //!   right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`).
 //! - **The grid**: as many tiles a row as the page's width holds (`library::columns`): 4 at the
@@ -21,7 +21,7 @@ use crate::covers::{COVER_HEIGHT, COVER_WIDTH};
 use crate::game_menu::MenuMessage;
 use crate::library;
 use crate::shell::WindowInfo;
-use crate::ui::el::{Align, Edges, El, col, glyph, image, layers, row, text};
+use crate::ui::el::{Align, Edges, El, Play, col, glyph, image, layers, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{hint, page_header, working};
 use crate::{GameManager, Message};
@@ -94,7 +94,12 @@ impl GameManager {
         let art = match picture {
             Some((kind, picture)) => image(format!("{kind}:{}", game.id), picture.clone())
                 .cover()
-                .radius(theme::RADIUS_CARD),
+                .radius(theme::RADIUS_CARD)
+                // An animated cover plays under the pointer.
+                .animate(
+                    self.covers.animation(&game.id).filter(|_| kind == "cover"),
+                    Play::OnHover,
+                ),
             None => row([self.icon(game, crate::icons::LARGE)])
                 .justify(Align::Center)
                 .bg(theme::card())

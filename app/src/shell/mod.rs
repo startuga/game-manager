@@ -36,6 +36,10 @@
 //!   (`WM_SETTINGCHANGE` naming "ImmersiveColorSet", `WM_DWMCOLORIZATIONCOLORCHANGED`) go to
 //!   `App::look_changed`.
 //! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`).
+//! - **Animated pictures** (`ui::animation`) play while the window is in front and Windows shows
+//!   animations (`window::animations_shown`, followed through `WM_SETTINGCHANGE`). A frame due
+//!   within `SOON` is drawn at the next refresh; a later one gets a timer (`ANIMATION_TIMER`), so a
+//!   24-frame animation draws 24 times a second, not at the display's rate.
 //! - **UI Automation**: `WM_GETOBJECT` and the actions it posts (`ui::uia`).
 //!
 //! Windows' message and style constants are `i32` in these bindings, so messages are matched as
@@ -60,17 +64,17 @@ use windows::Win32::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DragAcceptFiles, DragFinish, DragQueryFileW,
     GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
-    IDC_IBEAM, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED, SW_SHOWNORMAL,
-    SetCapture, SetCursor, SetFocus, SetProcessDpiAwarenessContext, SetTimer, ShowWindow,
-    TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END,
-    VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
-    VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_CHAR, WM_CONTEXTMENU, WM_DPICHANGED, WM_DROPFILES,
-    WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT,
-    WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION,
-    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-    WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE,
-    WM_SIZE, WM_TIMER, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
+    IDC_IBEAM, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED,
+    SPI_SETCLIENTAREAANIMATION, SW_SHOWNORMAL, SetCapture, SetCursor, SetFocus,
+    SetProcessDpiAwarenessContext, SetTimer, ShowWindow, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR,
+    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_CHAR,
+    WM_CONTEXTMENU, WM_DPICHANGED, WM_DROPFILES, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_GETOBJECT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
+    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS,
+    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -99,6 +103,10 @@ const FIRST_LATER_TIMER: usize = 1000;
 /// that went unused meanwhile (`Renderer::trim`).
 const TRIM_TIMER: usize = 3;
 const TRIM_DELAY_MS: u32 = 2000;
+/// Fires when an animation's next frame is due (`render::Drawn::next_frame`).
+const ANIMATION_TIMER: usize = 4;
+/// A frame due this soon is drawn at the display's next refresh instead of by a timer.
+const SOON: Duration = Duration::from_millis(20);
 
 /// The F of Ctrl+F (its virtual-key code is its letter's).
 const FIND_KEY: i32 = b'F' as i32;
@@ -294,6 +302,10 @@ struct Shell<A: App> {
     /// The frame must be drawn again.
     redraw: bool,
     minimized: bool,
+    /// The window is in front (`WM_ACTIVATEAPP`), and Windows shows animations: animated
+    /// pictures play.
+    in_front: bool,
+    animations_shown: bool,
     tracking: bool,
     /// The text box a dialog opened with (its first control), given the keyboard once.
     dialog_edit: Option<u64>,
@@ -356,6 +368,8 @@ impl<A: App> Shell<A> {
             stale: true,
             redraw: true,
             minimized: false,
+            in_front: true,
+            animations_shown: window::animations_shown(),
             tracking: false,
             dialog_edit: None,
             near: HashSet::new(),
@@ -508,6 +522,8 @@ impl<A: App> Shell<A> {
                     self.transparent,
                 )
             }?;
+            let mut renderer = renderer;
+            renderer.set_play(self.in_front && self.animations_shown);
             self.renderer = Some(renderer);
         }
         let (Some(renderer), Some(frame)) = (self.renderer.as_mut(), self.frame.as_ref()) else {
@@ -515,7 +531,15 @@ impl<A: App> Shell<A> {
         };
         renderer.resize(self.size.0, self.size.1, self.dpi as f32)?;
         let drawn = renderer.draw(frame, &self.ui, &self.text)?;
-        self.redraw = drawn.animating;
+        // An animation's next frame: at the next refresh when it is due soon, else by a timer.
+        let soon = drawn.next_frame.is_some_and(|next| next <= SOON);
+        if let Some(next) = drawn.next_frame.filter(|_| !soon) {
+            let ms = u32::try_from(next.as_millis()).unwrap_or(u32::MAX);
+            // SAFETY: a timer on our own window; the same id restarts a running one.
+            unsafe { SetTimer(Some(hwnd(self.hwnd)), ANIMATION_TIMER, ms, None) };
+        }
+        let animating = drawn.animating || soon;
+        self.redraw = animating;
         if drawn.dropped {
             // SAFETY: a timer on our own window; the same id restarts a running one.
             unsafe { SetTimer(Some(hwnd(self.hwnd)), TRIM_TIMER, TRIM_DELAY_MS, None) };
@@ -526,7 +550,16 @@ impl<A: App> Shell<A> {
             self.redraw = true;
             return Ok(true);
         }
-        Ok(drawn.animating)
+        Ok(animating)
+    }
+
+    /// Animated pictures play, or keep still, as `in_front` and `animations_shown` now say.
+    fn follow_play(&mut self) {
+        let play = self.in_front && self.animations_shown;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_play(play);
+        }
+        self.redraw = true;
     }
 
     fn message(&mut self, message: i32, wparam: usize, lparam: isize) -> Option<isize> {
@@ -559,6 +592,13 @@ impl<A: App> Shell<A> {
             }
             WM_ACTIVATEAPP => {
                 efficiency::set(wparam == 0);
+                self.in_front = wparam != 0;
+                self.follow_play();
+                None
+            }
+            WM_SETTINGCHANGE if wparam == SPI_SETCLIENTAREAANIMATION as usize => {
+                self.animations_shown = window::animations_shown();
+                self.follow_play();
                 None
             }
             WM_SETTINGCHANGE if names_colors(lparam) => {
@@ -650,6 +690,12 @@ impl<A: App> Shell<A> {
             }
             WM_TIMER if wparam == CARET_TIMER => {
                 self.blink();
+                Some(0)
+            }
+            WM_TIMER if wparam == ANIMATION_TIMER => {
+                // SAFETY: stops our own timer; the next frame sets it again.
+                let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), ANIMATION_TIMER) };
+                self.redraw = true;
                 Some(0)
             }
             WM_TIMER if wparam == TRIM_TIMER => {

@@ -27,8 +27,10 @@
 //! - **`Painter`** is what custom painters draw with (the Play button; the game page's art band
 //!   fades with `fill_linear`, a gradient in any direction through several stops).
 //!
-//! A frame with a spinner reports `animating`, so the loop keeps drawing while it turns; any other
-//! frame is drawn once. `present` answering `false` means the device was lost: the caller makes a
+//! A frame with a spinner reports `animating`, so the loop keeps drawing while it turns; one with an
+//! animated picture playing (`El::animate`) reports when its next frame is due (`next_frame`), and
+//! a frame's picture goes into the bitmap already uploaded for it (`upload`); any other frame is
+//! drawn once. `present` answering `false` means the device was lost: the caller makes a
 //! new renderer.
 
 use std::cell::{Cell, RefCell};
@@ -36,7 +38,7 @@ use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows::Win32::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_NONE,
     D2D1_BITMAP_PROPERTIES1, D2D1_COLOR_F, D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2,
@@ -55,7 +57,8 @@ use windows_canvas::{
 use windows_core::Interface;
 use windows_text::{FontWeight, TextAlignment, TextFormat, TextLayout, Trimming, WordWrapping};
 
-use super::el::{Edges, El, Font, Interaction, Kind, Rect, TextAlign, TextSpec};
+use super::animation::Animation;
+use super::el::{Edges, El, Font, Interaction, Kind, Play, Rect, TextAlign, TextSpec};
 use super::image::Picture;
 use super::input::{self, Frame, ITEM_HEIGHT, UiState};
 use super::layout::{Measure, Placed, item_spec};
@@ -205,6 +208,8 @@ pub struct Drawn {
     /// Pictures this frame didn't draw let go of their bitmaps: `Renderer::trim` can soon give
     /// Direct2D's own textures back too.
     pub dropped: bool,
+    /// An animation's next frame is due this soon: draw again then.
+    pub next_frame: Option<Duration>,
 }
 
 /// Pictures' bitmaps by key, each with its picture and the number of the frame that last drew it.
@@ -276,6 +281,8 @@ pub struct Renderer {
     /// Frames drawn (and captured), for `retain_drawn`.
     frames: u64,
     start: Instant,
+    /// Animations may play: the window is in front and Windows shows animations.
+    play: bool,
 }
 
 impl Renderer {
@@ -307,7 +314,13 @@ impl Renderer {
             bitmaps: HashMap::new(),
             frames: 0,
             start: Instant::now(),
+            play: true,
         })
+    }
+
+    /// Whether animations may play (see `play`); stopped, they show their still pictures.
+    pub fn set_play(&mut self, play: bool) {
+        self.play = play;
     }
 
     /// Whether Windows' backdrop shows behind the window (see `transparent`).
@@ -358,10 +371,13 @@ impl Renderer {
             elapsed,
             now: Instant::now(),
             animating: false,
+            play: self.play,
+            within_hover: false,
+            next_frame: None,
         };
         painter.element(&frame.root, &frame.placed, ui);
         painter.overlays(frame, ui);
-        let animating = painter.animating;
+        let (animating, next_frame) = (painter.animating, painter.next_frame);
         let dropped = retain_drawn(&mut self.bitmaps, self.frames);
         // The session ends (EndDraw) before presenting.
         drop(session);
@@ -370,6 +386,7 @@ impl Renderer {
             presented,
             animating,
             dropped,
+            next_frame,
         })
     }
 
@@ -432,6 +449,10 @@ impl Renderer {
                 elapsed,
                 now: Instant::now(),
                 animating: false,
+                // A capture shows still pictures.
+                play: false,
+                within_hover: false,
+                next_frame: None,
             };
             painter.element(&frame.root, &frame.placed, ui);
             painter.overlays(frame, ui);
@@ -482,9 +503,15 @@ pub struct Painter<'a> {
     /// This frame's number, stamped on each bitmap it draws.
     frame: u64,
     elapsed: f32,
-    /// The frame's time, for the hover fades.
+    /// The frame's time, for the hover fades and animations.
     now: Instant,
     animating: bool,
+    /// Animations may play (`Renderer::play`).
+    play: bool,
+    /// Drawing inside the element under the pointer: images that play on hover play.
+    within_hover: bool,
+    /// The soonest an animation's next frame is due.
+    next_frame: Option<Duration>,
 }
 
 /// `from` moved towards `to` by `amount` (0–1); a missing colour is the other one, transparent.
@@ -670,11 +697,25 @@ impl Painter<'_> {
     /// Uploads `picture` once per key, again when the view hands over another, and marks it drawn
     /// in this frame. False when it can't be.
     fn upload(&mut self, key: &str, picture: &Arc<Picture>) -> bool {
-        if let Some((_, kept, drawn)) = self.bitmaps.get_mut(key)
-            && Arc::ptr_eq(kept, picture)
-        {
-            *drawn = self.frame;
-            return true;
+        if let Some((bitmap, kept, drawn)) = self.bitmaps.get_mut(key) {
+            if Arc::ptr_eq(kept, picture) {
+                *drawn = self.frame;
+                return true;
+            }
+            // Another picture of the same size (an animation's next frame) goes into the same
+            // bitmap.
+            if (kept.width, kept.height) == (picture.width, picture.height) {
+                // SAFETY: `pixels` holds `width * 4 * height` bytes (`Picture`), the bitmap's
+                // size and pitch, for the whole bitmap (no rectangle).
+                let copied = unsafe {
+                    bitmap.CopyFromMemory(None, picture.pixels.as_ptr().cast(), picture.width * 4)
+                };
+                if copied.is_ok() {
+                    *kept = Arc::clone(picture);
+                    *drawn = self.frame;
+                    return true;
+                }
+            }
         }
         let Some(bitmap) = self.create_bitmap(picture) else {
             return false;
@@ -925,6 +966,8 @@ impl Painter<'_> {
         let faded = el.fade_out.is_some_and(|from| self.push_fade(rect, from));
         let hover = ui.hover == Some(placed.id);
         let pressed = hover && ui.pressed == Some(placed.id);
+        let within_hover = self.within_hover;
+        self.within_hover |= hover;
         let fill = if pressed {
             input::fill_for(el, true, true)
         } else {
@@ -954,13 +997,19 @@ impl Painter<'_> {
             Kind::Image {
                 key,
                 picture,
-                cover: false,
-            } => self.picture(key, picture, rect.inset(el.padding)),
-            Kind::Image {
-                key,
-                picture,
-                cover: true,
-            } => self.cover(key, picture, rect.inset(el.padding), el.radius),
+                cover,
+                animation,
+            } => {
+                let picture = match animation {
+                    Some((animation, play)) => self.animation_frame(animation, *play, picture),
+                    None => Arc::clone(picture),
+                };
+                if *cover {
+                    self.cover(key, &picture, rect.inset(el.padding), el.radius);
+                } else {
+                    self.picture(key, &picture, rect.inset(el.padding));
+                }
+            }
             Kind::Spinner => self.spinner(rect),
             Kind::DropDown {
                 items, selected, ..
@@ -1039,6 +1088,23 @@ impl Painter<'_> {
             self.pop_layer();
         }
         self.alpha = saved;
+        self.within_hover = within_hover;
+    }
+
+    /// The picture an animated image draws now: its frame while it plays (`Play`), else its still
+    /// `picture`. Notes when its next frame is due.
+    fn animation_frame(
+        &mut self,
+        animation: &Animation,
+        play: Play,
+        picture: &Arc<Picture>,
+    ) -> Arc<Picture> {
+        let playing = self.play && (play == Play::Always || self.within_hover);
+        let (frame, next) = animation.frame(self.now, playing);
+        if let Some(next) = next {
+            self.next_frame = Some(self.next_frame.map_or(next, |soonest| soonest.min(next)));
+        }
+        frame.unwrap_or_else(|| Arc::clone(picture))
     }
 
     /// A text box's inside: its text or placeholder, the selection, the caret and an IME

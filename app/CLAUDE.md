@@ -64,7 +64,8 @@ samples in `crates/samples/`) instead of guessing.
     `input.rs` (hit-testing, hover, focus, keys, scroll, drop-downs; `UiState`; tested),
     `render.rs` (drawing; text and bitmap caches), `uia.rs` (UI Automation), `theme.rs` (design
     tokens), `widgets.rs` (controls), `image.rs` (icons at the pixels they take and covers at
-    full size, decoded in pure Rust through `gm_core::picture`; the PNG capture), `text_edit.rs` (a
+    full size, decoded in pure Rust through `gm_core::picture`; the PNG capture), `animation.rs`
+    (animated WebP pictures playing: a thread each, one frame decoded ahead), `text_edit.rs` (a
     text box's editing: caret, selection, words, undo; tested).
 - `shell/` – the window: `mod.rs` (`App`, `run`, messages → toolkit), `window.rs` (title bar,
   frame, DPI), `text_input.rs` (text boxes' keys, characters, clicks, clipboard, caret blink,
@@ -164,6 +165,12 @@ samples in `crates/samples/`) instead of guessing.
     `covers.rs` keeps only each cover's file and decodes the covers of those tiles, dropping the
     others' pixels: off the Library none are held.
   - A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
+  - **Animated** (`El::animate`, `ui::animation`): an animated WebP (the user's own cover or page
+    art) shows its first frame, and plays `Play::Always` (the page's band) or `Play::OnHover`
+    (a tile, under the pointer), only while the window is in front and Windows shows animations.
+    Frames are decoded one ahead on the animation's own thread, never all at once, and go into
+    the same bitmap (`CopyFromMemory`) without rebuilding the view; the shell draws again when
+    the next is due (`Drawn::next_frame`, a timer). A capture shows the still pictures.
 - **Dragging**: `on_drag` sends the pointer's movement while the button is held (the sidebar's
   `resize_grip`, which also shows the resize cursor).
 - **Sliders** (`el::slider`): a press or drag moves the thumb in `UiState::sliding` (drawn only);
@@ -172,7 +179,8 @@ samples in `crates/samples/`) instead of guessing.
 - **Rows measure filling children at their share**: wrapped text beside a fixed label is as tall
   as the lines it needs in the width left to it (`layout::row_sizes`).
 - **Motion**: hover fills fade over `input::HOVER_FADE`; spinners turn. A frame that moves reports
-  `Drawn::animating` and the loop draws again; otherwise nothing draws at idle.
+  `Drawn::animating` and the loop draws again; an animated picture reports when its next frame is
+  due (`Drawn::next_frame`); otherwise nothing draws at idle.
 - **Background work** goes through `Ctx::spawn_background` (the thread pool; the message comes
   back through `WM_WAKE`), or `Ctx::spawn_stream` for work that sends several messages as it goes
   (covers). A message for later goes through `Ctx::after` (a one-shot window timer, so no pool

@@ -19,6 +19,11 @@
 //! - **The user's own art** (the Page art dialog, from the band's button or the game menu): Choose…
 //!   picks a picture for the background or the logo (`page_art::set_own`), Reset drops it
 //!   (`clear_own`); either way the game's art is read again (`reload`) while what shows stays.
+//! - **Animated art** (an animated WebP background or logo, the user's own): its first frame shows
+//!   until it plays, and it plays whenever the window is in front (`ui::animation`,
+//!   `el::Play::Always`). A background's frames are made no larger than `BACKGROUND_FRAMES`; a
+//!   logo's as large as it is drawn (`theme::ART_LOGO_MAX`), and not cut to what shows, as its
+//!   frames could each be cut differently.
 //! - Pictures are kept only for the game still selected; a stand-in never replaces an original
 //!   (an older job's answer arriving late).
 
@@ -27,10 +32,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gm_core::page_art::{self, PageArt, Part};
+use gm_core::picture;
 
 use crate::app_view::{dialog, field_label};
 use crate::shell::WindowInfo;
 use crate::shell::ctx::{Ctx, FilePicker};
+use crate::ui::animation::Animation;
 use crate::ui::el::{El, col, row};
 use crate::ui::image::{self, Picture};
 use crate::ui::theme;
@@ -39,6 +46,9 @@ use crate::{GameManager, Message, Page};
 
 /// The blur's size in pixels (its longer side): drawn stretched across the page, it is all colour.
 const BLUR_SIZE: u32 = 48;
+/// The most an animated background's frames are made to cover, in pixels: Steam's wide pictures at
+/// their largest. A smaller animation keeps its own size.
+const BACKGROUND_FRAMES: (u32, u32) = (3840, 1240);
 
 #[derive(Clone)]
 pub(crate) enum PageArtMessage {
@@ -79,6 +89,9 @@ pub(crate) enum BlurSource {
 pub(crate) struct ArtPictures {
     pub background: Option<Arc<Picture>>,
     pub logo: Option<Arc<Picture>>,
+    /// The parts' animations, when they are animated pictures (their pictures are first frames).
+    pub background_animation: Option<Arc<Animation>>,
+    pub logo_animation: Option<Arc<Animation>>,
     /// The parts that are the user's own (`page_art::set_own`): the dialog offers Reset.
     pub own_background: bool,
     pub own_logo: bool,
@@ -92,6 +105,9 @@ pub(crate) struct Shown<'a> {
     /// The background is the cover or the icon, blurred.
     pub blurred: bool,
     pub logo: Option<&'a Arc<Picture>>,
+    /// The background's and the logo's animations, when they are animated pictures.
+    pub background_animation: Option<&'a Arc<Animation>>,
+    pub logo_animation: Option<&'a Arc<Animation>>,
 }
 
 #[derive(Default)]
@@ -120,6 +136,8 @@ impl PageArtState {
                 background: None,
                 blurred: false,
                 logo: None,
+                background_animation: None,
+                logo_animation: None,
             };
         }
         let art = self.art.as_ref().map(|(art, _)| art);
@@ -133,6 +151,10 @@ impl PageArtState {
             background,
             blurred,
             logo: art.and_then(|art| art.logo.as_ref()),
+            background_animation: art
+                .filter(|_| !blurred)
+                .and_then(|art| art.background_animation.as_ref()),
+            logo_animation: art.and_then(|art| art.logo_animation.as_ref()),
         }
     }
 
@@ -205,10 +227,11 @@ impl GameManager {
             }
             state.reload = false;
             let fetch = state.fetched.insert(game.id.clone());
+            let scale = context.scale();
             context.spawn_stream(move |send| {
                 let (art, ask) = page_art::local(&game);
                 let last = !(ask && fetch);
-                send(PageArtMessage::Art(game.id.clone(), decode(&art), last).into());
+                send(PageArtMessage::Art(game.id.clone(), decode(&art, scale), last).into());
                 if last {
                     return;
                 }
@@ -217,7 +240,7 @@ impl GameManager {
                 if let Ok(found) = page_art::fetch(&game)
                     && found != art
                 {
-                    send(PageArtMessage::Art(game.id, decode(&found), true).into());
+                    send(PageArtMessage::Art(game.id, decode(&found, scale), true).into());
                 }
             });
             return;
@@ -388,18 +411,41 @@ impl GameManager {
     }
 }
 
-/// The art's files decoded at full size, the logo cut to what shows; a part that can't be read is
-/// left out.
-fn decode(art: &PageArt) -> ArtPictures {
+/// The art's files decoded at full size, a still logo cut to what shows, and the animations of
+/// animated ones (their frames made for the window's `scale`); a part that can't be read is left
+/// out.
+fn decode(art: &PageArt, scale: f32) -> ArtPictures {
     let read = |part: &Option<page_art::Art>| std::fs::read(&part.as_ref()?.file).ok();
     let own = |part: &Option<page_art::Art>| part.as_ref().is_some_and(|art| art.own);
+    let background_bytes = read(&art.background);
+    let background = background_bytes
+        .as_deref()
+        .and_then(image::decode_cover)
+        .map(Arc::new);
+    let background_animation = background_bytes
+        .filter(|_| background.is_some())
+        .and_then(|bytes| Animation::new(bytes, BACKGROUND_FRAMES));
+    let (logo, logo_animation) = match read(&art.logo) {
+        Some(bytes) if picture::is_animated(&bytes) => {
+            let logo = image::decode_cover(&bytes).map(Arc::new);
+            // Its frames as large as the logo is drawn.
+            let size = logo.as_ref().map_or((1, 1), |logo| {
+                let (most_w, most_h) = theme::ART_LOGO_MAX;
+                let (w, h) = (logo.width.max(1) as f32, logo.height.max(1) as f32);
+                let fit = (most_w / w).min(most_h / h) * scale;
+                ((w * fit).round() as u32, (h * fit).round() as u32)
+            });
+            let animation = logo.as_ref().and_then(|_| Animation::new(bytes, size));
+            (logo, animation)
+        }
+        Some(bytes) => (image::decode_logo(&bytes).map(Arc::new), None),
+        None => (None, None),
+    };
     ArtPictures {
-        background: read(&art.background)
-            .and_then(|bytes| image::decode_cover(&bytes))
-            .map(Arc::new),
-        logo: read(&art.logo)
-            .and_then(|bytes| image::decode_logo(&bytes))
-            .map(Arc::new),
+        background,
+        logo,
+        background_animation,
+        logo_animation,
         own_background: own(&art.background),
         own_logo: own(&art.logo),
     }

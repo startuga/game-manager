@@ -11,6 +11,8 @@
 //!   draws it (`el::El::cover`), so covers don't depend on the display's scaling.
 //! - **Capsules** (`decode_capsule`): a game with no cover gets its icon made into one, at a Steam
 //!   cover's size (`picture::capsule`), and drawn like a cover.
+//! - **Animations**: an animated picture shows its first frame (`decode_cover`) until it plays;
+//!   then each frame is made as it comes due (`decode_frame`, `animation.rs`).
 //!
 //! Decoding runs on the background thread that read the bytes, so the UI thread only uploads
 //! ready pixels.
@@ -80,6 +82,13 @@ pub fn decode_capsule(bytes: &[u8]) -> Option<Picture> {
     let icon = picture::icon(bytes, picture::CAPSULE_WIDTH).ok()?;
     let capsule = picture::capsule(icon).ok()?;
     Some(Picture::from_premultiplied(capsule))
+}
+
+/// An animation's frame (straight RGBA, `picture::Frames`) for drawing: premultiplied, no larger
+/// than it takes to cover `size` pixels (`picture::covering`).
+pub fn decode_frame(frame: Rgba, size: (u32, u32)) -> Option<Picture> {
+    let covering = picture::covering(frame, size.0, size.1).ok()?;
+    Some(Picture::from_premultiplied(covering))
 }
 
 /// A game's logo decoded at full size and cut to what shows (`picture::trimmed`); `None` when it is

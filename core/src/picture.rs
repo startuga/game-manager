@@ -29,6 +29,12 @@
 //!   cover's width in its upper part, and around it its own edges drawn out to the cover's and
 //!   blurred. The icon is cut to what shows first and laid over its average colour for the blur,
 //!   so its clear corners lend it no black.
+//! - **Animations** (`Frames`): an animated WebP is read one frame at a time as it plays, never
+//!   all at once: a 600 × 900 cover is 2 MB a frame, a four-second loop hundreds of MB. `decode`
+//!   gives its first frame, the picture shown while it doesn't play. Each frame is the whole
+//!   picture (image-webp lays it over the ones before), shown for its own duration; 10 ms or
+//!   less counts as 100 ms, as browsers show such GIFs. It plays as many times as the file says.
+//!   `covering` then makes each frame premultiplied and no larger than it is drawn.
 //! - **Writing**: `encode_png` only, for the window's capture. Nothing else is ever re-encoded:
 //!   covers and page art are kept as the stores' files are (`covers.rs`, `page_art.rs`).
 
@@ -38,6 +44,7 @@ use fast_image_resize::images::Image;
 use fast_image_resize::{FilterType, MulDiv, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use std::fmt;
 use std::io::Cursor;
+use std::time::Duration;
 use thiserror::Error;
 
 /// Larger pictures are refused before they are decoded.
@@ -793,6 +800,119 @@ fn box_blur(pixels: &[u8], width: usize, height: usize, step: (usize, usize)) ->
     out
 }
 
+/// A frame this short or shorter shows for `SLOW_FRAME_MS` (see the module's doc).
+const SHORTEST_FRAME_MS: u32 = 10;
+const SLOW_FRAME_MS: u32 = 100;
+
+/// Whether `bytes` are an animated picture `Frames` can play.
+pub fn is_animated(bytes: &[u8]) -> bool {
+    format(bytes) == Some(Format::Webp)
+        && image_webp::WebPDecoder::new(Cursor::new(bytes))
+            .is_ok_and(|decoder| decoder.is_animated() && decoder.num_frames() > 1)
+}
+
+/// An animated picture's frames, read one at a time as it plays (see the module's doc).
+pub struct Frames {
+    decoder: image_webp::WebPDecoder<Cursor<Vec<u8>>>,
+    width: u32,
+    height: u32,
+    /// How many times it plays in all; `None`: forever.
+    plays: Option<u32>,
+    /// How many times it has started.
+    started: u32,
+    /// The decoder's output: RGBA, or RGB when the picture has no alpha.
+    buffer: Vec<u8>,
+}
+
+impl Frames {
+    /// The frames of an animated WebP; `None` when `bytes` are no such picture, or one too large.
+    pub fn new(bytes: Vec<u8>) -> Option<Self> {
+        if format(&bytes) != Some(Format::Webp) {
+            return None;
+        }
+        let decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+        if !decoder.is_animated() || decoder.num_frames() < 2 {
+            return None;
+        }
+        let (width, height) = decoder.dimensions();
+        check_size(width, height).ok()?;
+        let buffer = vec![0; decoder.output_buffer_size()?];
+        let plays = match decoder.loop_count() {
+            image_webp::LoopCount::Forever => None,
+            image_webp::LoopCount::Times(times) => Some(u32::from(times.get())),
+        };
+        Some(Self {
+            decoder,
+            width,
+            height,
+            plays,
+            started: 1,
+            buffer,
+        })
+    }
+
+    /// The picture's size in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// The next frame (straight RGBA) and how long it shows. After the last it starts over, as
+    /// many times as the file says; `None` once it has played them all (its last frame stays).
+    pub fn next_frame(&mut self) -> Result<Option<(Rgba, Duration)>, PictureError> {
+        let fail = |error: image_webp::DecodingError| damaged(Format::Webp, error);
+        let ms = match self.decoder.read_frame(&mut self.buffer) {
+            Ok(ms) => ms,
+            Err(image_webp::DecodingError::NoMoreFrames) => {
+                if self.plays.is_some_and(|plays| self.started >= plays) {
+                    return Ok(None);
+                }
+                self.started += 1;
+                self.decoder.reset_animation();
+                self.decoder.read_frame(&mut self.buffer).map_err(fail)?
+            }
+            Err(error) => return Err(fail(error)),
+        };
+        let ms = if ms <= SHORTEST_FRAME_MS {
+            SLOW_FRAME_MS
+        } else {
+            ms
+        };
+        let pixels = if self.decoder.has_alpha() {
+            self.buffer.clone()
+        } else {
+            self.buffer
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+                .collect()
+        };
+        let frame = Rgba::new(self.width, self.height, pixels, Format::Webp)?;
+        Ok(Some((frame, Duration::from_millis(u64::from(ms)))))
+    }
+
+    /// Back to the first frame, its plays counted afresh.
+    pub fn rewind(&mut self) {
+        self.decoder.reset_animation();
+        self.started = 1;
+    }
+}
+
+/// A straight-RGBA picture made premultiplied and, when larger, shrunk with Catmull-Rom to the
+/// smallest size that still covers `width` × `height`, its shape kept: an animation's frames are
+/// then no larger than they are drawn.
+pub fn covering(picture: Rgba, width: u32, height: u32) -> Result<Rgba, PictureError> {
+    let scale = (f64::from(width) / f64::from(picture.width.max(1)))
+        .max(f64::from(height) / f64::from(picture.height.max(1)));
+    let premultiplied = premultiply(picture)?;
+    if scale >= 1.0 {
+        return Ok(premultiplied);
+    }
+    let side = |value: u32| ((f64::from(value) * scale).round() as u32).max(1);
+    let (w, h) = (side(premultiplied.width), side(premultiplied.height));
+    resized(premultiplied, w, h)
+}
+
 /// Straight RGBA written as a PNG file's bytes.
 pub fn encode_png(picture: &Rgba) -> Result<Vec<u8>, PictureError> {
     let fail = |error: png::EncodingError| PictureError::Encode(error.to_string());
@@ -1486,5 +1606,108 @@ mod tests {
         for (x, y) in [(0, 0), (599, 0), (0, 899), (599, 899)] {
             assert!(pixel(x, y)[1] > 150, "{:?}", pixel(x, y));
         }
+    }
+
+    /// An animated WebP of whole-canvas `frames` (RGBA, `width` × `height`, each shown `ms`),
+    /// played `plays` times (0: forever), as encoders write one: each frame a lossless still.
+    fn animated_webp(width: u32, height: u32, frames: &[(Vec<u8>, u32)], plays: u16) -> Vec<u8> {
+        let chunk = |name: &[u8; 4], data: &[u8]| {
+            let mut chunk = name.to_vec();
+            chunk.extend((data.len() as u32).to_le_bytes());
+            chunk.extend(data);
+            if data.len() % 2 == 1 {
+                chunk.push(0);
+            }
+            chunk
+        };
+        let three = |value: u32| value.to_le_bytes()[..3].to_vec();
+        let mut body = b"WEBP".to_vec();
+        // Animation and alpha; the canvas size less one.
+        let mut vp8x = vec![0x02 | 0x10, 0, 0, 0];
+        vp8x.extend(three(width - 1));
+        vp8x.extend(three(height - 1));
+        body.extend(chunk(b"VP8X", &vp8x));
+        let mut anim = vec![0; 4];
+        anim.extend(plays.to_le_bytes());
+        body.extend(chunk(b"ANIM", &anim));
+        for (pixels, ms) in frames {
+            let mut still = Vec::new();
+            image_webp::WebPEncoder::new(&mut still)
+                .encode(pixels, width, height, image_webp::ColorType::Rgba8)
+                .unwrap();
+            let at = still.windows(4).position(|name| name == b"VP8L").unwrap();
+            let mut frame = [
+                three(0),
+                three(0),
+                three(width - 1),
+                three(height - 1),
+                three(*ms),
+            ]
+            .concat();
+            // Not blended: each frame replaces the canvas.
+            frame.push(0x02);
+            frame.extend(&still[at..]);
+            body.extend(chunk(b"ANMF", &frame));
+        }
+        let mut file = b"RIFF".to_vec();
+        file.extend((body.len() as u32).to_le_bytes());
+        file.extend(body);
+        file
+    }
+
+    #[test]
+    fn an_animation_plays_its_frames_for_their_durations_as_many_times_as_it_says() {
+        let (red, blue) = (RED.repeat(16), BLUE.repeat(16));
+        let file = animated_webp(4, 4, &[(red.clone(), 50), (blue.clone(), 0)], 2);
+        assert!(is_animated(&file));
+        // Still, it is its first frame.
+        assert_eq!(decode(&file).unwrap().pixels, red);
+        let mut frames = Frames::new(file).unwrap();
+        assert_eq!(frames.size(), (4, 4));
+        let mut next = || {
+            frames
+                .next_frame()
+                .unwrap()
+                .map(|(frame, shows)| (frame.pixels, shows.as_millis()))
+        };
+        // A frame of 0 ms shows for 100, as browsers show it.
+        for _ in 0..2 {
+            assert_eq!(next(), Some((red.clone(), 50)));
+            assert_eq!(next(), Some((blue.clone(), 100)));
+        }
+        // Played twice: done, the last frame stays.
+        assert_eq!(next(), None);
+        frames.rewind();
+        assert_eq!(frames.next_frame().unwrap().unwrap().0.pixels, red);
+        // Forever goes round and round.
+        let mut forever =
+            Frames::new(animated_webp(4, 4, &[(red.clone(), 50), (blue, 50)], 0)).unwrap();
+        for _ in 0..7 {
+            assert!(forever.next_frame().unwrap().is_some());
+        }
+        // A still picture is no animation.
+        let mut still = Vec::new();
+        image_webp::WebPEncoder::new(&mut still)
+            .encode(&red, 4, 4, image_webp::ColorType::Rgba8)
+            .unwrap();
+        assert!(!is_animated(&still) && Frames::new(still).is_none());
+        assert!(Frames::new(b"not a picture".to_vec()).is_none());
+    }
+
+    #[test]
+    fn frames_are_made_no_larger_than_they_cover() {
+        let size = |picture: Rgba, width, height| {
+            let covered = covering(picture, width, height).unwrap();
+            (covered.width, covered.height)
+        };
+        // A Steam cover on a 200 × 300 tile at 225%: 450 × 675.
+        assert_eq!(size(solid(600, 900, RED), 450, 675), (450, 675));
+        // Wider than the box: as tall as it, wider than it, as the cover is cut around its centre.
+        assert_eq!(size(solid(1000, 500, RED), 200, 300), (600, 300));
+        // Never enlarged.
+        assert_eq!(size(solid(300, 200, RED), 450, 675), (300, 200));
+        // Premultiplied.
+        let half = covering(solid(2, 2, [200, 100, 0, 128]), 2, 2).unwrap();
+        assert_eq!(half.pixels[..4], [100, 50, 0, 128]);
     }
 }

@@ -17,6 +17,10 @@
 //!   are dropped, so the Library left behind frees all of them. The renderer drops their bitmaps
 //!   too. Direct2D scales each cover into its tile as it draws it (`el::El::cover`), so the display
 //!   scaling changes nothing here. A tile shows its icon until its cover is decoded.
+//! - **Animated covers** (an animated WebP, the user's own): the tile shows its first frame, and
+//!   plays it while the pointer is on the tile (`ui::animation`, `el::Play::OnHover`), its frames
+//!   made no larger than the tile's pixels. The animation is kept with the decoded cover and goes
+//!   with it.
 //! - **Generations**: each new source of a game (the original after a stand-in, the user's own)
 //!   gets a new generation, and a decoded cover is kept only for the generation it was decoded
 //!   from, so a stand-in decoded late never hides the original.
@@ -40,6 +44,7 @@ use gm_core::Game;
 use gm_core::covers::Cover;
 
 use crate::shell::ctx::{Ctx, FilePicker};
+use crate::ui::animation::Animation;
 use crate::ui::image::{self, Picture};
 use crate::{GameManager, Message};
 
@@ -65,8 +70,9 @@ pub(crate) enum CoverMessage {
     Fetched(String, Option<Cover>),
     /// The games whose tiles are on the screen or near it (`App::near_screen`).
     Near(HashSet<String>),
-    /// A cover decoded from the source of that generation; `None` when it couldn't be.
-    Decoded(String, u64, Option<Arc<Picture>>),
+    /// A cover decoded from the source of that generation, and its animation when it is an
+    /// animated picture; `None` when it couldn't be decoded.
+    Decoded(String, u64, Option<Arc<Picture>>, Option<Arc<Animation>>),
     /// The games the local job found no cover for, not even a stand-in.
     NoneHere(Vec<String>),
     /// A game's icon made into a capsule, with the icon it was made from; `None` when it couldn't
@@ -97,6 +103,8 @@ pub(crate) struct CoverState {
     sources: HashMap<String, (Cover, u64)>,
     /// Decoded covers, only for games near the screen, with the generation each came from.
     pictures: HashMap<String, (Arc<Picture>, u64)>,
+    /// The animations of animated covers among those.
+    animations: HashMap<String, Arc<Animation>>,
     /// The games whose tiles are near the screen.
     near: HashSet<String>,
     /// The generation being decoded, by game.
@@ -129,6 +137,11 @@ impl CoverState {
         self.capsules.get(id).map(|(capsule, _)| capsule)
     }
 
+    /// A game's cover's animation, when it is an animated picture and decoded.
+    pub fn animation(&self, id: &str) -> Option<&Arc<Animation>> {
+        self.animations.get(id)
+    }
+
     /// The file of a game's cover, once found (the game page blurs it when it has no wide picture).
     pub fn file(&self, id: &str) -> Option<&std::path::Path> {
         self.sources.get(id).map(|(cover, _)| cover.file.as_path())
@@ -154,6 +167,7 @@ impl CoverState {
     fn forget(&mut self, id: &str) {
         self.sources.remove(id);
         self.pictures.remove(id);
+        self.animations.remove(id);
         self.decoding.remove(id);
         self.bare.remove(id);
         self.capsules.remove(id);
@@ -163,6 +177,7 @@ impl CoverState {
     /// The games now near the screen: the others' pictures are dropped.
     fn set_near(&mut self, near: HashSet<String>) {
         self.pictures.retain(|id, _| near.contains(id));
+        self.animations.retain(|id, _| near.contains(id));
         self.capsules.retain(|id, _| near.contains(id));
         self.near = near;
     }
@@ -267,10 +282,26 @@ impl CoverState {
         }
     }
 
+    /// The animation of the cover decoded for `generation`: kept while that cover shows.
+    fn animated(&mut self, id: &str, generation: u64, animation: Option<Arc<Animation>>) {
+        if self
+            .pictures
+            .get(id)
+            .is_none_or(|(_, shown)| *shown != generation)
+        {
+            return;
+        }
+        match animation {
+            Some(animation) => self.animations.insert(id.to_owned(), animation),
+            None => self.animations.remove(id),
+        };
+    }
+
     /// Keeps only what belongs to `ids` (after a scan, games that are gone).
     fn retain(&mut self, ids: &HashSet<&str>) {
         self.sources.retain(|id, _| ids.contains(id.as_str()));
         self.pictures.retain(|id, _| ids.contains(id.as_str()));
+        self.animations.retain(|id, _| ids.contains(id.as_str()));
         self.decoding.retain(|id, _| ids.contains(id.as_str()));
         self.bare.retain(|id| ids.contains(id.as_str()));
         self.capsules.retain(|id, _| ids.contains(id.as_str()));
@@ -344,13 +375,21 @@ impl GameManager {
     /// without a cover, off the UI thread, each sent as soon as it is ready. Also once icons have
     /// been read (`icons.rs`): a capsule needs its game's.
     pub(crate) fn decode_near_covers(&mut self, context: &Ctx<Message>) {
+        // An animation's frames are made for the tile's pixels.
+        let scale = context.scale();
+        let tile = (
+            (COVER_WIDTH * scale).round() as u32,
+            (COVER_HEIGHT * scale).round() as u32,
+        );
         for list in deal(self.covers.start_decoding(), DECODERS) {
             context.spawn_stream(move |send| {
                 for (id, cover, generation) in list {
-                    let picture = gm_core::covers::read(&cover)
-                        .and_then(|bytes| image::decode_cover(&bytes))
-                        .map(Arc::new);
-                    send(CoverMessage::Decoded(id, generation, picture).into());
+                    let bytes = gm_core::covers::read(&cover);
+                    let picture = bytes.as_deref().and_then(image::decode_cover).map(Arc::new);
+                    let animation = bytes
+                        .filter(|_| picture.is_some())
+                        .and_then(|bytes| Animation::new(bytes, tile));
+                    send(CoverMessage::Decoded(id, generation, picture, animation).into());
                 }
             });
         }
@@ -420,8 +459,9 @@ impl GameManager {
                 self.covers.set_near(ids);
                 self.decode_near_covers(context);
             }
-            CoverMessage::Decoded(id, generation, picture) => {
-                self.covers.decoded(id, generation, picture);
+            CoverMessage::Decoded(id, generation, picture, animation) => {
+                self.covers.decoded(id.clone(), generation, picture);
+                self.covers.animated(&id, generation, animation);
             }
             CoverMessage::NoneHere(ids) => {
                 self.covers.none_here(ids);

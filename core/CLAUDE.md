@@ -40,8 +40,8 @@ holds the rules and facts that span them.
     order, Epic's after the Steam store's; `steam::page_art_urls`, `gog::cached_background`, …).
   - `picture.rs` (pictures in pure Rust: JPEG, PNG and WebP through their crates, BMP and icon
     bitmaps read here, sizes from headers, icons fitted with Catmull-Rom, logos trimmed, covers
-    blurred, icons made into covers as Steam makes them from wide pictures (`capsule`), the
-    capture's PNG; no Windows API).
+    blurred, icons made into covers as Steam makes them from wide pictures (`capsule`), animated
+    WebP read a frame at a time as it plays (`Frames`), the capture's PNG; no Windows API).
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links, a game's page found by id or
     by full-text search and kept ten minutes, its `Game data` paths) and `game_data.rs` (a game's
     saves and config folders on this PC: the wiki's paths cached a month, their `{{p|…}}`

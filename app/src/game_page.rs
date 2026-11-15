@@ -38,8 +38,10 @@ use crate::shell::WindowInfo;
 use std::sync::Arc;
 
 use crate::page_art::PageArtMessage;
+use crate::ui::animation::Animation;
 use crate::ui::el::{
-    Align, Edges, El, Font, Role, col, dropdown, glyph, image, layers, paint, row, scroll, text,
+    Align, Edges, El, Font, Play, Role, col, dropdown, glyph, image, layers, paint, row, scroll,
+    text,
 };
 use crate::ui::image::Picture;
 use crate::ui::theme::{self, glyph as g};
@@ -186,6 +188,7 @@ impl GameManager {
             picture.push(
                 image(format!("art:{}", game.id), Arc::clone(background))
                     .cover()
+                    .animate(shown.background_animation, Play::Always)
                     .fill_width()
                     .height(height),
             );
@@ -225,7 +228,7 @@ impl GameManager {
             .height(height)
             .fade_out(theme::ART_FADE_FROM);
         let title = match shown.logo {
-            Some(logo) => art_logo(game, logo),
+            Some(logo) => art_logo(game, logo, shown.logo_animation),
             None => row([
                 self.icon(game, crate::icons::LARGE),
                 text(game.name.clone())
@@ -649,14 +652,16 @@ fn page_column(content: El<Message>) -> El<Message> {
         .halign(Align::Center)])
 }
 
-/// A game's logo over its art, as large as fits `ART_LOGO_MAX`, its shape kept. UI Automation
+/// A game's logo over its art, as large as fits `ART_LOGO_MAX`, its shape kept, playing when it is
+/// animated. UI Automation
 /// reads the game's name.
-fn art_logo(game: &Game, logo: &Arc<Picture>) -> El<Message> {
+fn art_logo(game: &Game, logo: &Arc<Picture>, animation: Option<&Arc<Animation>>) -> El<Message> {
     let (most_w, most_h) = theme::ART_LOGO_MAX;
     let (w, h) = (logo.width.max(1) as f32, logo.height.max(1) as f32);
     let fit = (most_w / w).min(most_h / h);
     image(format!("art-logo:{}", game.id), Arc::clone(logo))
         .size(w * fit, h * fit)
+        .animate(animation, Play::Always)
         .role(Role::Text)
         .name(game.name.clone())
 }
