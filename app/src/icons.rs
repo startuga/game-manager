@@ -129,8 +129,9 @@ impl GameManager {
                     self.icons.sources.insert(id.clone(), bytes);
                     self.icons.pictures.insert(id, pictures);
                 }
-                // Tiles without a cover are made from their icons.
+                // Tiles without a cover are made from their icons; the Artwork dialog shows them.
                 self.decode_near_covers(context);
+                self.request_previews(context);
                 // The scaling changed while they were read.
                 if scale != current {
                     self.redecode_icons(context);

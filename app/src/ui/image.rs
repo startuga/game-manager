@@ -91,6 +91,18 @@ pub fn decode_frame(frame: Rgba, size: (u32, u32)) -> Option<Picture> {
     Some(Picture::from_premultiplied(covering))
 }
 
+/// A SteamGridDB preview decoded, no larger than `size` pixels a side: any picture (an animated
+/// one's first frame), an `.ico` file's image for 256 pixels.
+pub fn decode_thumbnail(bytes: &[u8], size: u32) -> Option<Picture> {
+    let straight = picture::icon(bytes, 256).ok()?;
+    let shrunk = if straight.width.max(straight.height) > size {
+        picture::fit(straight, size).ok()?
+    } else {
+        picture::premultiply(straight).ok()?
+    };
+    Some(Picture::from_premultiplied(shrunk))
+}
+
 /// A game's logo decoded at full size and cut to what shows (`picture::trimmed`); `None` when it is
 /// no picture.
 pub fn decode_logo(bytes: &[u8]) -> Option<Picture> {

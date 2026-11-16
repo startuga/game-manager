@@ -10,8 +10,8 @@
 //! `theme::ART_FADE_FROM` down (`El::fade_out`, an opacity mask, so it melts into Mica as into the
 //! base colour). Over it, above the fade, the logo (else the icon and the name in the hero size),
 //! the folder and the chips, in the page's column, in the dark palette whatever the theme: art is
-//! mostly dark, and logos are drawn for it. The band's top right has the Page art button (the
-//! user's own background and logo). Then a
+//! mostly dark, and logos are drawn for it. The band's top right has the Artwork button (the
+//! Artwork dialog on its Banner tab, `artwork.rs`). Then a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
@@ -38,7 +38,7 @@ use crate::edit::{EditChoice, EditDraft, EditField};
 use crate::shell::WindowInfo;
 use std::sync::Arc;
 
-use crate::page_art::PageArtMessage;
+use crate::artwork::ArtworkMessage;
 use crate::ui::animation::Animation;
 use crate::ui::el::{
     Align, Edges, El, Font, Play, Role, col, dropdown, glyph, image, layers, paint, row, scroll,
@@ -156,7 +156,7 @@ impl GameManager {
     /// store's), else its cover or icon blurred, over the store's colour (all that shows until a
     /// picture is ready); fading out at the bottom into whatever is behind (Mica, or the base
     /// colour), with its logo (else its icon and name), folder and chips over it, above the fade,
-    /// and the Page art button at its top right. Art is dark more often than not and logos are
+    /// and the Artwork button at its top right. Art is dark more often than not and logos are
     /// drawn for it, so the band keeps the dark palette in either theme.
     fn art_band(&self, game: &Game, window: &WindowInfo) -> El<Message> {
         let shown = self.page_art.shown(&game.id);
@@ -266,7 +266,7 @@ impl GameManager {
                 height * (1.0 - theme::ART_FADE_FROM),
             ))
             .valign(Align::End);
-        // The Page art button, at the band's top right, in the page's column.
+        // The Artwork button, at the band's top right, in the page's column.
         let edit = row([glyph(g::PICTURE, theme::ICON_SIZE).color(dark.text)])
             .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
             .center()
@@ -274,9 +274,11 @@ impl GameManager {
             .pressed_bg(dark.subtle_pressed)
             .radius(theme::RADIUS_CONTROL)
             .role(Role::Button)
-            .tooltip("Page art: your own background and logo")
-            .name(format!("Change the page art of {}", game.name))
-            .on_click(PageArtMessage::Edit(game.id.clone()).into())
+            .tooltip("Artwork: the cover, banner, logo and icon")
+            .name(format!("Change the artwork of {}", game.name))
+            .on_click(
+                ArtworkMessage::Open(game.id.clone(), gm_core::steamgriddb::Kind::Banner).into(),
+            )
             .halign(Align::End);
         let corner = col([edit])
             .fill_width()

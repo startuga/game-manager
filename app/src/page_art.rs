@@ -16,9 +16,9 @@
 //!   in another job (`Blur`), and again when what it was made from changes (the cover arriving
 //!   after the icon, an original after a stand-in, Choose cover). The blur shown stays until the
 //!   new one is ready.
-//! - **The user's own art** (the Page art dialog, from the band's button or the game menu): Choose…
-//!   picks a picture for the background or the logo (`page_art::set_own`), Reset drops it
-//!   (`clear_own`); either way the game's art is read again (`reload`) while what shows stays.
+//! - **The user's own art** is chosen and dropped in the Artwork dialog (`artwork.rs`, from the
+//!   band's button or the game menu); the game's art is then read again (`reload`) while what
+//!   shows stays.
 //! - **Animated art** (an animated WebP background or logo, the user's own): its first frame shows
 //!   until it plays, and it plays whenever the window is in front, unless Settings say animated
 //!   covers never play (`game_page.rs`, `ui::animation`, `el::Play::Always`). A background's frames are made no larger than `BACKGROUND_FRAMES`; a
@@ -31,17 +31,13 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gm_core::page_art::{self, PageArt, Part};
+use gm_core::page_art::{self, PageArt};
 use gm_core::picture;
 
-use crate::app_view::{dialog, field_label};
-use crate::shell::WindowInfo;
-use crate::shell::ctx::{Ctx, FilePicker};
+use crate::shell::ctx::Ctx;
 use crate::ui::animation::Animation;
-use crate::ui::el::{El, col, row};
 use crate::ui::image::{self, Picture};
 use crate::ui::theme;
-use crate::ui::widgets::{button, hint};
 use crate::{GameManager, Message, Page};
 
 /// The blur's size in pixels (its longer side): drawn stretched across the page, it is all colour.
@@ -57,17 +53,6 @@ pub(crate) enum PageArtMessage {
     Art(String, ArtPictures, bool),
     /// A game's cover or icon blurred, from that source; `None` when it couldn't be decoded.
     Blur(String, BlurSource, Option<Arc<Picture>>),
-    /// Opens the Page art dialog for a game (the band's button, the game menu).
-    Edit(String),
-    CloseEdit,
-    /// Choose… for a part: the Open dialog.
-    Choose(Part),
-    /// The picture picked for the game's part; `None` when the dialog was cancelled.
-    Picked(String, Part, Result<Option<PathBuf>, String>),
-    /// Reset for a part: the game's own goes.
-    Reset(Part),
-    /// The game's own picture was saved or dropped, or why not.
-    Changed(String, Result<(), String>),
 }
 
 impl From<PageArtMessage> for Message {
@@ -92,9 +77,6 @@ pub(crate) struct ArtPictures {
     /// The parts' animations, when they are animated pictures (their pictures are first frames).
     pub background_animation: Option<Arc<Animation>>,
     pub logo_animation: Option<Arc<Animation>>,
-    /// The parts that are the user's own (`page_art::set_own`): the dialog offers Reset.
-    pub own_background: bool,
-    pub own_logo: bool,
 }
 
 /// What the band at the top of the game page draws.
@@ -123,8 +105,6 @@ pub(crate) struct PageArtState {
     fetched: HashSet<String>,
     /// The game's art is to be read again (its own picture changed); what shows stays meanwhile.
     reload: bool,
-    /// The game whose Page art dialog is open.
-    pub editing: Option<String>,
 }
 
 impl PageArtState {
@@ -158,19 +138,6 @@ impl PageArtState {
         }
     }
 
-    /// The game's art as it came, once it has: which parts are the user's own.
-    pub fn art_of(&self, id: &str) -> Option<&ArtPictures> {
-        self.art
-            .as_ref()
-            .filter(|_| self.game.as_deref() == Some(id))
-            .map(|(art, _)| art)
-    }
-
-    /// What the blur shown is made from.
-    pub fn blur_source(&self) -> Option<&BlurSource> {
-        self.blur.as_ref().map(|(source, _)| source)
-    }
-
     /// A game's art arrived: kept for the game still shown, unless it is a first answer and the
     /// last one is already here.
     fn art_arrived(&mut self, id: &str, pictures: ArtPictures, last: bool) {
@@ -196,7 +163,7 @@ impl PageArtState {
 
     /// The game's own picture changed: its art is read again, and the answer taken even after a
     /// last one.
-    fn reload(&mut self, id: &str) {
+    pub(crate) fn reload(&mut self, id: &str) {
         if self.game.as_deref() == Some(id) {
             self.reload = true;
             if let Some((_, last)) = &mut self.art {
@@ -285,7 +252,7 @@ impl GameManager {
         });
     }
 
-    pub(crate) fn handle_page_art(&mut self, message: PageArtMessage, context: &Ctx<Message>) {
+    pub(crate) fn handle_page_art(&mut self, message: PageArtMessage) {
         match message {
             PageArtMessage::Art(id, pictures, last) => {
                 self.page_art.art_arrived(&id, pictures, last);
@@ -293,121 +260,7 @@ impl GameManager {
             PageArtMessage::Blur(id, source, picture) => {
                 self.page_art.blur_arrived(&id, source, picture);
             }
-            PageArtMessage::Edit(id) => {
-                // The dialog speaks of the game whose page shows.
-                self.select(id.clone(), context);
-                self.page_art.editing = Some(id);
-            }
-            PageArtMessage::CloseEdit => self.page_art.editing = None,
-            PageArtMessage::Choose(part) => {
-                let Some(id) = self.page_art.editing.clone() else {
-                    return;
-                };
-                let Some(game) = self.games.iter().find(|game| game.id == id) else {
-                    return;
-                };
-                let what = match part {
-                    Part::Background => "a background",
-                    Part::Logo => "a logo",
-                };
-                // Owned by the app's window, which is disabled while the dialog is open.
-                self.picking = true;
-                FilePicker::new()
-                    .title(format!("Choose {what} for {}", game.name))
-                    .filter_extensions("Pictures", ["jpg", "jpeg", "png", "webp", "bmp"])
-                    .filter_all()
-                    .request(context, move |picked| {
-                        let picked = picked.map_err(|e| format!("could not choose a picture: {e}"));
-                        PageArtMessage::Picked(id, part, picked).into()
-                    });
-            }
-            PageArtMessage::Picked(id, part, Ok(Some(file))) => {
-                self.picking = false;
-                // Reading and checking the picture are blocking work.
-                context.spawn_background(move || {
-                    let saved = page_art::set_own(&id, part, &file).map_err(|e| e.to_string());
-                    PageArtMessage::Changed(id, saved).into()
-                });
-            }
-            PageArtMessage::Picked(_, _, Ok(None)) => self.picking = false,
-            PageArtMessage::Picked(_, _, Err(e)) => {
-                self.picking = false;
-                self.error = Some(e);
-            }
-            PageArtMessage::Reset(part) => {
-                let Some(id) = self.page_art.editing.clone() else {
-                    return;
-                };
-                context.spawn_background(move || {
-                    let dropped = page_art::clear_own(&id, part).map_err(|e| e.to_string());
-                    PageArtMessage::Changed(id, dropped).into()
-                });
-            }
-            PageArtMessage::Changed(id, Ok(())) => self.page_art.reload(&id),
-            PageArtMessage::Changed(_, Err(e)) => self.error = Some(format!("Page art: {e}")),
         }
-    }
-
-    /// The Page art dialog, while it is open: where the background and the logo come from, with
-    /// Choose… and Reset for each.
-    pub(crate) fn page_art_dialog(&self, window: &WindowInfo) -> Option<El<Message>> {
-        let id = self.page_art.editing.as_deref()?;
-        let game = self.games.iter().find(|game| game.id == id)?;
-        let art = self.page_art.art_of(id);
-        let shown = self.page_art.shown(id);
-        let own_background = art.is_some_and(|art| art.own_background);
-        let own_logo = art.is_some_and(|art| art.own_logo);
-        let background = if own_background {
-            "Your own picture."
-        } else if shown.background.is_some() && !shown.blurred {
-            "The store's picture."
-        } else if matches!(self.page_art.blur_source(), Some(BlurSource::Cover(_))) {
-            "The stores have none: the cover, blurred."
-        } else if matches!(self.page_art.blur_source(), Some(BlurSource::Icon(_))) {
-            "The stores have none, nor a cover: the icon, blurred."
-        } else {
-            "None yet: the store's colour."
-        };
-        let logo = if own_logo {
-            "Your own picture."
-        } else if shown.logo.is_some() {
-            "The store's logo."
-        } else {
-            "None: the game's name shows."
-        };
-        let part = |label: &str, line: &str, part: Part, own: bool| {
-            row([
-                col([field_label(label), hint(line.to_owned())])
-                    .gap(theme::space::XXS)
-                    .fill_width(),
-                button("Choose…")
-                    .enabled(!self.picking)
-                    .name(format!("Choose the {}", label.to_lowercase()))
-                    .on_click(PageArtMessage::Choose(part).into()),
-                button("Reset")
-                    .enabled(own && !self.picking)
-                    .name(format!("Reset the {}", label.to_lowercase()))
-                    .tooltip("Drop your own picture: the stores' shows again")
-                    .on_click(PageArtMessage::Reset(part).into()),
-            ])
-            .gap(theme::space::S)
-        };
-        let body = vec![
-            part("Background", background, Part::Background, own_background),
-            part("Logo", logo, Part::Logo, own_logo),
-            hint(
-                "A picture you choose is kept as it is, in %APPDATA%\\Game Manager\\page-art. The \
-                 band is about 3.6 times as wide as it is high and shows the background's middle; \
-                 a logo shows best on a transparent background.",
-            ),
-        ];
-        Some(dialog(
-            window,
-            &format!("Page art for {}", game.name),
-            body,
-            None,
-            PageArtMessage::CloseEdit.into(),
-        ))
     }
 }
 
@@ -416,7 +269,6 @@ impl GameManager {
 /// out.
 fn decode(art: &PageArt, scale: f32) -> ArtPictures {
     let read = |part: &Option<page_art::Art>| std::fs::read(&part.as_ref()?.file).ok();
-    let own = |part: &Option<page_art::Art>| part.as_ref().is_some_and(|art| art.own);
     // An animation is played from its file.
     let animation =
         |part: &Option<page_art::Art>, size| Animation::open(&part.as_ref()?.file, size);
@@ -449,8 +301,6 @@ fn decode(art: &PageArt, scale: f32) -> ArtPictures {
         logo,
         background_animation,
         logo_animation,
-        own_background: own(&art.background),
-        own_logo: own(&art.logo),
     }
 }
 

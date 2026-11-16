@@ -267,6 +267,7 @@ impl GameManager {
         col([
             page_header("Settings", "Game Manager", None, Vec::new()),
             appearance,
+            self.steamgriddb_card(),
         ])
         .gap(theme::space::L)
     }

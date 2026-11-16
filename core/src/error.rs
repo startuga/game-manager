@@ -163,6 +163,12 @@ pub enum Error {
     /// A file chosen as a game's cover is not a picture Windows can read.
     #[error("{} is not a picture Windows can open.", .0.display())]
     NotAPicture(PathBuf),
+    /// A secret too long for Credential Manager (`credentials.rs`).
+    #[error("{target}: a secret of more than {limit} bytes can't be kept")]
+    SecretTooLong { target: String, limit: usize },
+    /// SteamGridDB has no API key here: Settings ▸ SteamGridDB asks for one.
+    #[error("SteamGridDB needs your API key: add it in Settings")]
+    NoSteamGridDbKey,
 }
 
 impl Error {

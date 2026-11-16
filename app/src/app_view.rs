@@ -173,8 +173,8 @@ impl GameManager {
                 Message::RemoveClosed(DialogResult::Cancel),
             ));
         }
-        if let Some(page_art) = self.page_art_dialog(window) {
-            return Some(page_art);
+        if let Some(artwork) = self.artwork_dialog(window) {
+            return Some(artwork);
         }
         self.mod_dialog_view(window)
     }
@@ -210,7 +210,36 @@ pub(crate) fn dialog_with(
 ) -> El<Message> {
     let primary = primary
         .map(|(label, enabled, message)| accent_button(label).enabled(enabled).on_click(message));
-    dialog_card(window, title, body, primary, (cancel_label, cancel))
+    dialog_card(
+        window,
+        title,
+        body,
+        primary,
+        (cancel_label, cancel),
+        DIALOG_WIDTH,
+    )
+}
+
+/// A dialog's width.
+const DIALOG_WIDTH: f32 = 520.0;
+/// A wide dialog's (the Artwork dialog's), at most, and its margin to the window's edges.
+const WIDE_DIALOG_WIDTH: f32 = 1000.0;
+const WIDE_DIALOG_MARGIN: f32 = 48.0;
+
+/// A wide dialog's width in this window: most of it, from `DIALOG_WIDTH` to `WIDE_DIALOG_WIDTH`.
+pub(crate) fn wide_dialog_width(window: &WindowInfo) -> f32 {
+    (window.size.0 - 2.0 * WIDE_DIALOG_MARGIN).clamp(DIALOG_WIDTH, WIDE_DIALOG_WIDTH)
+}
+
+/// A wide dialog (`wide_dialog_width`) with only the button that closes it.
+pub(crate) fn wide_dialog(
+    window: &WindowInfo,
+    title: &str,
+    body: Vec<El<Message>>,
+    (close_label, close): (&str, Message),
+) -> El<Message> {
+    let width = wide_dialog_width(window);
+    dialog_card(window, title, body, None, (close_label, close), width)
 }
 
 /// A dialog that asks before something is removed: its main button is red (`danger_button`),
@@ -223,7 +252,14 @@ pub(crate) fn removal_dialog(
     cancel: Message,
 ) -> El<Message> {
     let primary = danger_button(label).on_click(remove);
-    dialog_card(window, title, body, Some(primary), ("Cancel", cancel))
+    dialog_card(
+        window,
+        title,
+        body,
+        Some(primary),
+        ("Cancel", cancel),
+        DIALOG_WIDTH,
+    )
 }
 
 /// The dialog's card over the dimmed window: the title, the body, the main button and the one
@@ -234,6 +270,7 @@ fn dialog_card(
     body: Vec<El<Message>>,
     primary: Option<El<Message>>,
     (cancel_label, cancel): (&str, Message),
+    width: f32,
 ) -> El<Message> {
     let mut buttons = vec![spacer()];
     if let Some(primary) = primary {
@@ -258,7 +295,7 @@ fn dialog_card(
     ])
     .gap(theme::space::M)
     .pad(theme::space::XL)
-    .width(520.0)
+    .width(width)
     .bg(theme::flyout())
     .stroke(theme::flyout_stroke(), 1.0)
     .radius(theme::RADIUS_FLYOUT)

@@ -33,6 +33,10 @@
 //! too): among the true-colour ones when there are any, that size exactly, the deepest colours
 //! among those; else the smallest larger one; else the largest.
 //!
+//! **The user's own icon** (the Artwork dialog's Icon, `set_own`) comes first: a picture or `.ico`
+//! file kept in `%APPDATA%\Game Manager\icons` as `<game id>.<format>` (`:` as `_`), byte for
+//! byte (an `.ico` gives its best image, as above).
+//!
 //! Icons read from programs are cached in `%LOCALAPPDATA%\Game Manager\cache\icons` as `.png`
 //! or `.ico` files (`alone`'s), named after the program's path, the icon's index, and the
 //! program's length and modified time, so a game's program is only read again when it changes.
@@ -40,10 +44,11 @@
 //! `.ico` and picture files are read where they are. No icon handle, GDI or WIC is used here.
 
 use crate::bytes::{u16_at, u32_at};
+use crate::covers::{find_own, remove_own, safe_name, save_own};
 use crate::data_module::{DataModule, int_resource};
 use crate::folder_key;
 use crate::text::fnv1a;
-use crate::{Game, IconRef, has_extension, json_file, whole_file};
+use crate::{Game, IconRef, Result, has_extension, json_file, whole_file};
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs;
@@ -335,32 +340,68 @@ pub fn read(icon: &IconRef) -> Option<Vec<u8>> {
     program_icon(&icon.path, icon.index)
 }
 
-/// The icons of `games`, keyed by game id (see `read`), from the icon cache when present. Games
-/// without a usable icon are left out. Blocking: run it off the UI thread.
+/// `%APPDATA%\Game Manager\icons`: the user's own icons.
+fn own_dir() -> Result<PathBuf> {
+    json_file::user_file("icons")
+}
+
+/// Makes the picture or `.ico` file `image` the game's own icon, kept as it is. Blocking.
+pub fn set_own(game_id: &str, image: &Path) -> Result<()> {
+    save_own(&own_dir()?, &safe_name(game_id), image).map(|_| ())
+}
+
+/// Drops the game's own icon, so its program's shows again. Blocking.
+pub fn clear_own(game_id: &str) -> Result<()> {
+    remove_own(&own_dir()?, &safe_name(game_id))
+}
+
+/// Whether the game has an icon of the user's own. Blocking.
+pub fn is_own(game_id: &str) -> bool {
+    own_dir().is_ok_and(|dir| find_own(&dir, &safe_name(game_id)).is_some())
+}
+
+/// The game's own icon in `dir`, as `read` gives one: an `.ico` file's best image, any other
+/// picture as it is.
+fn own_icon(dir: &Path, game_id: &str) -> Option<Vec<u8>> {
+    let file = find_own(dir, &safe_name(game_id))?;
+    if has_extension(&file, &["ico"]) {
+        read(&IconRef::file(file))
+    } else {
+        fs::read(file).ok()
+    }
+}
+
+/// The icons of `games`, keyed by game id (see `read`; the user's own first), from the icon cache
+/// when present. Games without a usable icon are left out. Blocking: run it off the UI thread.
 pub fn extract_all(games: &[Game]) -> Vec<(String, Vec<u8>)> {
-    extract_cached(games, IconCache::open().as_ref()).0
+    extract_cached(games, IconCache::open().as_ref(), own_dir().ok().as_deref()).0
 }
 
 /// Like `extract_all`, then deletes cached icons no game uses any more. For a full library only:
 /// pruning after a partial list would drop the other games' icons.
 pub fn refresh_all(games: &[Game]) -> Vec<(String, Vec<u8>)> {
     let cache = IconCache::open();
-    let (icons, used) = extract_cached(games, cache.as_ref());
+    let (icons, used) = extract_cached(games, cache.as_ref(), own_dir().ok().as_deref());
     if let Some(cache) = &cache {
         cache.prune(&used);
     }
     icons
 }
 
-/// Icons from `cache` when present, else read and cached (programs' only: other files are read
-/// where they are). Also returns the cache files used.
+/// The user's own icons in `own`, else icons from `cache` when present, else read and cached
+/// (programs' only: other files are read where they are). Also returns the cache files used.
 fn extract_cached(
     games: &[Game],
     cache: Option<&IconCache>,
+    own: Option<&Path>,
 ) -> (Vec<(String, Vec<u8>)>, HashSet<PathBuf>) {
     let mut used = HashSet::new();
     let mut icons = Vec::new();
     for game in games {
+        if let Some(bytes) = own.and_then(|dir| own_icon(dir, &game.id)) {
+            icons.push((game.id.clone(), bytes));
+            continue;
+        }
         let Some(icon) = &game.icon else {
             continue;
         };
@@ -787,7 +828,7 @@ mod tests {
             "steam:1",
             IconRef::file(system_file("explorer.exe")),
         )];
-        let (icons, used) = extract_cached(&games, Some(&cache));
+        let (icons, used) = extract_cached(&games, Some(&cache), None);
         only_image(&icons[0].1);
         // Cached under the extension that says what it holds.
         let written: Vec<&PathBuf> = used.iter().filter(|file| file.is_file()).collect();
@@ -802,19 +843,19 @@ mod tests {
         fs::remove_file(&file).unwrap();
         let cached = best_of(&own(&[&dib(16, [1, 2, 3, 255])])).unwrap();
         fs::write(stem.with_extension("ico"), &cached).unwrap();
-        let (icons, _) = extract_cached(&games, Some(&cache));
+        let (icons, _) = extract_cached(&games, Some(&cache), None);
         assert_eq!(icons[0].1, cached);
         let png = png_header(32);
         fs::write(stem.with_extension("png"), &png).unwrap();
-        let (icons, _) = extract_cached(&games, Some(&cache));
+        let (icons, _) = extract_cached(&games, Some(&cache), None);
         assert_eq!(icons[0].1, png);
         // A cached file that doesn't hold what its name says is read again from the program.
         fs::write(stem.with_extension("png"), &cached).unwrap();
         fs::write(stem.with_extension("ico"), b"broken").unwrap();
-        let (icons, _) = extract_cached(&games, Some(&cache));
+        let (icons, _) = extract_cached(&games, Some(&cache), None);
         only_image(&icons[0].1);
         // Without a cache, icons are read as before.
-        let (icons, used) = extract_cached(&games, None);
+        let (icons, used) = extract_cached(&games, None, None);
         only_image(&icons[0].1);
         assert!(used.is_empty());
         fs::remove_dir_all(&cache.dir).unwrap();
@@ -848,12 +889,44 @@ mod tests {
             let handle = fs::File::options().write(true).open(file).unwrap();
             handle.set_modified(hour_ago).unwrap();
         }
-        let (_, used) = extract_cached(&games, Some(&cache));
+        let (_, used) = extract_cached(&games, Some(&cache), None);
         cache.prune(&used);
         assert!(used.iter().any(|file| file.is_file()));
         assert!(!stale.exists() && !old_format.exists());
         assert!(!leftover.exists() && !leftover_png.exists());
         assert!(in_progress.exists() && unrelated.exists());
         fs::remove_dir_all(&cache.dir).unwrap();
+    }
+
+    #[test]
+    fn the_users_own_icon_comes_first() {
+        let own = std::env::temp_dir().join(format!("gm-own-icons-{}", std::process::id()));
+        let picture = crate::picture::Rgba {
+            width: 2,
+            height: 2,
+            pixels: [9u8, 8, 7, 255].repeat(4),
+        };
+        let png = crate::picture::encode_png(&picture).unwrap();
+        let file = own.with_extension("png");
+        fs::write(&file, &png).unwrap();
+        save_own(&own, &safe_name("steam:1"), &file).unwrap();
+        fs::remove_file(&file).unwrap();
+        // Over the program's icon, and for a game that has none.
+        let mut bare = game_with_icon("steam:2", IconRef::file(system_file("explorer.exe")));
+        bare.icon = None;
+        let games = [
+            game_with_icon("steam:1", IconRef::file(system_file("explorer.exe"))),
+            bare,
+        ];
+        let (icons, used) = extract_cached(&games, None, Some(&own));
+        assert_eq!(icons.len(), 1);
+        assert_eq!((icons[0].0.as_str(), &icons[0].1), ("steam:1", &png));
+        assert!(used.is_empty());
+        // Dropped: the program's again.
+        remove_own(&own, &safe_name("steam:1")).unwrap();
+        let (icons, _) = extract_cached(&games, None, Some(&own));
+        assert_eq!(icons.len(), 1);
+        assert_ne!(icons[0].1, png);
+        fs::remove_dir_all(&own).unwrap();
     }
 }

@@ -237,7 +237,7 @@ impl GameManager {
         self.mod_dialog.is_some()
             || self.draft.is_some()
             || self.removing.is_some()
-            || self.page_art.editing.is_some()
+            || self.artwork.is_open()
     }
 
     /// Any work that the mod buttons wait for.

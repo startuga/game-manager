@@ -1,6 +1,7 @@
 //! Minimal HTTPS `GET`s over WinHTTP, Windows' own HTTP client: it uses the system's proxy
 //! settings and certificate store, and follows redirects, with no extra crates. `get` reads small
-//! answers into memory, `download` streams a file to disk, `etag` asks only for the headers.
+//! answers into memory (`get_with` sends request headers too, as an API key; they never go into a
+//! URL or an error), `download` streams a file to disk, `etag` asks only for the headers.
 //! Blocking: call them off the UI thread.
 //!
 //! The process has one WinHTTP session (`session`), opened by the first request and kept, with
@@ -42,7 +43,12 @@ pub(crate) fn user_agent() -> String {
 
 /// `GET <url>`: the body of a `200 OK` answer.
 pub(crate) fn get(url: &str) -> Result<Vec<u8>> {
-    let response = Response::open(url)?;
+    get_with(url, &[])
+}
+
+/// `GET <url>` with request `headers` ("Name: value"): the body of a `200 OK` answer.
+pub(crate) fn get_with(url: &str, headers: &[String]) -> Result<Vec<u8>> {
+    let response = Response::request(url, w!("GET"), headers)?;
     let mut body = Vec::new();
     response.read_each(|data| {
         body.extend_from_slice(data);
@@ -59,7 +65,7 @@ pub(crate) fn get(url: &str) -> Result<Vec<u8>> {
 /// `HEAD <url>`: the answer's `ETag`, which changes when the file does (GitHub's and GitLab's
 /// archives have one); `None` when it has none.
 pub(crate) fn etag(url: &str) -> Result<Option<String>> {
-    Ok(Response::request(url, w!("HEAD"))?.header(WINHTTP_QUERY_ETAG as u32))
+    Ok(Response::request(url, w!("HEAD"), &[])?.header(WINHTTP_QUERY_ETAG as u32))
 }
 
 /// `GET <url>` into `file`. A failed download leaves no file behind.
@@ -147,10 +153,10 @@ struct Response {
 
 impl Response {
     fn open(url: &str) -> Result<Self> {
-        Self::request(url, w!("GET"))
+        Self::request(url, w!("GET"), &[])
     }
 
-    fn request(url: &str, method: PCWSTR) -> Result<Self> {
+    fn request(url: &str, method: PCWSTR, headers: &[String]) -> Result<Self> {
         let (host, path) = split_url(url).ok_or_else(|| Error::InvalidUrl(url.to_owned()))?;
         let session = session().map_err(Error::windows(url))?;
         let host_name = HSTRING::from(host);
@@ -173,10 +179,23 @@ impl Response {
             )
         })
         .map_err(Error::windows(url))?;
-        // SAFETY: a live request handle; no extra headers and no body.
-        unsafe { WinHttpSendRequest(request.0, None, 0, None, 0, 0, 0) }
-            .ok()
-            .map_err(Error::windows(url))?;
+        // Extra headers, one a line; a length of -1 means the string ends at its null.
+        let headers = (!headers.is_empty()).then(|| HSTRING::from(headers.join("\r\n")));
+        let headers_length = if headers.is_some() { u32::MAX } else { 0 };
+        // SAFETY: a live request handle; `headers`, null-terminated, lives for the call; no body.
+        unsafe {
+            WinHttpSendRequest(
+                request.0,
+                headers.as_ref().map(|headers| PCWSTR(headers.as_ptr())),
+                headers_length,
+                None,
+                0,
+                0,
+                0,
+            )
+        }
+        .ok()
+        .map_err(Error::windows(url))?;
         // SAFETY: the request was sent; the reserved argument must be null. Redirects have been
         // followed by now.
         unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }

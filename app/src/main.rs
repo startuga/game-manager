@@ -19,6 +19,7 @@
 #![windows_subsystem = "windows"]
 
 mod app_view;
+mod artwork;
 mod covers;
 mod dlss_override_view;
 mod edit;
@@ -144,6 +145,8 @@ enum Message {
     Cover(CoverMessage),
     /// The game page's background and logo (`page_art.rs`).
     PageArt(PageArtMessage),
+    /// The Artwork dialog and the SteamGridDB key (`artwork.rs`).
+    Artwork(artwork::ArtworkMessage),
     /// The Settings page, and Windows' colours changing (`settings_page.rs`).
     Settings(SettingsMessage),
     /// The title bar's minimize, maximize and close.
@@ -337,6 +340,8 @@ struct GameManager {
     covers: CoverState,
     /// The selected game's background and logo for its page.
     page_art: PageArtState,
+    /// The Artwork dialog, and the SteamGridDB key (`artwork.rs`).
+    artwork: artwork::ArtworkState,
     /// How the window looks, as chosen in Settings.
     appearance: Appearance,
     /// What Windows' personalization settings say (light or dark apps, accent, Mica).
@@ -481,8 +486,8 @@ impl App for GameManager {
             Some(message)
         } else if self.my_pc.trial.is_some() {
             Some(MyPcMessage::RevertMode.into())
-        } else if self.page_art.editing.is_some() {
-            Some(PageArtMessage::CloseEdit.into())
+        } else if self.artwork.is_open() {
+            Some(artwork::ArtworkMessage::Close.into())
         } else if self.mod_dialog.is_some() {
             Some(Message::ModDialogClosed(DialogResult::Cancel))
         } else if self.removing.is_some() {
@@ -549,6 +554,7 @@ impl GameManager {
             menu: MenuState::default(),
             covers: CoverState::default(),
             page_art: PageArtState::default(),
+            artwork: artwork::ArtworkState::default(),
             appearance,
             windows_look,
             graphics: HashMap::new(),
@@ -590,6 +596,7 @@ impl GameManager {
             Message::ModsLoaded(gm_core::mods::load().map_err(|e| format!("Mods: {e}")))
         });
         Self::load_view(ctx);
+        Self::read_sgdb_key(ctx);
         // The NVIDIA overrides tab shows only with an NVIDIA driver: read it now.
         this.request_driver(ctx);
         this.start_scan(ctx);
@@ -861,7 +868,8 @@ impl GameManager {
             }
             Message::Menu(message) => self.handle_menu(message, context),
             Message::Cover(message) => self.handle_cover(message, context),
-            Message::PageArt(message) => self.handle_page_art(message, context),
+            Message::PageArt(message) => self.handle_page_art(message),
+            Message::Artwork(message) => self.handle_artwork(message, context),
             Message::Settings(message) => self.handle_settings(message, context),
             Message::Window(command) => context.window(command),
             Message::Page(page) => self.go_to(page, context),

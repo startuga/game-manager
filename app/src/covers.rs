@@ -1,5 +1,6 @@
 //! Cover art on the Library's tiles: the covers the core finds (`gm_core::covers`), decoded only
-//! while their tiles are near the screen, and the game menu's Choose cover… and Reset cover.
+//! while their tiles are near the screen. The user's own cover is chosen and dropped in the Artwork
+//! dialog (`artwork.rs`), which then calls `add_cover`, or `forget` and `load_covers`.
 //!
 //! - **Sources** (`load_covers`), for the games that have none yet, or only a stand-in, after the
 //!   snapshot, each scan and a game added by hand:
@@ -32,19 +33,15 @@
 //!   cover it is made only while its tile is near the screen, in the decoders' jobs (`Capsule`),
 //!   and again when the icon changes (a scan reads it again; the same bytes count as the same
 //!   icon). A cover found later replaces it once decoded.
-//! - **Choose cover…** opens the Open dialog for a picture, which becomes the game's own cover
-//!   (`covers::set_own`); **Reset cover** drops it and what was downloaded for the game, and
-//!   looks its cover up afresh.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use gm_core::Game;
 use gm_core::covers::Cover;
 use gm_core::picture;
 
-use crate::shell::ctx::{Ctx, FilePicker};
+use crate::shell::ctx::Ctx;
 use crate::ui::animation::Animation;
 use crate::ui::image::{self, Picture};
 use crate::{GameManager, Message};
@@ -79,16 +76,6 @@ pub(crate) enum CoverMessage {
     /// A game's icon made into a capsule, with the icon it was made from; `None` when it couldn't
     /// be.
     Capsule(String, Arc<Vec<u8>>, Option<Arc<Picture>>),
-    /// The game menu's Choose cover….
-    Choose(String),
-    /// The picture picked for the game; `None` when the dialog was cancelled.
-    Picked(String, Result<Option<PathBuf>, String>),
-    /// The picked picture as the game's cover, or why it can't be one.
-    Chosen(Result<(String, Cover), String>),
-    /// The game menu's Reset cover.
-    Reset(String),
-    /// The game's own cover was dropped (or not).
-    ResetDone(String, Result<(), String>),
 }
 
 impl From<CoverMessage> for Message {
@@ -165,7 +152,7 @@ impl CoverState {
         self.sources.insert(id, (cover, self.generation));
     }
 
-    fn forget(&mut self, id: &str) {
+    pub(crate) fn forget(&mut self, id: &str) {
         self.sources.remove(id);
         self.pictures.remove(id);
         self.animations.remove(id);
@@ -410,7 +397,7 @@ impl GameManager {
     }
 
     /// A game's cover found or chosen, unless the game is gone since (removed, uninstalled).
-    fn add_cover(&mut self, id: String, cover: Cover) {
+    pub(crate) fn add_cover(&mut self, id: String, cover: Cover) {
         if self.games.iter().any(|game| game.id == id) {
             self.covers.set_source(id, cover);
         }
@@ -474,56 +461,6 @@ impl GameManager {
                 let now = self.icons.bytes(&id).cloned();
                 self.covers.capsule_made(id, icon, capsule, now.as_ref());
             }
-            CoverMessage::Choose(id) => {
-                let Some(game) = self.games.iter().find(|game| game.id == id) else {
-                    return;
-                };
-                // Owned by the app's window, which is disabled while the dialog is open.
-                self.picking = true;
-                FilePicker::new()
-                    .title(format!("Choose a cover for {}", game.name))
-                    .filter_extensions("Pictures", ["jpg", "jpeg", "png", "webp", "bmp"])
-                    .filter_all()
-                    .request(context, move |picked| {
-                        let picked = picked.map_err(|e| format!("could not choose a picture: {e}"));
-                        CoverMessage::Picked(id, picked).into()
-                    });
-            }
-            CoverMessage::Picked(id, Ok(Some(file))) => {
-                self.picking = false;
-                // Reading and checking the picture are blocking work.
-                context.spawn_background(move || {
-                    let chosen = gm_core::covers::set_own(&id, &file)
-                        .map(|cover| (id, cover))
-                        .map_err(|e| e.to_string());
-                    CoverMessage::Chosen(chosen).into()
-                });
-            }
-            CoverMessage::Picked(_, Ok(None)) => self.picking = false,
-            CoverMessage::Picked(_, Err(e)) => {
-                self.picking = false;
-                self.error = Some(e);
-            }
-            CoverMessage::Chosen(Ok((id, cover))) => {
-                self.add_cover(id, cover);
-                self.decode_near_covers(context);
-            }
-            CoverMessage::Chosen(Err(e)) => self.error = Some(e),
-            CoverMessage::Reset(id) => {
-                let Some(game) = self.games.iter().find(|game| game.id == id).cloned() else {
-                    return;
-                };
-                context.spawn_background(move || {
-                    let reset = gm_core::covers::clear_own(&game).map_err(|e| e.to_string());
-                    CoverMessage::ResetDone(game.id, reset).into()
-                });
-            }
-            CoverMessage::ResetDone(id, Ok(())) => {
-                // Without a cover the game is looked up afresh: its store's, or by name.
-                self.covers.forget(&id);
-                self.load_covers(true, false, context);
-            }
-            CoverMessage::ResetDone(_, Err(e)) => self.error = Some(e),
         }
     }
 
@@ -538,6 +475,7 @@ impl GameManager {
 mod tests {
     use super::*;
     use gm_core::{Launch, Store};
+    use std::path::PathBuf;
 
     fn game(id: &str) -> Game {
         Game {

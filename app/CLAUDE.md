@@ -17,8 +17,12 @@ samples in `crates/samples/`) instead of guessing.
   - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
     dialogs).
   - `game_menu.rs` (a game's menu from a right-click or the Menu key, which leaves the page as
-    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, Choose and Reset cover, and
-    the Rename and Uninstall dialogs).
+    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, Artwork…, and the Rename and
+    Uninstall dialogs).
+  - `artwork.rs` (the Artwork dialog, from Artwork… and the band's button: the game's cover,
+    banner, logo and icon in tabs, each from a file of the user's, the store's, or SteamGridDB's
+    pictures with the user's key; `ArtworkMessage`; Settings ▸ SteamGridDB, the key).
+    Previews and every file and network step run in the background; thumbnails are kept by id.
   - `sidebar.rs` (search, the Sort and filters button, the pages, the view's sections, game
     rows, Add a game) and `filter_menu.rs` (that button's flyout: Sort, Smart filters, Smart
     Collections; `FilterMessage`; the view saved when it closes).
@@ -26,15 +30,15 @@ samples in `crates/samples/`) instead of guessing.
     and `covers.rs` (the core's covers kept as their files, the stores' originals decoded at full
     size only while their tiles are near the screen, a stand-in until each original arrives;
     a game with none gets its icon made into one, as Steam makes covers from wide pictures;
-    Choose and Reset cover).
+    `add_cover` and `forget` for the Artwork dialog).
   - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
     sizes at the window's pixel scaling, again when it changes; `icon` draws one).
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
     scroll position). The header is a band of the game's art from edge to edge on every game
     (`page_art.rs`: the selected game's wide background and logo, the user's own or the
     stores', decoded in the background; else its cover, else its icon, blurred; the store's
-    colour until one is ready), with a Page art button (and Page art… in the game menu) for the
-    user's own background and logo. The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
+    colour until one is ready), with an Artwork button that opens the Artwork dialog on its
+    Banner tab. The launch bar's PCGamingWiki link is made on the UI thread; its Nexus Mods
     one in the background (`OpenNexusMods`, then `NexusModsFound` opens it), as finding it reads
     the game's folder and may download Nexus's list. Saves and Config open the folders
     PCGamingWiki names (`gm_core::game_data`, `request_game_folders`, `GameFoldersLoaded`), looked
@@ -42,7 +46,8 @@ samples in `crates/samples/`) instead of guessing.
     disabled and their tooltip says why. The game menu has all four too.
   - `settings_page.rs` (Settings: Appearance, how the window looks: theme, background, accent,
     and when animated covers play (Automatic, Always, When hovered, Never); saved in
-    `game-settings.json`, read before the window opens, following Windows' changes).
+    `game-settings.json`, read before the window opens, following Windows' changes; and
+    SteamGridDB, the user's API key in Credential Manager, `artwork::steamgriddb_card`).
   - `mods_view.rs` (the ReShade and DXVK & LAA tabs, the mod dialogs), `reshade_panel.rs` (the
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA

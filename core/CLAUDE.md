@@ -23,7 +23,8 @@ holds the rules and facts that span them.
     needs).
   - `uninstall.rs` (how a game is uninstalled: `route` reads the registry, `run` hands over
     through `launch`; nothing is deleted here).
-  - `icon.rs` (icons as they are in the games' files, at their best: each icon's single best
+  - `icon.rs` (the user's own icon first (`set_own`, `%APPDATA%\Game Manager\icons`), else icons
+    as they are in the games' files, at their best: each icon's single best
     image, the largest in true colour (its depth as the icon's directory lists it too), byte for
     byte from `.ico` files and programs' icon resources, as a `.png` or a one-image `.ico` so
     Windows' own decoder shows it too; cached; nothing is decoded or scaled here, no icon
@@ -48,7 +49,12 @@ holds the rules and facts that span them.
     placeholders filled in, the first folder on disk in the store's then Windows' order).
   - `nexus_mods.rs` (a game's Nexus Mods page: its domain from `games.json`'s `nexusMods`, else
     by name in Nexus's public list of games, cached a week; else Nexus's games search).
-  - `http.rs` (WinHTTP `get`/`download`/`etag`, on one session for the process).
+  - `http.rs` (WinHTTP `get`/`get_with` (request headers, an API key)/`download`/`etag`, on one
+    session for the process).
+  - `steamgriddb.rs` (SteamGridDB's API v2 with the user's own key: a game by Steam app id or by
+    name, its covers, heroes, logos and icons a page at a time, thumbnails cached, a picture
+    chosen downloaded; which was chosen, in `steamgriddb.json`) and `credentials.rs` (secrets in
+    Windows Credential Manager).
 - **Mods**:
   - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`; `CopyTree` and
     `DeleteFiles` move a folder of files as one operation).
@@ -127,7 +133,9 @@ holds the rules and facts that span them.
 ## Files
 - `json_file::user_file` → `%APPDATA%\Game Manager`: the user's `game-settings.json`,
   `custom-games.json`, `mods.json` and `reshade.json`, their own shaders and add-ons in
-  `reshade\custom`, and their own covers in `covers` (`<game id>.jpg`, `:` as `_`).
+  `reshade\custom`, and their own covers in `covers` (`<game id>.jpg`, `:` as `_`), page art in
+  `page-art` and icons in `icons` the same way, and `steamgriddb.json` (which SteamGridDB picture
+  each part came from). The SteamGridDB key is in Credential Manager, not in a file.
   - They are loaded before saving, so an unreadable file is never overwritten, and unknown fields
     are kept.
 - `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete.
@@ -154,6 +162,8 @@ holds the rules and facts that span them.
   - GitHub's API: 60 anonymous requests an hour.
   - Nexus Mods: only its public list of games (`data.nexusmods.com`, 1.8 MB), at most once a
     week. Its v1 API needs a personal key, and its API policy forbids one in an app for others.
+  - SteamGridDB: only with the user's own key (Settings), only while the Artwork dialog is open,
+    one game at a time. It publishes no terms for sharing a key, so none ships with the app.
 - **windows-rs bindings**: Win32 features are named after C headers (`core/Cargo.toml`). The
   bindings come from windows-rs master and change shape between commits (constants' integer
   types, `Option` vs raw pointers): fix call sites to the new signatures.

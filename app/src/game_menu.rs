@@ -9,9 +9,8 @@
 //!   ("Skip launcher"); Open folder, PCGamingWiki, Nexus Mods, Saves folder and Config folder (as
 //!   the game page's buttons; a folder not looked up yet is looked up, then opened or the error
 //!   bar says why not);
-//!   Rename…, Choose cover… (and Reset cover for a game with the user's own, `covers.rs`), Page
-//!   art… (its background and logo, `page_art.rs`), Hide
-//!   from the list (or Show in the list);
+//!   Rename…, Artwork… (its cover, banner, logo and icon, `artwork.rs`), Hide from the list (or
+//!   Show in the list);
 //!   Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups are
 //!   split by lines, and the two destructive items are red.
 //! - **Its size** is worked out from its rows, so it flips up or left to stay in the window.
@@ -34,7 +33,6 @@ use gm_core::game_data::FolderKind;
 use gm_core::uninstall::Route;
 
 use crate::app_view::{dialog, removal_dialog};
-use crate::covers::CoverMessage;
 use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{Align, Edges, El, Role, col, glyph, layers, row, text};
@@ -65,11 +63,8 @@ pub(crate) enum MenuAction {
     /// Opens its saves or config folder, as PCGamingWiki names it (looked up first if need be).
     GameFolder(FolderKind),
     Rename,
-    /// A picture of the user's as the game's cover (`covers.rs`), or back to the store's.
-    ChooseCover,
-    ResetCover,
-    /// The Page art dialog: the user's own background and logo (`page_art.rs`).
-    PageArt,
+    /// The Artwork dialog: its cover, banner, logo and icon (`artwork.rs`).
+    Artwork,
     /// Hides it from the list, or shows it again.
     Hide,
     Uninstall,
@@ -319,24 +314,10 @@ impl GameManager {
         );
         rows.item(
             g::PICTURE,
-            "Choose cover…",
-            format!("Choose a cover for {}", game.name),
-            MenuAction::ChooseCover,
+            "Artwork…",
+            format!("Change the artwork of {}", game.name),
+            MenuAction::Artwork,
         );
-        rows.item(
-            g::PICTURE,
-            "Page art…",
-            format!("Change the page art of {}", game.name),
-            MenuAction::PageArt,
-        );
-        if self.covers.is_own(&game.id) {
-            rows.item(
-                g::UNDO,
-                "Reset cover",
-                format!("Reset {}'s cover", game.name),
-                MenuAction::ResetCover,
-            );
-        }
         let (eye, hide) = if game.hidden {
             (g::VIEW, "Show in the list")
         } else {
@@ -571,10 +552,10 @@ impl GameManager {
                 let name = game.name.clone();
                 self.menu.renaming = Some(Rename { id, name });
             }
-            MenuAction::ChooseCover => self.handle_cover(CoverMessage::Choose(id), context),
-            MenuAction::ResetCover => self.handle_cover(CoverMessage::Reset(id), context),
-            MenuAction::PageArt => {
-                self.handle_page_art(crate::page_art::PageArtMessage::Edit(id), context);
+            MenuAction::Artwork => {
+                let open =
+                    crate::artwork::ArtworkMessage::Open(id, gm_core::steamgriddb::Kind::Cover);
+                self.handle_artwork(open, context);
             }
             MenuAction::Hide => self.toggle_hidden(id, context),
             MenuAction::Uninstall => {
