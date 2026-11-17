@@ -16,6 +16,9 @@
 //!   is the picture itself), no larger than `THUMB_PIXELS`. A click downloads the picture and
 //!   makes it the part's own, noted as SteamGridDB's (`steamgriddb::record`), so it is marked
 //!   with a check.
+//! - **Closing it** frees its thumbnails (99 MB for Half-Life 2's four tabs, kept until the app
+//!   quit before) and stops its thumbnail jobs before their next picture, so SteamGridDB is only
+//!   asked while it is open; opening it again decodes them from the disk cache.
 //! - **The key** is read from Credential Manager in the background at start (`KeyRead`), kept in
 //!   memory only, and never shown. Settings saves or removes it (`steamgriddb_card`: a `field`
 //!   with Save, or once saved a `setting_row` with Remove).
@@ -23,6 +26,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gm_core::covers::Cover;
 use gm_core::page_art::{self, Part};
@@ -206,6 +210,25 @@ struct Open {
     lists: HashMap<Kind, List>,
     /// A picture or file being made a part's own.
     applying: Option<Kind>,
+    /// True while the dialog is open: its thumbnail jobs stop once it closes.
+    alive: Arc<AtomicBool>,
+}
+
+impl Open {
+    fn new(game: String, tab: Kind) -> Self {
+        Self {
+            game,
+            tab,
+            previews: None,
+            chosen: BTreeMap::new(),
+            sgdb_game: Lookup::Idle,
+            query: String::new(),
+            results: Lookup::Idle,
+            lists: HashMap::new(),
+            applying: None,
+            alive: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -216,12 +239,29 @@ pub(crate) struct ArtworkState {
     /// Settings: the key being typed.
     key_draft: String,
     key_busy: bool,
-    /// Thumbnails, by picture id, kept while the app runs (small, and asked for again when
-    /// another game shows the same).
+    /// The open dialog's thumbnails, by picture id. Not small (about half a megabyte each: 215
+    /// for Half-Life 2's four tabs took 99 MB), so they go when the dialog closes; opening it
+    /// again decodes them from the disk cache (`steamgriddb::preview`), with no request.
     thumbs: HashMap<u64, Thumb>,
 }
 
 impl ArtworkState {
+    /// Closes the dialog: its thumbnails go, and its thumbnail jobs stop before their next
+    /// picture.
+    fn close(&mut self) {
+        if let Some(open) = self.open.take() {
+            open.alive.store(false, Ordering::Relaxed);
+        }
+        self.thumbs.clear();
+    }
+
+    /// A thumbnail made: kept while it is still asked for (the dialog may have closed since).
+    fn thumb_made(&mut self, id: u64, thumb: Thumb) {
+        if let Some(slot) = self.thumbs.get_mut(&id) {
+            *slot = thumb;
+        }
+    }
+
     /// Whether the dialog is open.
     pub fn is_open(&self) -> bool {
         self.open.is_some()
@@ -430,6 +470,14 @@ impl GameManager {
             .filter(|picture| !self.artwork.thumbs.contains_key(&picture.id))
             .cloned()
             .collect();
+        let Some(alive) = self
+            .artwork
+            .open
+            .as_ref()
+            .map(|open| Arc::clone(&open.alive))
+        else {
+            return;
+        };
         if wanted.is_empty() {
             return;
         }
@@ -445,8 +493,13 @@ impl GameManager {
             lists[index % THUMB_JOBS].push(picture);
         }
         for list in lists.into_iter().filter(|list| !list.is_empty()) {
+            let alive = Arc::clone(&alive);
             context.spawn_stream(move |send| {
                 for picture in list {
+                    // Closed: no more downloads, as SteamGridDB is only asked while it is open.
+                    if !alive.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let thumb = sgdb::preview(&picture)
                         .and_then(|bytes| image::decode_thumbnail(&bytes, THUMB_PIXELS))
                         .map(Arc::new);
@@ -468,21 +521,12 @@ impl GameManager {
                 if !self.games.iter().any(|game| game.id == id) {
                     return;
                 }
-                self.artwork.open = Some(Open {
-                    game: id,
-                    tab,
-                    previews: None,
-                    chosen: BTreeMap::new(),
-                    sgdb_game: Lookup::Idle,
-                    query: String::new(),
-                    results: Lookup::Idle,
-                    lists: HashMap::new(),
-                    applying: None,
-                });
+                self.artwork.close();
+                self.artwork.open = Some(Open::new(id, tab));
                 self.request_previews(context);
                 self.find_sgdb_game(context);
             }
-            ArtworkMessage::Close => self.artwork.open = None,
+            ArtworkMessage::Close => self.artwork.close(),
             ArtworkMessage::Tab(tab) => {
                 if let Some(open) = &mut self.artwork.open {
                     open.tab = tab;
@@ -742,10 +786,10 @@ impl GameManager {
                     Some(picture) => Thumb::Ready(picture),
                     None => Thumb::Failed,
                 };
-                self.artwork.thumbs.insert(id, thumb);
+                self.artwork.thumb_made(id, thumb);
             }
             ArtworkMessage::OpenSettings => {
-                self.artwork.open = None;
+                self.artwork.close();
                 self.go_to(Page::Settings, context);
             }
         }
@@ -1177,5 +1221,31 @@ mod tests {
         let previews = Previews::default();
         assert_eq!(previews.get(Kind::Logo).1, Source::Nothing);
         assert_eq!(Source::SteamGridDb.label(), "From SteamGridDB");
+    }
+
+    #[test]
+    fn closing_the_dialog_frees_its_thumbnails_and_stops_their_jobs() {
+        let thumb = || {
+            Thumb::Ready(Arc::new(Picture {
+                width: 2,
+                height: 2,
+                pixels: vec![0; 16],
+            }))
+        };
+        let mut state = ArtworkState {
+            open: Some(Open::new("steam:220".into(), Kind::Banner)),
+            ..ArtworkState::default()
+        };
+        let alive = Arc::clone(&state.open.as_ref().unwrap().alive);
+        state.thumbs.insert(1, Thumb::Loading);
+        state.thumbs.insert(2, Thumb::Loading);
+        state.thumb_made(1, thumb());
+        assert!(matches!(state.thumbs.get(&1), Some(Thumb::Ready(_))));
+        state.close();
+        assert!(state.open.is_none() && state.thumbs.is_empty());
+        assert!(!alive.load(Ordering::Relaxed), "its jobs stop");
+        // A thumbnail made after it closed is dropped.
+        state.thumb_made(2, thumb());
+        assert!(state.thumbs.is_empty());
     }
 }

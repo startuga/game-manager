@@ -22,7 +22,8 @@ samples in `crates/samples/`) instead of guessing.
   - `artwork.rs` (the Artwork dialog, from Artwork… and the band's button: the game's cover,
     banner, logo and icon in tabs, each from a file of the user's, the store's, or SteamGridDB's
     pictures with the user's key; `ArtworkMessage`; Settings ▸ SteamGridDB, the key).
-    Previews and every file and network step run in the background; thumbnails are kept by id.
+    Previews and every file and network step run in the background; thumbnails are kept by id
+    while the dialog is open, and freed, their jobs stopped, when it closes.
   - `sidebar.rs` (search, the Sort and filters button, the pages, the view's sections, game
     rows, Add a game) and `filter_menu.rs` (that button's flyout: Sort, Smart filters, Smart
     Collections; `FilterMessage`; the view saved when it closes).
