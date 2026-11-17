@@ -101,8 +101,8 @@ pub fn subtle_button<M>(icon: &str, label: impl Into<String>) -> El<M> {
 }
 
 /// `icon_button` over a picture (the game page's band), in the dark palette whatever the theme:
-/// on a dark chip, as the pin is on a cover, so it reads on light art too (Half-Life 2's fog).
-/// The pointer lightens it, a press more.
+/// no fill of its own, so it blends into the art as the other icon buttons do into the page, and
+/// the dark palette's subtle fills under the pointer and on a press.
 pub fn picture_icon_button<M>(icon: &str, name: impl Into<String>) -> El<M> {
     let name = name.into();
     row([glyph(icon, theme::ICON_SIZE)
@@ -110,8 +110,8 @@ pub fn picture_icon_button<M>(icon: &str, name: impl Into<String>) -> El<M> {
         .text_align(TextAlign::Center)
         .fill_width()])
     .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
-    .bg(theme::OVER_PICTURE_CHIP)
-    .hover_overlay(theme::OVER_PICTURE_HOVER)
+    .hover_bg(theme::DARK.subtle_hover)
+    .pressed_bg(theme::DARK.subtle_pressed)
     .radius(theme::RADIUS_CONTROL)
     .role(Role::Button)
     .tooltip(name.clone())

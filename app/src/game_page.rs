@@ -11,7 +11,9 @@
 //! base colour). Over it, above the fade, the logo (else the icon and the name in the hero size),
 //! the folder and the chips, in the page's column, in the dark palette whatever the theme: art is
 //! mostly dark, and logos are drawn for it. The band's top right has the Artwork button
-//! (`widgets::picture_icon_button`: the Artwork dialog on its Banner tab, `artwork.rs`). Then a
+//! (`widgets::picture_icon_button`: the Artwork dialog on its Banner tab, `artwork.rs`), with no
+//! chip of its own: a soft shade around it (`theme::ART_BUTTON_SHADE`) lets its white glyph read
+//! on light art too. Then a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
@@ -226,6 +228,13 @@ impl GameManager {
                     (theme::ART_FADE_FROM, shade(0xA0)),
                     (1.0, shade(0xA0)),
                 ],
+            );
+            // And softly around the Artwork button, whose white glyph has no chip of its own.
+            painter.fill_radial(
+                rect,
+                artwork_button_centre(rect.w),
+                theme::ART_BUTTON_SHADE,
+                &[(0.0, shade(0x90)), (0.5, shade(0x50)), (1.0, shade(0))],
             );
         })
         .fill_width()
@@ -686,4 +695,15 @@ fn art_logo(game: &Game, logo: &Arc<Picture>, animation: Option<&Arc<Animation>>
         .animate(animation, Play::Always)
         .role(Role::Text)
         .name(game.name.clone())
+}
+
+/// The middle of the band's Artwork button, from the band's top-left corner, in a band `width`
+/// wide: at the top right of the page's column, as `art_band`'s `corner` places it (its padding,
+/// `PAGE_MAX_WIDTH` and the button's size). The band's scrim shades around it.
+fn artwork_button_centre(width: f32) -> (f32, f32) {
+    let column = (width - 2.0 * theme::space::XL).clamp(0.0, PAGE_MAX_WIDTH);
+    (
+        (width + column) / 2.0 - theme::CONTROL_HEIGHT / 2.0,
+        theme::space::M + theme::CONTROL_HEIGHT / 2.0,
+    )
 }

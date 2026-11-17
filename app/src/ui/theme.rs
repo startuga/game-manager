@@ -272,7 +272,7 @@ pub const fn wash(tint: ColorF) -> ColorF {
 /// Colours that sit over pictures (covers, art) and look the same in either theme.
 /// The tint over a cover tile under the pointer.
 pub const OVER_PICTURE_HOVER: ColorF = argb(0x1FFF_FFFF);
-/// A small dark chip over a picture: a cover's pin, the band's Artwork button.
+/// A small dark chip over a cover (the pin).
 pub const OVER_PICTURE_CHIP: ColorF = argb(0xC717_181C);
 /// Windows' own red, in either theme: the title bar's close button under the pointer, and the
 /// button that removes something (`widgets::danger_button`), with white text; and pressed.
@@ -345,6 +345,9 @@ pub const ART_BAND_MIN_HEIGHT: f32 = 270.0;
 pub const ART_BAND_MAX_HEIGHT: f32 = 380.0;
 /// Where the band's picture starts to fade out, as a share of its height; the text sits above.
 pub const ART_FADE_FROM: f32 = 0.7;
+/// The soft shade around the band's Artwork button (across, down), so its white glyph reads on
+/// light art (Half-Life 2's fog) with no chip of its own.
+pub const ART_BUTTON_SHADE: (f32, f32) = (120.0, 72.0);
 /// The largest a game's logo is drawn over its art (width, height).
 pub const ART_LOGO_MAX: (f32, f32) = (480.0, 112.0);
 

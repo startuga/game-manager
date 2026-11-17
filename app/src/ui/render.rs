@@ -626,6 +626,32 @@ impl Painter<'_> {
         }
     }
 
+    /// A rectangle filled with an elliptical gradient around `centre` (in DIPs from the
+    /// rectangle's top-left corner) with `radius` (across and down, in DIPs), through `stops` (0 at
+    /// the centre, 1 at the edge; past it the last colour). Only the rectangle is filled, so the
+    /// ellipse may reach past it. The game page's band shades its Artwork button's corner this way.
+    pub fn fill_radial(
+        &self,
+        rect: Rect,
+        centre: (f32, f32),
+        radius: (f32, f32),
+        stops: &[(f32, ColorF)],
+    ) {
+        let stops: Vec<GradientStop> = stops
+            .iter()
+            .map(|&(offset, c)| {
+                GradientStop::new(offset, ColorF::new(c.r, c.g, c.b, c.a * self.alpha))
+            })
+            .collect();
+        let centre = Vector2::new(rect.x + centre.0, rect.y + centre.1);
+        if let Ok(gradient) = self
+            .session
+            .create_radial_gradient(centre, radius.0, radius.1, &stops)
+        {
+            self.session.fill_rect(&to_canvas(rect), &gradient);
+        }
+    }
+
     /// A soft glow: rounded rectangles growing outwards at falling opacity.
     pub fn glow(&self, rect: Rect, radius: f32, color: ColorF, spread: f32) {
         let steps = 6;
