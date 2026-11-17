@@ -1,6 +1,7 @@
 //! The game page's Upscalers tab: the DLSS, FSR, XeSS and Streamline DLLs in the selected game's
-//! folder (`gm_core::mods::upscalers`), one card per place, each with its version, a drop-down of
-//! the vendors' versions, Swap and Restore (✕); then the folded Versions section (the versions
+//! folder (`gm_core::mods::upscalers`), one card per place, its header (`card_header_with`)
+//! saying its version, with a drop-down of the vendors' versions, Swap and Restore (✕) at the
+//! right; then the folded Versions section (the versions
 //! downloaded and available, `upscaler_versions.rs`). `UpscalerState` also holds the NVIDIA
 //! overrides tab's driver facts and draft (`dlss_override_view.rs`).
 //!
@@ -9,7 +10,8 @@
 //!   game and cleared after a library scan, a mod job or `ModsLoaded`, as their state may have
 //!   changed.
 //! - **The library** (the kinds, GitHub's version lists and the cache) is read once, when the tab
-//!   first needs it; Refresh asks GitHub again.
+//!   first needs it; Refresh asks GitHub again. What could not be listed shows in an
+//!   `error_card` under the tab's header.
 //! - **Swap and Restore** are mod jobs (`ModKind::Upscaler`, one at a time like the others);
 //!   `UpscalerState::row` says which card shows "Working…". A swap downloads what the cache lacks,
 //!   so the cache is read again after each job.
@@ -17,10 +19,11 @@
 use crate::dlss_override_view::{OverrideDraft, OverrideLibrary};
 use crate::mods_view::{ModDialog, ModKind, shown_path};
 use crate::shell::ctx::Ctx;
-use crate::ui::el::{El, col, dropdown, row, text};
+use crate::ui::el::{El, col, dropdown, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    button, card, card_header, hint, icon_square, remove_button, working, working_button,
+    busy_width, button, card, card_header_with, error_card, hint, remove_button, working,
+    working_button,
 };
 use crate::{GameManager, Message};
 use gm_core::Game;
@@ -362,31 +365,39 @@ impl GameManager {
 
     /// The Upscalers tab: what it does, a card per place with upscaler DLLs, and Versions.
     pub(crate) fn upscalers_tab(&self, game: &Game) -> El<Message> {
-        let mut cards = vec![card([row([
-            card_header(
-                g::CHIP,
-                theme::cyan(),
-                "Upscalers",
+        let mut cards = vec![card([card_header_with(
+            g::CHIP,
+            theme::cyan(),
+            "Upscalers",
+            Some(hint(
                 "The DLSS, FSR 3.1+, XeSS and Streamline DLLs in this game's folder. Swap one for \
                  another of its vendor's versions; ✕ puts the game's own back.",
-            )
-            .fill_width(),
-            button("Info")
-                .enabled(!self.dialog_open())
-                .name("Upscalers information")
-                .on_click(UpscalerMessage::ShowInfo.into()),
-        ])
-        .gap(theme::space::M)])];
+            )),
+            vec![
+                button("Info")
+                    .enabled(!self.dialog_open())
+                    .name("Upscalers information")
+                    .on_click(UpscalerMessage::ShowInfo.into()),
+            ],
+        )])];
+        // What could not be read, each in an error card.
         if let Some(Ok(library)) = &self.upscalers.library
             && !library.failed.is_empty()
         {
-            cards.push(hint(format!(
-                "Some versions could not be listed: {}",
-                library.failed.join("; ")
-            )));
+            cards.push(error_card(
+                g::CHIP,
+                theme::cyan(),
+                "Some versions could not be listed",
+                library.failed.join("; "),
+            ));
         }
         if let Some(Err(error)) = &self.upscalers.library {
-            cards.push(hint(format!("The versions could not be read: {error}")));
+            cards.push(error_card(
+                g::CHIP,
+                theme::cyan(),
+                "The versions could not be read",
+                error.clone(),
+            ));
         }
         match self.upscalers.found.get(&game.id) {
             None => cards.push(working("Looking for upscaler DLLs…")),
@@ -491,7 +502,7 @@ impl GameManager {
             )
             .enabled(has_versions && !busy && found.x64)
             .name(format!("Version of {name}"))
-            .width(300.0)
+            .width(theme::SETTING_CONTROL_WIDTH)
         };
         // The version swapped in already needs no swap.
         let already = matches!(
@@ -504,7 +515,7 @@ impl GameManager {
         let swap = if working_here {
             working_button()
         } else {
-            crate::ui::widgets::accent_button("Swap")
+            busy_width(crate::ui::widgets::accent_button("Swap"))
                 .enabled(has_versions && !busy && found.x64 && !already)
                 .name(format!("Swap {name}"))
                 .tooltip(if already {
@@ -525,19 +536,13 @@ impl GameManager {
             _ => theme::slate(),
         };
         card([
-            row([
-                icon_square(g::CHIP, tint, 36.0),
-                col([
-                    text(name).text_size(theme::TEXT_SUBTITLE).bold(),
-                    text(state).color(theme::text_secondary()).wrap(),
-                ])
-                .gap(theme::space::XXS)
-                .fill_width(),
-                picker,
-                swap,
-                restore,
-            ])
-            .gap(theme::space::S),
+            card_header_with(
+                g::CHIP,
+                tint,
+                name,
+                Some(text(state).color(theme::text_secondary()).wrap()),
+                vec![picker, swap, restore],
+            ),
             hint(place),
         ])
     }

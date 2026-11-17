@@ -1,22 +1,26 @@
 //! The game page's mod tabs: ReShade, and DXVK & LAA (LAA for 32-bit games only). Each mod is a
-//! card: its installed version (a link to the page it was downloaded from), Info, Install or
-//! Reinstall, Settings and the red ✕, then a line saying what Install does, what is installed, or
-//! why it can't be. Then the dialogs these open (Info or settings), as modal layers: one at a
-//! time, and the mod buttons wait while one is open. Uninstalling ReShade or DXVK, and deleting a
+//! card whose header (`card_header_with`) says its installed version (a link to the page it was
+//! downloaded from, a view's one inline link), with Install or Reinstall, Settings, the red ✕
+//! and Info last at the right; then a line saying what Install does, what is installed, or why it
+//! can't be (`working` while that is looked up). Then the dialogs these open (Info or settings),
+//! as modal layers: one at a time, and the mod buttons wait while one is open. DXVK settings is
+//! laid out as every form: its choices are `setting_row`s (HDR a `switch`), the frame-rate limit
+//! a `field`, and the NVIDIA part under a `section_label`. Uninstalling ReShade or DXVK, and deleting a
 //! shader profile, ask first (`Confirm`, a red `removal_dialog`): ReShade's uninstall deletes its
 //! preset with the user's changes.
 //!
 //! The ReShade tab has three views (`ReshadeView`), switched by pills under the tab strip:
 //! ReShade (its card), Shaders and Add-ons (`reshade_panel.rs`; `main.rs` opens and leaves them).
 
-use crate::app_view::{dialog, field_label, removal_dialog};
+use crate::app_view::{dialog, removal_dialog};
 use crate::shell::WindowInfo;
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, card, card_header, hint, icon_button, icon_square, icon_text_button,
-    link, radio_group, remove_button, segmented, text_box, toggle, working, working_button,
+    accent_button, busy_width, button, card, card_header, card_header_with, field, hint,
+    icon_button, icon_text_button, link, radio_group, remove_button, section_label, segmented,
+    setting_row, switch, text_box, working, working_button,
 };
 use crate::{DialogResult, GameManager, Message, ReshadeView};
 use gm_core::graphics::GraphicsApi;
@@ -267,25 +271,29 @@ pub(crate) struct ModCard {
     pub title: &'static str,
     /// The installed version (a link) or a status.
     pub status: El<Message>,
+    /// Its actions, Info last (`widgets::card_header_with`).
     pub actions: Vec<El<Message>>,
     pub hint: String,
+    /// The hint says what is being looked up ("Checking the game's folder…"): shown working.
+    pub looking: bool,
 }
 
-/// A mod's card: icon, name and status, its actions on the right, and the hint below.
+/// A mod's card: its header (icon, name, status, actions at the right), and the hint below.
 pub(crate) fn mod_card(card_spec: ModCard) -> El<Message> {
+    let below = if card_spec.looking {
+        working(card_spec.hint)
+    } else {
+        hint(card_spec.hint)
+    };
     card([
-        row([
-            icon_square(card_spec.icon, card_spec.tint, 36.0),
-            col([
-                text(card_spec.title).text_size(theme::TEXT_SUBTITLE).bold(),
-                card_spec.status,
-            ])
-            .gap(theme::space::XXS)
-            .fill_width(),
-            row(card_spec.actions).gap(theme::space::S),
-        ])
-        .gap(theme::space::M),
-        hint(card_spec.hint),
+        card_header_with(
+            card_spec.icon,
+            card_spec.tint,
+            card_spec.title,
+            Some(card_spec.status),
+            card_spec.actions,
+        ),
+        below,
     ])
 }
 
@@ -383,16 +391,12 @@ impl GameManager {
         let install = if working {
             working_button()
         } else {
-            accent_button(label)
+            busy_width(accent_button(label))
                 .enabled(!busy && matches!(target, Some(Ok(_))))
                 .name(format!("{label} ReShade"))
                 .on_click(Message::InstallReshade)
         };
         let actions = vec![
-            button("Info")
-                .enabled(!self.dialog_open())
-                .name("ReShade information")
-                .on_click(Message::ShowReshadeInfo),
             install,
             icon_button(g::SETTINGS, "ReShade settings")
                 .enabled(self.mod_job.is_none() && !self.dialog_open())
@@ -409,6 +413,10 @@ impl GameManager {
                     action: "Uninstall",
                     then: Box::new(Message::UninstallReshade),
                 })),
+            button("Info")
+                .enabled(!self.dialog_open())
+                .name("ReShade information")
+                .on_click(Message::ShowReshadeInfo),
         ];
 
         let layer_note = |apps: usize| {
@@ -480,7 +488,13 @@ impl GameManager {
                 (None, Some(Err(blocked))) => blocked.to_string(),
             }
         };
+        let looking = !working
+            && (target.is_none()
+                || (installed.is_none()
+                    && matches!(target, Some(Err(reshade::Blocked::NoApi)))
+                    && !self.graphics.contains_key(&game.id)));
         mod_card(ModCard {
+            looking,
             icon: g::BRUSH,
             tint: theme::pink(),
             title: "ReShade",
@@ -568,21 +582,22 @@ impl GameManager {
             } else {
                 "LAA enabled"
             };
-            accent_button(button_label)
+            busy_width(accent_button(button_label))
                 .enabled(!busy && can_enable)
                 .on_click(Message::EnableLaa)
         };
         let actions = vec![
-            button("Info")
-                .enabled(!self.dialog_open())
-                .name("LAA information")
-                .on_click(Message::ShowLaaInfo),
             enable,
             remove_button("Put the original program back")
                 .enabled(!busy && can_restore)
                 .on_click(Message::RestoreLaa),
+            button("Info")
+                .enabled(!self.dialog_open())
+                .name("LAA information")
+                .on_click(Message::ShowLaaInfo),
         ];
         Some(mod_card(ModCard {
+            looking: laa.is_none() && !working,
             icon: g::CHIP,
             tint: theme::cyan(),
             title: "Large Address Aware",
@@ -616,16 +631,12 @@ impl GameManager {
         let install = if working {
             working_button()
         } else {
-            accent_button(label)
+            busy_width(accent_button(label))
                 .enabled(!busy && target.is_ok() && reshade_dll.is_none())
                 .name(format!("{label} DXVK"))
                 .on_click(Message::InstallDxvk)
         };
         let actions = vec![
-            button("Info")
-                .enabled(!self.dialog_open())
-                .name("DXVK information")
-                .on_click(Message::ShowDxvkInfo),
             install,
             icon_button(g::SETTINGS, "DXVK settings")
                 .enabled(idle)
@@ -639,6 +650,10 @@ impl GameManager {
                     action: "Uninstall",
                     then: Box::new(Message::UninstallDxvk),
                 })),
+            button("Info")
+                .enabled(!self.dialog_open())
+                .name("DXVK information")
+                .on_click(Message::ShowDxvkInfo),
         ];
 
         // The HDR-mod config an HDR-mod install brings.
@@ -676,7 +691,12 @@ impl GameManager {
                 (None, Err(blocked)) => blocked.to_string(),
             }
         };
+        let looking = !working
+            && installed.is_none()
+            && matches!(target, Err(Blocked::NoApi))
+            && !self.graphics.contains_key(&game.id);
         mod_card(ModCard {
+            looking,
             icon: g::WRENCH,
             tint: theme::orange(),
             title: "DXVK",
@@ -799,42 +819,39 @@ impl GameManager {
         if settings.variant == DxvkVariant::HdrMod {
             rows.push(self.hdr_mod_config_picker(settings));
         }
-        rows.push(
-            row([
-                toggle(
-                    "HDR",
-                    settings.config.hdr,
-                    edited(DxvkSettingsEdit::Hdr(!settings.config.hdr)),
-                )
-                .fill_width(),
-                col([
-                    field_label("Frame-rate limit (0 = none)"),
-                    text_box(
-                        "dxvk:fps",
-                        settings.config.max_frame_rate.to_string(),
-                        "0",
-                        "Frame-rate limit",
-                        move |value| {
-                            edited(DxvkSettingsEdit::MaxFrameRate(value.trim().parse().ok()))
-                        },
-                    ),
-                ])
-                .gap(theme::space::XS)
-                .width(220.0),
-            ])
-            .gap(theme::space::XL),
-        );
+        // Choices as setting rows, the frame-rate limit as a field.
+        rows.push(setting_row(
+            "HDR",
+            "HDR output, for games that have it.",
+            Some(switch(
+                "HDR",
+                settings.config.hdr,
+                edited(DxvkSettingsEdit::Hdr(!settings.config.hdr)),
+            )),
+        ));
         let huds = Hud::ALL.map(|hud| hud.label().to_owned()).to_vec();
-        rows.push(
-            col([
-                field_label("HUD"),
+        rows.push(setting_row(
+            "HUD",
+            "What DXVK draws over the game.",
+            Some(
                 dropdown("dxvk:hud", huds, hud, move |i| {
                     edited(DxvkSettingsEdit::Hud(Some(i)))
                 })
-                .name("HUD"),
-            ])
-            .gap(theme::space::XS),
-        );
+                .name("HUD")
+                .width(theme::SETTING_CONTROL_WIDTH),
+            ),
+        ));
+        rows.push(field(
+            "Frame-rate limit",
+            text_box(
+                "dxvk:fps",
+                settings.config.max_frame_rate.to_string(),
+                "0",
+                "Frame-rate limit",
+                move |value| edited(DxvkSettingsEdit::MaxFrameRate(value.trim().parse().ok())),
+            ),
+            "0 is none.",
+        ));
         rows.push(hint(
             "The version is used by the next Install or Reinstall. The other settings are \
              written to dxvk.conf next to the game's program.",
@@ -896,37 +913,49 @@ impl GameManager {
             )
             .enabled(enabled)
             .name(name)
+            .width(theme::SETTING_CONTROL_WIDTH)
+        };
+        let note = if profile.is_none() && exe.is_some() && self.nvidia_profile.is_none() {
+            working(note)
+        } else {
+            hint(note)
         };
         Some(
             col([
-                text("NVIDIA (HDR with DXVK)").bold(),
-                field_label("Vulkan/OpenGL present method"),
-                picker(
-                    "nvidia:method",
-                    &PRESENT_METHODS,
-                    original_label(
-                        original.map(|o| o.method),
-                        now.method,
-                        &nvidia::method_label,
-                    ),
-                    settings.nvidia.present_method,
+                section_label("NVIDIA (HDR with DXVK)"),
+                setting_row(
                     "Vulkan/OpenGL present method",
-                    DxvkSettingsEdit::PresentMethod,
+                    "",
+                    Some(picker(
+                        "nvidia:method",
+                        &PRESENT_METHODS,
+                        original_label(
+                            original.map(|o| o.method),
+                            now.method,
+                            &nvidia::method_label,
+                        ),
+                        settings.nvidia.present_method,
+                        "Vulkan/OpenGL present method",
+                        DxvkSettingsEdit::PresentMethod,
+                    )),
                 ),
-                field_label("Present method flags"),
-                picker(
-                    "nvidia:flags",
-                    &PRESENT_FLAG_VALUES,
-                    original_label(original.map(|o| o.flags), now.flags, &nvidia::flags_label),
-                    settings.nvidia.present_flags,
+                setting_row(
                     "Present method flags",
-                    DxvkSettingsEdit::PresentFlags,
+                    "",
+                    Some(picker(
+                        "nvidia:flags",
+                        &PRESENT_FLAG_VALUES,
+                        original_label(original.map(|o| o.flags), now.flags, &nvidia::flags_label),
+                        settings.nvidia.present_flags,
+                        "Present method flags",
+                        DxvkSettingsEdit::PresentFlags,
+                    )),
                 ),
-                row([icon_text_button(g::REFRESH, "Reset to original")
+                row([icon_text_button(g::RESET, "Reset to original")
                     .enabled(enabled && !settings.nvidia.is_original())
                     .name("Reset NVIDIA settings to original")
                     .on_click(Message::DxvkSettingsEdited(DxvkSettingsEdit::ResetNvidia))]),
-                hint(note),
+                note,
             ])
             .gap(theme::space::S)
             .padding(crate::ui::el::Edges::new(0.0, theme::space::S, 0.0, 0.0)),
@@ -975,7 +1004,8 @@ impl GameManager {
             Message::DxvkSettingsEdited(DxvkSettingsEdit::HdrModConfig(Some(choice)))
         })
         .enabled(enabled)
-        .name("HDR-mod config");
-        col([field_label("HDR-mod config"), picker, hint(note)]).gap(theme::space::XS)
+        .name("HDR-mod config")
+        .width(theme::SETTING_CONTROL_WIDTH);
+        setting_row("HDR-mod config", &note, Some(picker))
     }
 }

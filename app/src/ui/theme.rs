@@ -272,7 +272,7 @@ pub const fn wash(tint: ColorF) -> ColorF {
 /// Colours that sit over pictures (covers, art) and look the same in either theme.
 /// The tint over a cover tile under the pointer.
 pub const OVER_PICTURE_HOVER: ColorF = argb(0x1FFF_FFFF);
-/// A small dark chip over a cover (the pin).
+/// A small dark chip over a picture: a cover's pin, the band's Artwork button.
 pub const OVER_PICTURE_CHIP: ColorF = argb(0xC717_181C);
 /// Windows' own red, in either theme: the title bar's close button under the pointer, and the
 /// button that removes something (`widgets::danger_button`), with white text; and pressed.
@@ -304,6 +304,16 @@ pub mod space {
 
 /// Control heights.
 pub const CONTROL_HEIGHT: f32 = 30.0;
+/// The widths controls share wherever they are, so a page looks like any other:
+/// a drop-down at the right of a setting row (`widgets::setting_row`),
+pub const SETTING_CONTROL_WIDTH: f32 = 240.0;
+/// a switch with its On or Off (`widgets::switch`),
+pub const SWITCH_WIDTH: f32 = 84.0;
+/// the least a form's or a dialog's button is, and a button busy with its job (`working_button`):
+/// wide enough for "Working…", so the row doesn't jump.
+pub const BUTTON_MIN_WIDTH: f32 = 112.0;
+/// a fact's label in a key and value list (`widgets::facts`).
+pub const FACT_LABEL_WIDTH: f32 = 110.0;
 pub const TITLE_BAR_HEIGHT: f32 = 40.0;
 /// A caption button (minimize, maximize, close).
 pub const CAPTION_BUTTON_WIDTH: f32 = 46.0;
@@ -352,6 +362,8 @@ pub mod glyph {
     pub const ADD: &str = "\u{E710}";
     pub const SEARCH: &str = "\u{E721}";
     pub const REFRESH: &str = "\u{E72C}";
+    /// "Reset to …": back to what was detected or the original (Refresh reads anew).
+    pub const RESET: &str = "\u{E7A7}";
     pub const FOLDER: &str = "\u{E8B7}";
     pub const SETTINGS: &str = "\u{E713}";
     pub const PERSONALIZE: &str = "\u{E771}";
@@ -406,23 +418,8 @@ mod tests {
     /// modules aren't checked. The toolkit (`ui/`) keeps its components' own measures.
     #[test]
     fn views_use_the_design_tokens() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = Vec::new();
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_none_or(|extension| extension != "rs") {
-                continue;
-            }
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let source = std::fs::read_to_string(&path).unwrap();
-            // The code as one line, so a call the formatter spread over several is read whole.
-            let code = source
-                .lines()
-                .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
-                .map(str::trim)
-                .filter(|line| !line.starts_with("//"))
-                .collect::<Vec<_>>()
-                .join(" ");
+        for (name, code) in views() {
             found.extend(
                 literals(&code)
                     .into_iter()
@@ -434,6 +431,134 @@ mod tests {
             "views spell their own measures; use theme's tokens:\n{}",
             found.join("\n")
         );
+    }
+
+    /// The views (`app/src/*.rs`, not `ui/`): each file's name and its code before its tests, as
+    /// one line without comments, so a call the formatter spread over several is read whole.
+    fn views() -> Vec<(String, String)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut views = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let source = std::fs::read_to_string(&path).unwrap();
+            let code = source
+                .lines()
+                .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
+                .map(str::trim)
+                .filter(|line| !line.starts_with("//"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            views.push((name, code));
+        }
+        views
+    }
+
+    /// The views build their controls from `widgets.rs` (`app/CLAUDE.md`, Design system): a
+    /// hover or pressed fill, a card's fill or an inline link in a view is a control made by hand.
+    /// The exceptions below say why; one no longer needed fails too, so the list stays true.
+    #[test]
+    fn views_use_the_shared_controls() {
+        const ALLOWED: [(&str, &str, &str); 10] = [
+            (
+                "app_view.rs",
+                ".hover_bg(",
+                "the title bar's caption buttons, red for Close",
+            ),
+            (
+                "app_view.rs",
+                ".pressed_bg(",
+                "the title bar's caption buttons",
+            ),
+            (
+                "filter_menu.rs",
+                ".hover_bg(",
+                "the flyout's lines, list items in a menu",
+            ),
+            ("filter_menu.rs", ".pressed_bg(", "the flyout's lines"),
+            ("game_menu.rs", ".hover_bg(", "menu items"),
+            ("game_menu.rs", ".pressed_bg(", "menu items"),
+            ("sidebar.rs", ".hover_bg(", "game rows, list items"),
+            ("sidebar.rs", ".pressed_bg(", "game rows"),
+            (
+                "library_page.rs",
+                ".bg(theme::card())",
+                "a tile's fill behind a game's icon",
+            ),
+            (
+                "mods_view.rs",
+                "link(",
+                "a mod's version, a link inside its status line",
+            ),
+        ];
+        let mut found = Vec::new();
+        let mut used = Vec::new();
+        for (name, code) in views() {
+            for call in hand_made(&code) {
+                if ALLOWED
+                    .iter()
+                    .any(|&(file, allowed, _)| file == name && allowed == call)
+                {
+                    used.push((name.clone(), call));
+                } else {
+                    found.push(format!("{name}: {call}…)"));
+                }
+            }
+        }
+        for (file, call, why) in ALLOWED {
+            if !used
+                .iter()
+                .any(|(name, used)| name == file && *used == call)
+            {
+                found.push(format!(
+                    "{file}: {call}…) is allowed ({why}) but no longer used"
+                ));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "views make their own controls; use widgets.rs's:
+{}",
+            found.join(
+                "
+"
+            )
+        );
+    }
+
+    /// The calls in `code` that make a control by hand, each once.
+    fn hand_made(code: &str) -> Vec<&'static str> {
+        let mut calls = Vec::new();
+        for call in [".hover_bg(", ".pressed_bg(", ".bg(theme::card())"] {
+            if code.contains(call) {
+                calls.push(call);
+            }
+        }
+        // `link(` alone, not `link_button(` or `open_link(`.
+        let inline_link = code
+            .match_indices("link(")
+            .any(|(at, _)| !code[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
+        if inline_link {
+            calls.push("link(");
+        }
+        calls
+    }
+
+    #[test]
+    fn hand_made_controls_are_found() {
+        assert_eq!(
+            hand_made("row([label]).hover_bg(theme::subtle_hover()).pressed_bg(x)"),
+            [".hover_bg(", ".pressed_bg("]
+        );
+        assert_eq!(
+            hand_made("col(rows).bg(theme::card())"),
+            [".bg(theme::card())"]
+        );
+        assert_eq!(hand_made("widgets::link(\"Open\", m)"), ["link("]);
+        assert!(hand_made("link_button(\"Open\").on_click(open_link(page))").is_empty());
     }
 
     /// What `code` spells of its own, each with the call that does.

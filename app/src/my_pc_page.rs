@@ -12,6 +12,10 @@
 //!     HDR, brightness over DDC/CI, the colour profile, and links to Windows' own settings.
 //!   - Windows' game switches: GPU scheduling (administrator rights, then a restart), Game Mode,
 //!     optimizations for windowed games, and Auto HDR (when a display has HDR).
+//! - Built from the shared components, as every page is (`widgets.rs`): settings are
+//!   `setting_row`s with `switch`es and drop-downs `SETTING_CONTROL_WIDTH` wide, Windows' own pages
+//!   open from `link_button`s, a part that couldn't be read is an `error_card`, and Refresh is a
+//!   `working_button` while it reads.
 //! - Controls wait while a change runs (`MyPcState::busy`).
 
 use crate::my_pc::{MyPcMessage, Switch, mode_for_size, rates, sizes};
@@ -19,8 +23,8 @@ use crate::shell::WindowInfo;
 use crate::ui::el::{Align, El, col, dropdown, row, slider, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    card, card_header, chip, hint, icon_text_button, link, meter, page_header, section_label,
-    toggle, working,
+    busy_width, card, card_header, chip, error_card, facts, hint, icon_text_button, link_button,
+    meter, page_header, section_label, setting_row, working, working_button,
 };
 use crate::{GameManager, Message};
 use gm_core::pc::{Display, DisplayMode, Drive, Gpu, Memory, Snapshot, format_bytes};
@@ -38,17 +42,17 @@ impl GameManager {
         let mut cards = Vec::new();
         match &pc.gpus {
             Ok(gpus) if !gpus.is_empty() => cards.extend(gpus.iter().map(gpu_card)),
-            Ok(_) => cards.push(failed_card(
+            Ok(_) => cards.push(error_card(
                 g::MONITOR,
                 theme::pink(),
                 "Graphics card",
                 "No graphics card was found in the registry.",
             )),
-            Err(error) => cards.push(failed_card(
+            Err(error) => cards.push(error_card(
                 g::MONITOR,
                 theme::pink(),
                 "Graphics card",
-                &error.to_string(),
+                error.to_string(),
             )),
         }
         cards.push(match &pc.cpu {
@@ -68,11 +72,11 @@ impl GameManager {
                     ),
                 ]),
             ]),
-            Err(error) => failed_card(g::CHIP, theme::blue(), "Processor", &error.to_string()),
+            Err(error) => error_card(g::CHIP, theme::blue(), "Processor", error.to_string()),
         });
         cards.push(match &pc.memory {
             Ok(memory) => memory_card(memory),
-            Err(error) => failed_card(g::MEMORY, theme::green(), "Memory", &error.to_string()),
+            Err(error) => error_card(g::MEMORY, theme::green(), "Memory", error.to_string()),
         });
         cards.push(match &pc.system {
             Ok(system) => card([
@@ -86,11 +90,11 @@ impl GameManager {
                     ("BIOS", or_unknown(&system.bios)),
                 ]),
             ]),
-            Err(error) => failed_card(g::SYSTEM, theme::slate(), "System", &error.to_string()),
+            Err(error) => error_card(g::SYSTEM, theme::slate(), "System", error.to_string()),
         });
         cards.push(match &pc.drives {
             Ok(drives) => storage_card(drives),
-            Err(error) => failed_card(g::STORAGE, theme::orange(), "Storage", &error.to_string()),
+            Err(error) => error_card(g::STORAGE, theme::orange(), "Storage", error.to_string()),
         });
 
         let displays: Vec<El<Message>> = match &pc.displays {
@@ -98,17 +102,17 @@ impl GameManager {
                 .iter()
                 .map(|display| self.display_card(display))
                 .collect(),
-            Ok(_) => vec![failed_card(
+            Ok(_) => vec![error_card(
                 g::MONITOR,
                 theme::cyan(),
                 "Displays",
                 "No active display was found.",
             )],
-            Err(error) => vec![failed_card(
+            Err(error) => vec![error_card(
                 g::MONITOR,
                 theme::cyan(),
                 "Displays",
-                &error.to_string(),
+                error.to_string(),
             )],
         };
         let any_hdr = pc
@@ -132,9 +136,9 @@ impl GameManager {
         };
         col([
             self.my_pc_header(Some(pc)),
-            group_label("HARDWARE"),
+            group_label("Hardware"),
             grid(cards, if wide { 2 } else { 1 }),
-            group_label("DISPLAYS AND WINDOWS SETTINGS"),
+            group_label("Displays and Windows settings"),
             bottom,
         ])
         .gap(theme::space::L)
@@ -162,9 +166,9 @@ impl GameManager {
             parts.join("  ·  ")
         });
         let refresh = if self.my_pc.pending {
-            working("Reading…")
+            working_button()
         } else {
-            icon_text_button(g::REFRESH, "Refresh")
+            busy_width(icon_text_button(g::REFRESH, "Refresh"))
                 .tooltip("Read the hardware and the display settings again")
                 .on_click(MyPcMessage::Refresh.into())
         };
@@ -201,7 +205,7 @@ impl GameManager {
             .fill_width(),
         ];
         if display.primary {
-            header.push(chip("MAIN DISPLAY", theme::accent()));
+            header.push(chip("Main display", theme::accent()));
         }
         let mut lines = vec![row(header).gap(theme::space::S)];
         if display.gdi_name.is_empty() {
@@ -240,7 +244,7 @@ impl GameManager {
             )
             .name(format!("Resolution of {}", display.name))
             .enabled(idle)
-            .width(200.0);
+            .width(theme::SETTING_CONTROL_WIDTH);
             let rates = rates(&display.modes, (current.width, current.height));
             let rate_index = rates.iter().position(|&hz| hz == current.hz);
             let picked = name.clone();
@@ -255,9 +259,9 @@ impl GameManager {
             )
             .name(format!("Refresh rate of {}", display.name))
             .enabled(idle)
-            .width(200.0);
-            lines.push(setting("Resolution", "", Some(resolution)));
-            lines.push(setting(
+            .width(theme::SETTING_CONTROL_WIDTH);
+            lines.push(setting_row("Resolution", "", Some(resolution)));
+            lines.push(setting_row(
                 "Refresh rate",
                 "The highest rate the display offers is usually the right one for games.",
                 Some(refresh),
@@ -266,7 +270,7 @@ impl GameManager {
 
         // HDR.
         if display.hdr_supported {
-            lines.push(setting(
+            lines.push(setting_row(
                 "HDR",
                 "Brighter highlights and wider colours in HDR games: Windows' own switch \
                  (Settings ▸ Display ▸ HDR).",
@@ -280,18 +284,22 @@ impl GameManager {
                 ),
             ));
         } else {
-            lines.push(setting("HDR", "This display does not support HDR.", None));
+            lines.push(setting_row(
+                "HDR",
+                "This display does not support HDR.",
+                None,
+            ));
         }
 
         // Brightness, once read.
         lines.push(match state.brightness.get(&name) {
-            None => setting("Brightness", "", Some(working("Reading…"))),
-            Some(None) if display.built_in => setting(
+            None => setting_row("Brightness", "", Some(working("Reading…"))),
+            Some(None) if display.built_in => setting_row(
                 "Brightness",
                 "A built-in screen's brightness is set in Windows' quick settings.",
                 None,
             ),
-            Some(None) => setting(
+            Some(None) => setting_row(
                 "Brightness",
                 "This monitor does not take brightness from Windows. Turn on DDC/CI in the \
                  monitor's own menu, then Refresh.",
@@ -299,7 +307,7 @@ impl GameManager {
             ),
             Some(Some(percent)) => {
                 let picked = name.clone();
-                setting(
+                setting_row(
                     "Brightness",
                     "Set over DDC/CI, like the monitor's own buttons.",
                     Some(
@@ -312,7 +320,7 @@ impl GameManager {
                         )
                         .enabled(!state.busy)
                         .name(format!("Brightness of {}", display.name))
-                        .width(220.0),
+                        .width(theme::SETTING_CONTROL_WIDTH),
                     ),
                 )
             }
@@ -321,13 +329,13 @@ impl GameManager {
         // Colour profile.
         let mode = if display.hdr_on { "HDR" } else { "SDR" };
         match display.color_profiles.as_slice() {
-            [] => lines.push(setting(
+            [] => lines.push(setting_row(
                 "Colour profile",
                 "None linked: Windows' default. Add profiles in Windows' colour settings.",
                 None,
             )),
             [only] if display.color_profile.as_deref() == Some(only.as_str()) => {
-                lines.push(setting(
+                lines.push(setting_row(
                     "Colour profile",
                     &format!(
                         "{} (for {mode}). Add more profiles in Windows' colour settings, then \
@@ -344,7 +352,7 @@ impl GameManager {
                         .position(|profile| profile.eq_ignore_ascii_case(current))
                 });
                 let picked = name.clone();
-                lines.push(setting(
+                lines.push(setting_row(
                     "Colour profile",
                     &format!("Profiles for {mode} mode"),
                     Some(
@@ -361,27 +369,22 @@ impl GameManager {
                         )
                         .name(format!("Colour profile of {}", display.name))
                         .enabled(idle)
-                        .width(220.0),
+                        .width(theme::SETTING_CONTROL_WIDTH),
                     ),
                 ));
             }
         }
         lines.push(
             row([
-                link(
-                    "Display settings",
-                    MyPcMessage::OpenSettings("ms-settings:display").into(),
-                ),
-                link(
-                    "Advanced display",
-                    MyPcMessage::OpenSettings("ms-settings:display-advanced").into(),
-                ),
-                link(
-                    "Colour management",
+                link_button("Display settings")
+                    .on_click(MyPcMessage::OpenSettings("ms-settings:display").into()),
+                link_button("Advanced display")
+                    .on_click(MyPcMessage::OpenSettings("ms-settings:display-advanced").into()),
+                link_button("Colour management").on_click(
                     MyPcMessage::OpenSettings("ms-settings:display-advancedcolor").into(),
                 ),
             ])
-            .gap(theme::space::XS),
+            .gap(theme::space::S),
         );
         card(lines)
     }
@@ -397,7 +400,7 @@ impl GameManager {
             "Windows' own switches, the same as in its Settings app",
         )];
         lines.push(match switches.gpu_scheduling {
-            Some(on) => setting(
+            Some(on) => setting_row(
                 "Hardware-accelerated GPU scheduling",
                 "Needed by DLSS Frame Generation and recommended for any frame generation. \
                  Windows asks for administrator rights; it applies after a restart.",
@@ -410,13 +413,13 @@ impl GameManager {
                     .enabled(idle),
                 ),
             ),
-            None => setting(
+            None => setting_row(
                 "Hardware-accelerated GPU scheduling",
                 "Not offered by this graphics card or its driver.",
                 None,
             ),
         });
-        lines.push(setting(
+        lines.push(setting_row(
             "Game Mode",
             "Windows puts the game first: fewer background tasks and no driver updates while \
              you play.",
@@ -429,7 +432,7 @@ impl GameManager {
                 .enabled(idle),
             ),
         ));
-        lines.push(setting(
+        lines.push(setting_row(
             "Optimizations for windowed games",
             "Lower latency, and Auto HDR, for DirectX 10 and 11 games in a window or borderless. \
              Games pick it up when they start.",
@@ -446,7 +449,7 @@ impl GameManager {
             ),
         ));
         if any_hdr {
-            lines.push(setting(
+            lines.push(setting_row(
                 "Auto HDR",
                 "HDR for DirectX 11 and 12 games made for SDR, while HDR is on. Games pick it up \
                  when they start.",
@@ -462,20 +465,15 @@ impl GameManager {
         }
         lines.push(
             row([
-                link(
-                    "Graphics settings",
+                link_button("Graphics settings").on_click(
                     MyPcMessage::OpenSettings("ms-settings:display-advancedgraphics").into(),
                 ),
-                link(
-                    "HDR settings",
-                    MyPcMessage::OpenSettings("ms-settings:display-hdr").into(),
-                ),
-                link(
-                    "Game Mode",
-                    MyPcMessage::OpenSettings("ms-settings:gaming-gamemode").into(),
-                ),
+                link_button("HDR settings")
+                    .on_click(MyPcMessage::OpenSettings("ms-settings:display-hdr").into()),
+                link_button("Game Mode")
+                    .on_click(MyPcMessage::OpenSettings("ms-settings:gaming-gamemode").into()),
             ])
-            .gap(theme::space::XS),
+            .gap(theme::space::S),
         );
         card(lines)
     }
@@ -606,11 +604,6 @@ fn storage_card(drives: &[Drive]) -> El<Message> {
     card(lines)
 }
 
-/// A card for a part that could not be read.
-fn failed_card(icon: &str, tint: windows_canvas::ColorF, title: &str, why: &str) -> El<Message> {
-    card([card_header(icon, tint, title, ""), hint(why.to_owned())])
-}
-
 /// Cards in rows of `columns`, each row's cards as tall as the row; the last card fills its row.
 fn grid(cards: Vec<El<Message>>, columns: usize) -> El<Message> {
     let mut rows = Vec::new();
@@ -644,41 +637,9 @@ fn big(value: &str) -> El<Message> {
         .wrap()
 }
 
-/// Label and value pairs in two aligned columns; empty values are left out.
-fn facts(rows: Vec<(&str, String)>) -> El<Message> {
-    col(rows
-        .into_iter()
-        .filter(|(_, value)| !value.trim().is_empty())
-        .map(|(label, value)| {
-            row([
-                text(label).color(theme::text_tertiary()).width(110.0),
-                text(value).wrap().fill_width(),
-            ])
-            .gap(theme::space::M)
-        }))
-    .gap(theme::space::XS)
-}
-
-/// A setting: its name and description on the left, its control on the right.
-fn setting(title: &str, description: &str, control: Option<El<Message>>) -> El<Message> {
-    let mut texts = vec![text(title).bold().wrap()];
-    if !description.is_empty() {
-        texts.push(hint(description.to_owned()));
-    }
-    let mut items = vec![col(texts).gap(theme::space::XXS).fill_width()];
-    items.extend(control);
-    row(items)
-        .gap(theme::space::L)
-        .pad_xy(theme::space::M, theme::space::S)
-        .bg(theme::card())
-        .radius(theme::RADIUS_CONTROL)
-}
-
-/// An On/Off switch named for UI Automation.
+/// A switch for a My PC message (`widgets::switch`).
 fn switch(name: &str, on: bool, message: MyPcMessage) -> El<Message> {
-    toggle(if on { "On" } else { "Off" }, on, message.into())
-        .name(name.to_owned())
-        .width(84.0)
+    crate::ui::widgets::switch(name, on, message.into())
 }
 
 fn known(count: u32) -> String {

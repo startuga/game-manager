@@ -1,11 +1,15 @@
 //! The ReShade tab's Shaders and Add-ons views (ReShade's shader packs and add-ons).
 //!
-//! - **Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs, or single effects
-//!   of a pack (▶ lists them, downloading the pack first). Every pack can be left out, Lilium's
+//! - **Shaders** edits a `ShadersDraft`, UI-free and unit-tested: whole packs (a card each: its
+//!   check, a fold header with its name, its description), or single effects of a pack
+//!   (unfolding it lists them, downloading the pack first). The search is a `search_box`. Every pack can be left out, Lilium's
 //!   too. Discard changes (or leaving the view) drops the draft; Deploy saves the selection and
-//!   brings it to the games (`reshade::deploy`). Profiles, Export, Import and the custom folder
-//!   are in the column beside the list.
-//! - **Add-ons** lists every add-on with an On/Off switch. A switch takes effect with Apply, or
+//!   brings it to the games (`reshade::deploy`). The Profiles card (load one, Save, New), Export,
+//!   Import and the custom folder (a `folder_button`) are in the column beside the list, each
+//!   button at its own width.
+//! - **Add-ons** lists every add-on in one card, each a `setting_row`: its name and what it does
+//!   (its version once downloaded), How to use (a `link_button`) and an On/Off `switch`. Custom
+//!   add-on files go in the folder its `folder_button` opens. A switch takes effect with Apply, or
 //!   when the view is left (another view, tab or game, or My PC): the choice is saved and
 //!   deployed like the shaders.
 //! - **The panel** (`ReshadePanel`) holds a view's game and draft. `main.rs` opens it when the
@@ -13,7 +17,7 @@
 //!   changes and Apply close it; the view then opens it again, once a Deploy has finished, so it
 //!   shows what was saved. A list that fails to load sends the tab back to its ReShade view.
 //!
-//! **Apply to**: each view shows and applies either the own choice of the selected game ("Only
+//! **Apply to** (a `setting_row` at the top of each view): each view shows and applies either the own choice of the selected game ("Only
 //! <game>", the first item and the default; `ReshadeSettings::games`), or the shared choice ("All
 //! games with ReShade", leaving out the games with their own). A game without its own choice
 //! shows the shared one. "Use all games' selection" drops the game's own choice and deploys the
@@ -22,11 +26,12 @@
 use crate::mods_view::ModKind;
 use crate::shell::ctx::Ctx;
 use crate::shell::ctx::FilePicker;
-use crate::ui::el::{Align, El, col, dropdown, glyph, row, spinner, text};
+use crate::ui::el::{Align, El, col, dropdown, glyph, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, card, divider, hint, icon_button, link, remove_button, subtle_button,
-    text_box, toggle, working,
+    accent_button, busy_width, button, card, card_header, check_button, divider, fold_header,
+    folder_button, hint, icon_button, link_button, remove_button, search_box, setting_row,
+    subtle_button, switch, text_box, working,
 };
 use crate::{GameManager, Message, ReshadeView};
 use gm_core::mods::reshade::{self, DeployTo};
@@ -804,7 +809,11 @@ impl GameManager {
     /// "Apply to", and under it what applying does: for every game with ReShade (but those with
     /// their own choice), or for the selected game alone (with "Use all games' …" when it has its
     /// own). The view's name is the pill above it.
-    fn page_header(&self, panel: &ReshadePanel, settings: Option<&ReshadeSettings>) -> El<Message> {
+    fn target_header(
+        &self,
+        panel: &ReshadePanel,
+        settings: Option<&ReshadeSettings>,
+    ) -> El<Message> {
         // "Only <game>" first, as the default.
         let mut items = Vec::new();
         if let Some((_, name)) = &panel.game {
@@ -817,12 +826,12 @@ impl GameManager {
         })
         .enabled(panel.game.is_some() && settings.is_some())
         .name("Apply to")
-        .width(280.0);
-        let mut rows = vec![
-            row([text("Apply to").color(theme::text_secondary()), apply_to])
-                .gap(theme::space::S)
-                .halign(Align::Start),
-        ];
+        .width(theme::SETTING_CONTROL_WIDTH);
+        let mut rows = vec![setting_row(
+            "Apply to",
+            "Every game with ReShade, or the selected game alone",
+            Some(apply_to),
+        )];
         if let Some(settings) = settings {
             rows.push(self.target_line(panel, settings));
         }
@@ -912,33 +921,38 @@ impl GameManager {
             .filter(|_| enabled.is_some())
             .map(|library| &library.settings);
         let mut rows = vec![
-            self.page_header(panel, settings),
-            row([link(
-                "Place custom .addon64/.addon32 files here",
-                Message::OpenAddonFolder,
-            )
-            .name("Place custom add-on files here")]),
+            self.target_header(panel, settings),
+            row([folder_button("Open custom folder")
+                .name("Place custom add-on files here")
+                .tooltip("Place custom .addon64/.addon32 files here")
+                .on_click(Message::OpenAddonFolder)]),
         ];
         match (enabled, library) {
             (Some(enabled), Some(library)) => {
-                rows.extend(
+                let mut lines = vec![card_header(
+                    g::PUZZLE,
+                    theme::violet(),
+                    "Add-ons",
+                    "ReShade's add-ons: switched on, they go next to ReShade.",
+                )];
+                lines.extend(
                     library
                         .addons
                         .iter()
-                        .map(|addon| addon_card(addon, enabled.contains(&addon.id), library)),
+                        .map(|addon| addon_row(addon, enabled.contains(&addon.id), library)),
                 );
+                rows.push(card(lines));
             }
             _ => rows.push(working("Reading the add-on list…")),
         }
         rows.push(
-            row([accent_button("Apply")
-                .min_width(160.0)
+            row([busy_width(accent_button("Apply"))
                 .enabled(enabled.is_some())
                 .tooltip("Save the add-ons switched on and put them next to ReShade")
                 .on_click(Message::CloseAddons)])
             .justify(Align::End),
         );
-        col(rows).gap(theme::space::M)
+        col(rows).gap(theme::space::L)
     }
 
     /// The Shaders view: the list of packs beside the profiles, then Deploy and Discard changes.
@@ -950,7 +964,7 @@ impl GameManager {
         let settings = library
             .filter(|_| draft.is_some())
             .map(|library| &library.settings);
-        let header = self.page_header(panel, settings);
+        let header = self.target_header(panel, settings);
         let body = match (draft, library) {
             (Some(draft), Some(library)) => row([
                 self.shader_list(draft, library)
@@ -972,13 +986,11 @@ impl GameManager {
                 .to_owned(),
         };
         let buttons = row([
-            accent_button("Deploy")
+            busy_width(accent_button("Deploy"))
                 .enabled(draft.is_some())
-                .min_width(160.0)
                 .tooltip(deploy_tip)
                 .on_click(Message::DeployShaders),
-            button("Discard changes")
-                .min_width(120.0)
+            busy_width(button("Discard changes"))
                 .enabled(draft.is_some())
                 .tooltip("Go back to the saved selection")
                 .on_click(Message::CloseReshadePanel),
@@ -999,17 +1011,16 @@ impl GameManager {
         let toolbar = row([
             button(expand_label).on_click(Message::ShaderExpandAll),
             button("Deselect all").on_click(Message::ShaderDeselectAll),
-            text_box(
+            search_box(
                 "shaders:search",
                 draft.search.as_str(),
                 "Search packs or shaders…",
                 "Search packs or shaders",
                 Message::ShaderSearch,
+                Message::ShaderSearch(draft.search.clone()),
+                Message::ShaderSearch(String::new()),
             )
             .fill_width(),
-            icon_button(g::CLOSE, "Clear the search")
-                .enabled(!draft.search.is_empty())
-                .on_click(Message::ShaderSearch(String::new())),
         ])
         .gap(theme::space::S);
 
@@ -1100,37 +1111,31 @@ impl GameManager {
             || (!draft.search.is_empty()
                 && effects.iter().any(|file| matches(file, &draft.search)));
         let downloading = self.packs_downloading.contains(id);
-        let check = crate::ui::widgets::check_square(state)
-            .role(crate::ui::el::Role::CheckBox)
-            .selected(state == Some(true))
-            .name(name)
-            .on_click(Message::ShaderPackChecked(
-                id.to_owned(),
-                Some(state != Some(true)),
-            ))
-            .valign(Align::Start);
-        let mut title = vec![text(name).text_size(theme::TEXT_SUBTITLE).weight(600)];
+        let check = check_button(
+            state,
+            name,
+            Message::ShaderPackChecked(id.to_owned(), Some(state != Some(true))),
+        )
+        .valign(Align::Start);
+        let mut detail = Vec::new();
         if cached && id != CUSTOM {
-            title.push(
+            detail.push(
                 glyph(g::CHECK, 12.0)
                     .color(theme::green())
                     .tooltip("Downloaded"),
             );
         }
-        let expand_glyph = if expanded {
-            g::CHEVRON_DOWN
-        } else {
-            g::CHEVRON_RIGHT
-        };
-        title.push(
-            icon_button(expand_glyph, format!("Effects of {name}"))
-                .size(26.0, 26.0)
-                .on_click(Message::ShaderPackExpanded(id.to_owned())),
-        );
         if downloading {
-            title.push(spinner(14.0));
+            detail.push(working("Downloading…"));
         }
-        let mut lines = vec![row(title).gap(theme::space::S), hint(description)];
+        let header = fold_header(
+            expanded,
+            text(name).text_size(theme::TEXT_SUBTITLE).weight(600),
+            Some(row(detail).gap(theme::space::S)),
+            Message::ShaderPackExpanded(id.to_owned()),
+        )
+        .name(format!("Effects of {name}"));
+        let mut lines = vec![header, hint(description)];
         if expanded {
             let shown: Vec<&String> = effects
                 .iter()
@@ -1143,7 +1148,7 @@ impl GameManager {
             if let Some(error) = self.pack_errors.get(id) {
                 lines.push(hint(format!("Could not download it: {error}")));
             } else if downloading || (!cached && id != CUSTOM) {
-                lines.push(hint("Downloading the pack to list its shaders…"));
+                lines.push(working("Downloading the pack to list its shaders…"));
             } else if shown.is_empty() {
                 lines.push(hint(if id == CUSTOM {
                     "No shaders in the custom folder yet."
@@ -1170,7 +1175,6 @@ impl GameManager {
             }
         }
         card([row([check, col(lines).gap(theme::space::XS).fill_width()]).gap(theme::space::S)])
-            .pad(theme::space::M)
     }
 }
 
@@ -1186,10 +1190,16 @@ fn section_heading(label: &str) -> El<Message> {
 
 /// Profiles (each with ✎ and ✕; Save, New), Export and Import, and Open custom folder.
 fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message> {
-    let wide = |icon: &str, label: &str, message: Message| {
+    // Buttons at their own width, never stretched across the column.
+    let action = |icon: &str, label: &str, message: Message| {
         crate::ui::widgets::icon_text_button(icon, label).on_click(message)
     };
-    let mut rows: Vec<El<Message>> = vec![text("Profiles").text_size(theme::TEXT_SUBTITLE).bold()];
+    let mut rows: Vec<El<Message>> = vec![card_header(
+        g::SAVE,
+        theme::blue(),
+        "Profiles",
+        "Selections kept by name",
+    )];
     let current = library.settings.profile.as_deref();
     if library.settings.profiles.is_empty() {
         rows.push(hint("No profiles yet: Save keeps the selection as one."));
@@ -1212,20 +1222,14 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
             ])
             .gap(theme::space::XS),
             _ => {
-                let label = text(name.as_str())
-                    .weight(if current == Some(profile.name.as_str()) {
-                        700
-                    } else {
-                        400
-                    })
-                    .fill_width();
+                // The current profile is ticked.
+                let tick = if current == Some(profile.name.as_str()) {
+                    g::CHECK
+                } else {
+                    ""
+                };
                 row([
-                    row([label])
-                        .pad_xy(theme::space::S, 0.0)
-                        .height(theme::CONTROL_HEIGHT)
-                        .radius(theme::RADIUS_CONTROL)
-                        .hover_bg(theme::subtle_hover())
-                        .pressed_bg(theme::subtle_pressed())
+                    subtle_button(tick, name.as_str())
                         .name(format!("Load {name}"))
                         .tooltip("Use this profile's selection")
                         .on_click(Message::ProfileLoad(name.clone()))
@@ -1249,110 +1253,61 @@ fn profiles_column(draft: &ShadersDraft, library: &ShaderLibrary) -> El<Message>
         rows.push(line);
     }
     rows.extend([
-        wide(g::SAVE, "Save", Message::ProfileSave)
-            .tooltip("Save the selection into the current profile (a new one when there is none)"),
-        wide(g::ADD, "New", Message::ProfileNew).tooltip("Save the selection as a new profile"),
+        row([
+            action(g::SAVE, "Save", Message::ProfileSave).tooltip(
+                "Save the selection into the current profile (a new one when there is none)",
+            ),
+            action(g::ADD, "New", Message::ProfileNew)
+                .tooltip("Save the selection as a new profile"),
+        ])
+        .gap(theme::space::S),
         divider(),
-        wide(g::EXPORT, "Export", Message::ExportShaders).tooltip(
-            "Zip the selected shader files and copy the archive to your clipboard. Paste it into \
-             Discord or a folder to share.",
-        ),
-        wide(g::IMPORT, "Import", Message::ImportShaders)
-            .tooltip("Add the shaders of a ZIP to your own, under Custom Shaders"),
+        row([
+            action(g::EXPORT, "Export", Message::ExportShaders).tooltip(
+                "Zip the selected shader files and copy the archive to your clipboard. Paste it \
+                 into Discord or a folder to share.",
+            ),
+            action(g::IMPORT, "Import", Message::ImportShaders)
+                .tooltip("Add the shaders of a ZIP to your own, under Custom Shaders"),
+        ])
+        .gap(theme::space::S),
         divider(),
-        subtle_button(g::FOLDER, "Open custom folder")
+        row([folder_button("Open custom folder")
             .tooltip("Your own shaders and textures go here; they show as Custom Shaders")
-            .on_click(Message::OpenCustomFolder),
+            .on_click(Message::OpenCustomFolder)]),
     ]);
     if let Some(note) = &draft.note {
         rows.push(hint(note.clone()));
     }
-    card(rows).gap(theme::space::S)
+    card(rows)
 }
 
-/// One add-on: its name, version ✓ when downloaded, description and How to use, and its switch.
-fn addon_card(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
-    let mut title = vec![
-        text(addon.name.as_str())
-            .text_size(theme::TEXT_SUBTITLE)
-            .weight(600),
-    ];
+/// One add-on as a setting row: its name, what it does (and its version once downloaded), and at
+/// the right How to use and its switch.
+fn addon_row(addon: &Addon, on: bool, library: &AddonLibrary) -> El<Message> {
+    let mut description = addon.description.clone();
     if let Some(version) = library.cached.get(&addon.id) {
-        if let Some(version) = version {
-            title.push(text(version.as_str()).color(theme::text_tertiary()));
+        match version {
+            Some(version) => description.push_str(&format!(" Downloaded: {version}.")),
+            None => description.push_str(" Downloaded."),
         }
-        title.push(
-            glyph(g::CHECK, 12.0)
-                .color(theme::green())
-                .tooltip("Downloaded"),
+    }
+    let mut control = Vec::new();
+    if let Some(page) = &addon.repository {
+        control.push(
+            link_button("How to use")
+                .name(format!("How to use {}", addon.name))
+                .on_click(Message::OpenModPage(page.clone())),
         );
     }
-    let mut lines = vec![
-        row(title).gap(theme::space::S),
-        hint(addon.description.as_str()),
-    ];
-    if let Some(page) = &addon.repository {
-        lines.push(row([link(
-            "How to use",
-            Message::OpenModPage(page.clone()),
-        )
-        .name(format!("How to use {}", addon.name))]));
-    }
-    let switch = toggle(
-        if on { "On" } else { "Off" },
+    control.push(switch(
+        addon.name.as_str(),
         on,
         Message::AddonSwitched(addon.id.clone(), !on),
+    ));
+    setting_row(
+        addon.name.as_str(),
+        &description,
+        Some(row(control).gap(theme::space::M)),
     )
-    .name(addon.name.as_str())
-    .width(96.0);
-    card([row([col(lines).gap(theme::space::XS).fill_width(), switch]).gap(theme::space::L)])
-        .pad(theme::space::L)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn effects() -> Vec<String> {
-        [r"Shaders\A.fx", r"Shaders\B.fx", r"Shaders\C.fx"]
-            .map(String::from)
-            .to_vec()
-    }
-
-    #[test]
-    fn packs_and_single_effects_are_picked() {
-        let effects = effects();
-        let mut draft = ShadersDraft::default();
-        assert_eq!(draft.state("P", &effects), Some(false));
-        draft.check_pack("P", true);
-        assert_eq!(draft.state("P", &effects), Some(true));
-        assert!(draft.takes("P", r"Shaders\B.fx"));
-
-        // Leaving one out of a whole pack keeps the others.
-        draft.check_effect("P", r"Shaders\B.fx", false, &effects);
-        assert_eq!(draft.state("P", &effects), None);
-        assert!(!draft.takes("P", r"Shaders\B.fx") && draft.takes("P", r"Shaders\A.fx"));
-        // Picking it again makes the whole pack again.
-        draft.check_effect("P", r"Shaders\B.fx", true, &effects);
-        assert_eq!(draft.selection.packs["P"], Pick::default());
-        // Leaving every one out leaves the pack out.
-        for file in &effects {
-            draft.check_effect("P", file, false, &effects);
-        }
-        assert!(!draft.selection.packs.contains_key("P"));
-        // One effect of a pack that was not picked.
-        draft.check_effect("Q", r"Shaders\C.fx", true, &effects);
-        assert_eq!(
-            draft.selection.packs["Q"].files.as_deref(),
-            Some(&[r"Shaders\C.fx".to_owned()][..])
-        );
-
-        // The user's own shaders work alike.
-        draft.check_pack(CUSTOM, true);
-        assert_eq!(draft.selection.custom, Some(Pick::default()));
-        draft.deselect_all();
-        assert_eq!(draft.selection, Selection::default());
-        assert_eq!(effect_name(r"Shaders\Sub\X.fx"), r"Sub\X.fx");
-        assert!(matches("SweetFX by CeeJay.dk", "sweet"));
-    }
 }

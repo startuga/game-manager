@@ -3,7 +3,7 @@
 //!
 //! - **The tab** is listed only with an NVIDIA driver: the driver's version and its own DLLs'
 //!   versions are read once, in the background, at start (`request_driver`). A driver that
-//!   failed to read shows the tab with the error.
+//!   failed to read shows the tab with the error, in an `error_card`.
 //! - **Its header card** says how many overrides are set, and when the game's folder has no
 //!   NVIDIA DLL that only Smooth Motion works then (from the game's DLL scan, which runs for this
 //!   tab too).
@@ -12,9 +12,10 @@
 //!   profile is read in the background (`OverridesLoaded`, matched to the game) and the
 //!   drop-downs wait for it. Selecting another game drops an unsaved draft, as Game settings
 //!   does.
-//! - **The form**: each group of the catalog has a heading, and each setting the driver knows a
-//!   drop-down whose first item is "Original: …" (as in DXVK settings). Reset to original sets
-//!   every one back to it; Save runs `dlss_override::save` as a mod job (`ModKind::Overrides`),
+//! - **The form**: each group of the catalog has a `section_label`, and each setting the driver
+//!   knows a `setting_row` (its description as the hint) with a drop-down whose first item is
+//!   "Original: …" (as in DXVK settings). Reset to original, at the left of the form's buttons,
+//!   sets every one back to it; Save, at the right, runs `dlss_override::save` as a mod job (`ModKind::Overrides`),
 //!   after which the draft is made again from the profile.
 //! - **Changed elsewhere**: the NVIDIA app writes the same settings (resetting its DLSS override
 //!   writes them all as Off or N/A), and may delete a profile. When the profile no longer holds
@@ -23,10 +24,11 @@
 
 use crate::mods_view::{ModCard, ModDialog, ModKind, mod_card, original_label};
 use crate::shell::ctx::Ctx;
-use crate::ui::el::{El, col, dropdown, row, text};
+use crate::ui::el::{El, col, dropdown, row, spacer, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, card, hint, icon_text_button, working, working_button,
+    accent_button, busy_width, button, card, error_card, hint, icon_text_button, section_label,
+    setting_row, working, working_button,
 };
 use crate::upscalers_view::UpscalerMessage;
 use crate::{GameManager, GameTab, Message, Page};
@@ -264,9 +266,12 @@ impl GameManager {
         let library = match &self.upscalers.driver {
             Some(Ok(Some(library))) => library,
             Some(Err(error)) => {
-                return card([hint(format!(
-                    "The NVIDIA driver's settings could not be read: {error}"
-                ))]);
+                return error_card(
+                    g::NVIDIA,
+                    theme::green(),
+                    "NVIDIA overrides",
+                    format!("The NVIDIA driver's settings could not be read: {error}"),
+                );
             }
             _ => return working("Reading the NVIDIA driver…"),
         };
@@ -316,6 +321,7 @@ impl GameManager {
                     .on_click(UpscalerMessage::ShowOverridesInfo.into()),
             ],
             hint: hint_text,
+            looking: false,
         });
         if !has_exe {
             return header;
@@ -332,21 +338,22 @@ impl GameManager {
         let save = if saving {
             working_button()
         } else {
-            accent_button("Save")
-                .min_width(120.0)
+            busy_width(accent_button("Save"))
                 .enabled(draft.loaded().is_some() && !self.mods_busy())
                 .name("Save NVIDIA overrides")
                 .tooltip("Set these in the game's driver profile")
                 .on_click(UpscalerMessage::SaveOverrides.into())
         };
         let mut form = self.overrides_form(draft);
+        // The form's buttons: Reset apart, Save at the right.
         form.push(
             row([
-                save,
-                icon_text_button(g::REFRESH, "Reset to original")
+                icon_text_button(g::RESET, "Reset to original")
                     .enabled(draft.loaded().is_some() && !draft.choice.is_empty() && !saving)
                     .name("Reset NVIDIA overrides to original")
                     .on_click(UpscalerMessage::ResetOverrides.into()),
+                spacer(),
+                save,
             ])
             .gap(theme::space::S),
         );
@@ -403,7 +410,7 @@ impl GameManager {
                 }
                 rows.push(
                     col([
-                        text(group.name.as_str()).bold(),
+                        section_label(group.name.as_str()),
                         col(settings).gap(theme::space::S),
                     ])
                     .gap(theme::space::S)
@@ -423,7 +430,8 @@ impl GameManager {
         rows
     }
 
-    /// One setting: its name and a drop-down of "Original: …" and its values.
+    /// One setting: a setting row with its name and what it does, and a drop-down of "Original: …"
+    /// and its values.
     fn override_picker(
         &self,
         library: &OverrideLibrary,
@@ -452,19 +460,20 @@ impl GameManager {
             .chain(values.iter().map(|(_, name)| name.clone()))
             .collect();
         let id = setting.id;
-        row([
-            text(setting.name.as_str()).wrap().width(190.0),
-            dropdown(
-                format!("override:{id}"),
-                items,
-                Some(selected),
-                move |index| UpscalerMessage::OverrideChosen(id, Some(index)).into(),
-            )
-            .enabled(state.is_some())
-            .name(setting.name.as_str())
-            .tooltip(setting.hint.as_str())
-            .fill_width(),
-        ])
-        .gap(theme::space::S)
+        setting_row(
+            setting.name.as_str(),
+            setting.hint.as_str(),
+            Some(
+                dropdown(
+                    format!("override:{id}"),
+                    items,
+                    Some(selected),
+                    move |index| UpscalerMessage::OverrideChosen(id, Some(index)).into(),
+                )
+                .enabled(state.is_some())
+                .name(setting.name.as_str())
+                .width(theme::SETTING_CONTROL_WIDTH),
+            ),
+        )
     }
 }

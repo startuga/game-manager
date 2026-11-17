@@ -5,7 +5,8 @@
 //! The title bar is drawn by the app. Its keys (`shell::CAPTION_*`) tell the window where it can
 //! be dragged and where its minimize, maximize and close buttons are, so Windows 11 offers Snap
 //! Layouts over maximize. Dialogs are a dimmed, modal layer with a card centred on it: nothing
-//! under a dialog reacts, and Escape is its Cancel.
+//! under a dialog reacts, and Escape is its Cancel. Their buttons sit at the right, primary
+//! first, each at least `theme::BUTTON_MIN_WIDTH` wide; Add a game's inputs are `field`s.
 
 use crate::my_pc::MyPcMessage;
 use crate::shell::ctx::WindowCommand;
@@ -13,8 +14,8 @@ use crate::shell::{CAPTION_CLOSE, CAPTION_DRAG, CAPTION_MAX, CAPTION_MIN, Window
 use crate::ui::el::{Align, El, Font, TextAlign, col, glyph, layers, row, scroll, spacer, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, danger_button, error_bar, hint, icon_button, resize_grip, text_box,
-    working,
+    accent_button, button, danger_button, error_bar, field, hint, icon_button, resize_grip,
+    text_box, working,
 };
 use crate::{DialogResult, GameManager, Message};
 
@@ -130,21 +131,27 @@ impl GameManager {
             let has_name = !draft.name.trim().is_empty();
             let body = vec![
                 hint(draft.program.display().to_string()),
-                field_label("Name"),
-                text_box(
-                    "draft:name",
-                    draft.name.clone(),
-                    "",
+                field(
                     "Name",
-                    Message::DraftName,
+                    text_box(
+                        "draft:name",
+                        draft.name.clone(),
+                        "",
+                        "Name",
+                        Message::DraftName,
+                    ),
+                    "",
                 ),
-                field_label("Command-line arguments (optional)"),
-                text_box(
-                    "draft:args",
-                    draft.args.clone(),
-                    "For example: -windowed",
+                field(
                     "Command-line arguments",
-                    Message::DraftArgs,
+                    text_box(
+                        "draft:args",
+                        draft.args.clone(),
+                        "For example: -windowed",
+                        "Command-line arguments",
+                        Message::DraftArgs,
+                    ),
+                    "Optional: passed to the program when Play starts it.",
                 ),
             ];
             return Some(dialog(
@@ -178,13 +185,6 @@ impl GameManager {
         }
         self.mod_dialog_view(window)
     }
-}
-
-/// A form field's label.
-pub(crate) fn field_label(label: &str) -> El<Message> {
-    text(label)
-        .bold()
-        .padding(crate::ui::el::Edges::new(0.0, theme::space::S, 0.0, 0.0))
 }
 
 /// A modal dialog: a dimmed backdrop and a card with a title, a body (scrolled when it doesn't fit
@@ -274,9 +274,13 @@ fn dialog_card(
 ) -> El<Message> {
     let mut buttons = vec![spacer()];
     if let Some(primary) = primary {
-        buttons.push(primary.min_width(96.0));
+        buttons.push(primary.min_width(theme::BUTTON_MIN_WIDTH));
     }
-    buttons.push(button(cancel_label).on_click(cancel).min_width(96.0));
+    buttons.push(
+        button(cancel_label)
+            .on_click(cancel)
+            .min_width(theme::BUTTON_MIN_WIDTH),
+    );
     // The title, the buttons and the padding take about 170 DIPs.
     let body_height = (window.size.1 - 200.0).max(160.0);
     let body = scroll(

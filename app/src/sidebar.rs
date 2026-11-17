@@ -6,7 +6,8 @@
 //!
 //! Pinned games (the game menu's Pin to quick access) come first under a PINNED header, in the
 //! order they were pinned, and leave their store's group. Store
-//! groups fold with a click on their header. Each row is
+//! groups fold with a click on their header (`widgets::fold_header`, as every folding header).
+//! Each row is
 //! keyed by its game's id, so hover, focus and the scroll position stay with the game when the
 //! list changes; a right-click, or the Menu key on a focused row, opens the game's menu
 //! (`game_menu.rs`) without leaving the page.
@@ -23,7 +24,8 @@ use crate::library::{self, Section, SectionKind};
 use crate::ui::el::{El, Role, col, glyph, row, scroll, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    count_badge, divider, hint, nav_item, search_box, section_label, subtle_button, working,
+    count_badge, divider, fold_header, group_row, hint, nav_item, search_box, section_label,
+    subtle_button, working,
 };
 use crate::{GameManager, Message, Page};
 
@@ -36,6 +38,7 @@ impl GameManager {
             SEARCH_KEY,
             &self.query,
             "Search games (Ctrl+F)",
+            "Search games",
             Message::Search,
             Message::SearchSubmit,
             Message::ClearSearch,
@@ -179,26 +182,26 @@ pub(crate) fn store_header(
     folded: bool,
     foldable: bool,
 ) -> El<Message> {
-    let chevron = if folded {
-        g::CHEVRON_RIGHT
-    } else {
-        g::CHEVRON_DOWN
-    };
-    let lead = glyph(if foldable { chevron } else { "" }, 9.0).color(theme::text_tertiary());
-    let header = group_header(lead, store.name(), count).key(format!("{key}:{}", store.name()));
+    let key = format!("{key}:{}", store.name());
     if !foldable {
-        return header
+        return group_header(glyph("", 9.0), store.name(), count)
+            .key(key)
             .role(Role::Group)
             .name(format!("{} games", store.name()));
     }
-    header
-        .hover_bg(theme::subtle_hover())
-        .name(format!(
-            "{} games, {}",
-            store.name(),
-            if folded { "folded" } else { "unfolded" }
-        ))
-        .on_click(Message::ToggleStore(store))
+    // The shared fold header (`widgets::fold_header`), as every folding header is.
+    fold_header(
+        !folded,
+        section_label(store.name()),
+        Some(count_badge(count)),
+        Message::ToggleStore(store),
+    )
+    .key(key)
+    .name(format!(
+        "{} games, {}",
+        store.name(),
+        if folded { "folded" } else { "unfolded" }
+    ))
 }
 
 /// The pinned games' header (quick access): a pin, PINNED and how many. It doesn't fold.
@@ -219,12 +222,8 @@ pub(crate) fn games_header(key: &str, count: usize) -> El<Message> {
         .name("Games")
 }
 
-/// A group's header: a glyph in a narrow slot (a chevron, a pin), its label in capitals and a
-/// count badge.
+/// A group's header that doesn't fold: a glyph in the fold header's slot (a pin, or none), its
+/// label in capitals and a count badge (`widgets::group_row`).
 fn group_header(lead: El<Message>, label: &str, count: usize) -> El<Message> {
-    row([lead.width(12.0), section_label(label), count_badge(count)])
-        .gap(theme::space::S)
-        .pad_xy(theme::space::S, 0.0)
-        .height(30.0)
-        .radius(theme::RADIUS_CONTROL)
+    group_row(lead, section_label(label), Some(count_badge(count)))
 }

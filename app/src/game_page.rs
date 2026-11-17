@@ -10,8 +10,8 @@
 //! `theme::ART_FADE_FROM` down (`El::fade_out`, an opacity mask, so it melts into Mica as into the
 //! base colour). Over it, above the fade, the logo (else the icon and the name in the hero size),
 //! the folder and the chips, in the page's column, in the dark palette whatever the theme: art is
-//! mostly dark, and logos are drawn for it. The band's top right has the Artwork button (the
-//! Artwork dialog on its Banner tab, `artwork.rs`). Then a
+//! mostly dark, and logos are drawn for it. The band's top right has the Artwork button
+//! (`widgets::picture_icon_button`: the Artwork dialog on its Banner tab, `artwork.rs`). Then a
 //! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
@@ -20,7 +20,9 @@
 //! the tabs and the open tab's cards. A game added by hand is removed from its menu (`game_menu.rs`,
 //! Remove from Game Manager), not from here.
 //!
-//! The tabs: Overview (Game settings, the draft in `edit.rs`, beside the game's details), ReShade
+//! The tabs: Overview (Game settings, the draft in `edit.rs`: its text values `field`s, Bitness
+//! and Graphics API `setting_row`s, then Reset to detected, Save and Cancel in the form's row;
+//! beside it the game's details as `facts`), ReShade
 //! with its Shaders and Add-ons views (`mods_view.rs`, `reshade_panel.rs`), DXVK & LAA
 //! (`mods_view.rs`), Upscalers with its Versions section (`upscalers_view.rs`,
 //! `upscaler_versions.rs`), and NVIDIA overrides (`dlss_override_view.rs`), listed only once an
@@ -33,7 +35,6 @@ use gm_core::mods::dxvk;
 use gm_core::{Game, Launch, Store};
 use windows_canvas::ColorF;
 
-use crate::app_view::field_label;
 use crate::edit::{EditChoice, EditDraft, EditField};
 use crate::shell::WindowInfo;
 use std::sync::Arc;
@@ -41,14 +42,15 @@ use std::sync::Arc;
 use crate::artwork::ArtworkMessage;
 use crate::ui::animation::Animation;
 use crate::ui::el::{
-    Align, Edges, El, Font, Play, Role, col, dropdown, glyph, image, layers, paint, row, scroll,
+    Align, Edges, El, Font, Play, Role, col, dropdown, image, layers, paint, row, scroll, spacer,
     text,
 };
 use crate::ui::image::Picture;
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    PlayState, Tab, accent_button, button, card, card_header, chip, hint, icon_text_button,
-    play_button, section_label, tabs, text_box, working,
+    PlayState, Tab, accent_button, busy_width, button, card, card_header, chip, facts, field,
+    folder_button, hint, icon_text_button, picture_icon_button, play_button, setting_row, tabs,
+    text_box, working, working_button,
 };
 use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list, folder_tooltip};
 
@@ -267,15 +269,8 @@ impl GameManager {
             ))
             .valign(Align::End);
         // The Artwork button, at the band's top right, in the page's column.
-        let edit = row([glyph(g::PICTURE, theme::ICON_SIZE).color(dark.text)])
-            .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
-            .center()
-            .hover_bg(dark.subtle_hover)
-            .pressed_bg(dark.subtle_pressed)
-            .radius(theme::RADIUS_CONTROL)
-            .role(Role::Button)
+        let edit = picture_icon_button(g::PICTURE, format!("Change the artwork of {}", game.name))
             .tooltip("Artwork: the cover, banner, logo and icon")
-            .name(format!("Change the artwork of {}", game.name))
             .on_click(
                 ArtworkMessage::Open(game.id.clone(), gm_core::steamgriddb::Kind::Banner).into(),
             )
@@ -311,10 +306,7 @@ impl GameManager {
 
     /// The store, the bitness, the graphics APIs and DXVK's Vulkan, as chips in `palette`'s tints.
     fn chips(&self, game: &Game, palette: &theme::Palette) -> Vec<El<Message>> {
-        let mut chips = vec![chip(
-            game.store.name().to_uppercase(),
-            store_tint(game.store, palette),
-        )];
+        let mut chips = vec![chip(game.store.name(), store_tint(game.store, palette))];
         if let Some(arch) = game.arch {
             let chosen = game
                 .edits
@@ -329,7 +321,7 @@ impl GameManager {
             }
         }
         if self.runs_on_dxvk(game) {
-            chips.push(chip("VULKAN (DXVK)", palette.orange).tooltip(
+            chips.push(chip("Vulkan (DXVK)", palette.orange).tooltip(
                 "DXVK is in the game's folder: it runs the game's Direct3D on Vulkan, so \
                      overlays and ReShade see a Vulkan game.",
             ));
@@ -365,7 +357,7 @@ impl GameManager {
             }
             Some(None) => None,
             None => Some((
-                vec!["CHECKING…".to_owned()],
+                vec!["Checking…".to_owned()],
                 "Looking on PCGamingWiki, then in the game's files".to_owned(),
             )),
         }
@@ -463,7 +455,7 @@ impl GameManager {
         let draft = EditDraft::for_game(self.edit.as_ref(), game);
         let busy = self.saving || self.scanning || self.picking;
         let store = game.store.name();
-        let field = |field: EditField, key: &str, name: &str, placeholder: String| {
+        let edit_box = |field: EditField, key: &str, name: &str, placeholder: String| {
             text_box(
                 format!("edit:{key}"),
                 draft.fields.get(field),
@@ -474,7 +466,7 @@ impl GameManager {
             .fill_width()
         };
         let browse = |field: EditField, name: &str| {
-            button("Browse…")
+            folder_button("Browse…")
                 .enabled(!busy)
                 .name(name)
                 .on_click(Message::BrowseEdit(field))
@@ -505,19 +497,15 @@ impl GameManager {
             let items = std::iter::once(detected)
                 .chain(choice.labels().into_iter().map(str::to_owned))
                 .collect();
-            col([
-                field_label(title),
-                dropdown(
-                    format!("choice:{key}"),
-                    items,
-                    Some(draft.fields.choice_index(choice)),
-                    move |i| Message::EditChoice(choice, Some(i)),
-                )
-                .enabled(!busy)
-                .name(title),
-            ])
-            .gap(theme::space::XS)
-            .fill_width()
+            dropdown(
+                format!("choice:{key}"),
+                items,
+                Some(draft.fields.choice_index(choice)),
+                move |i| Message::EditChoice(choice, Some(i)),
+            )
+            .enabled(!busy)
+            .name(title)
+            .width(theme::SETTING_CONTROL_WIDTH)
         };
         let title = if game.edits.is_some() {
             "Game settings (edited)"
@@ -531,53 +519,80 @@ impl GameManager {
                 title,
                 "What Play starts, and what mods need to know",
             ),
-            field_label("Name"),
-            field(EditField::Name, "name", "Game name", String::new()),
-            field_label("Launch .exe"),
-            row([
-                field(
-                    EditField::Launch,
-                    "launch",
-                    "Launch .exe",
-                    format!("Empty: the game starts through {store}"),
-                ),
-                browse(EditField::Launch, "Browse for the launch .exe"),
-            ])
-            .gap(theme::space::S),
-            hint(format!(
-                "The program Play starts. Leave it empty to start the game through {store}."
-            )),
-            field_label("Arguments"),
-            field(EditField::Args, "args", "Arguments", String::new()).enabled(args_enabled),
-            hint(args_hint),
-            field_label("Game program"),
-            row([
-                field(EditField::Program, "program", "Game program", String::new()),
-                browse(EditField::Program, "Browse for the game program"),
-            ])
-            .gap(theme::space::S),
-            hint("The game's own .exe: used for its bitness, Folder and mods."),
-            row([
-                choice(EditChoice::Bitness, "bitness", "Bitness", detected_arch),
-                choice(EditChoice::GraphicsApi, "api", "Graphics API", detected_api),
-            ])
-            .gap(theme::space::L),
-            hint(
-                "Mods such as ReShade and DXVK need the game's bitness and the one graphics API it runs on.",
+            field(
+                "Name",
+                edit_box(EditField::Name, "name", "Game name", String::new()),
+                "",
             ),
+            field(
+                "Launch .exe",
+                row([
+                    edit_box(
+                        EditField::Launch,
+                        "launch",
+                        "Launch .exe",
+                        format!("Empty: the game starts through {store}"),
+                    ),
+                    browse(EditField::Launch, "Browse for the launch .exe"),
+                ])
+                .gap(theme::space::S),
+                &format!(
+                    "The program Play starts. Leave it empty to start the game through {store}."
+                ),
+            ),
+            field(
+                "Arguments",
+                edit_box(EditField::Args, "args", "Arguments", String::new()).enabled(args_enabled),
+                &args_hint,
+            ),
+            field(
+                "Game program",
+                row([
+                    edit_box(EditField::Program, "program", "Game program", String::new()),
+                    browse(EditField::Program, "Browse for the game program"),
+                ])
+                .gap(theme::space::S),
+                "The game's own .exe: used for its bitness, Folder and mods.",
+            ),
+            setting_row(
+                "Bitness",
+                "Mods such as ReShade and DXVK need the game's bitness.",
+                Some(choice(
+                    EditChoice::Bitness,
+                    "bitness",
+                    "Bitness",
+                    detected_arch,
+                )),
+            ),
+            setting_row(
+                "Graphics API",
+                "And the one graphics API it runs on.",
+                Some(choice(
+                    EditChoice::GraphicsApi,
+                    "api",
+                    "Graphics API",
+                    detected_api,
+                )),
+            ),
+            // The form's buttons: Reset apart, then Save and Cancel at the right.
             row([
-                accent_button("Save")
-                    .enabled(draft.is_dirty() && !busy)
-                    .name("Save game settings")
-                    .on_click(Message::SaveEdits),
-                button("Cancel")
-                    .enabled(draft.is_dirty() && !busy)
-                    .name("Cancel game settings changes")
-                    .on_click(Message::CancelEdits),
-                icon_text_button(g::REFRESH, "Reset to detected")
+                icon_text_button(g::RESET, "Reset to detected")
                     .enabled(game.edits.is_some() && !busy)
                     .name("Reset game settings")
                     .on_click(Message::ResetEdits),
+                spacer(),
+                if self.saving {
+                    working_button()
+                } else {
+                    busy_width(accent_button("Save"))
+                        .enabled(draft.is_dirty() && !busy)
+                        .name("Save game settings")
+                        .on_click(Message::SaveEdits)
+                },
+                busy_width(button("Cancel"))
+                    .enabled(draft.is_dirty() && !busy)
+                    .name("Cancel game settings changes")
+                    .on_click(Message::CancelEdits),
             ])
             .gap(theme::space::S)
             .padding(crate::ui::el::Edges::new(0.0, theme::space::S, 0.0, 0.0)),
@@ -597,18 +612,17 @@ impl GameManager {
                 shown.display().to_string()
             },
         );
-        let line = |label: &str, value: String| {
-            col([section_label(label), text(value).wrap()]).gap(theme::space::XXS)
-        };
         card([
             card_header(g::INFO, theme::slate(), "Details", ""),
-            line("STORE", game.store.name().to_owned()),
-            line("GAME PROGRAM", program),
-            line(
-                "BITNESS",
-                game.arch
-                    .map_or_else(|| "Unknown".to_owned(), |arch| arch.label().to_owned()),
-            ),
+            facts(vec![
+                ("Store", game.store.name().to_owned()),
+                ("Game program", program),
+                (
+                    "Bitness",
+                    game.arch
+                        .map_or_else(|| "Unknown".to_owned(), |arch| arch.label().to_owned()),
+                ),
+            ]),
         ])
     }
 }

@@ -5,6 +5,8 @@
 //! Library's tiles and the game page's band). By default it follows Windows and lets the app
 //! decide.
 //!
+//! - **Each choice is a setting row** (`widgets::setting_row`): its name and what it does now on
+//!   the left, its option pills at the right, as every page lays out its choices.
 //! - **Saved** in `game-settings.json` (`gm_core::config::save_appearance`) in the background, and
 //!   applied at once (`apply_appearance`): the palette the views draw with (`theme::set_palette`,
 //!   the dark or light one with the accent), and the window's look (`WindowCommand::Look`: a dark
@@ -23,10 +25,11 @@ use windows_canvas::ColorF;
 use crate::shell::ctx::{Ctx, WindowCommand};
 use crate::shell::window::{self, Look};
 use crate::ui::animation;
-use crate::ui::el::{El, col, row};
+use crate::ui::el::El;
+use crate::ui::el::{col, row};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{card, card_header, hint, page_header, segmented};
-use crate::{GameManager, Message, app_view::field_label};
+use crate::ui::widgets::{card, card_header, page_header, segmented, setting_row};
+use crate::{GameManager, Message};
 
 #[derive(Clone)]
 pub(crate) enum SettingsMessage {
@@ -244,9 +247,7 @@ impl GameManager {
             }
         );
 
-        let setting = |label: &str, control: El<Message>, line: &str| {
-            col([field_label(label), control, hint(line.to_owned()).wrap()]).gap(theme::space::S)
-        };
+        // Each a setting row, as every choice is (`widgets::setting_row`).
         let appearance = card([
             card_header(
                 g::PERSONALIZE,
@@ -254,16 +255,15 @@ impl GameManager {
                 "Appearance",
                 "How the window looks. By default it follows Windows.",
             ),
-            setting("Theme", themes, &theme_hint),
-            setting("Background", backdrops, backdrop_hint),
-            setting(
+            setting_row("Theme", &theme_hint, Some(themes)),
+            setting_row("Background", backdrop_hint, Some(backdrops)),
+            setting_row(
                 "Accent colour",
-                row([accents, swatch]).gap(theme::space::M),
                 accent_hint,
+                Some(row([swatch, accents]).gap(theme::space::M)),
             ),
-            setting("Animated covers", covers, &covers_hint),
-        ])
-        .gap(theme::space::L);
+            setting_row("Animated covers", &covers_hint, Some(covers)),
+        ]);
         col([
             page_header("Settings", "Game Manager", None, Vec::new()),
             appearance,

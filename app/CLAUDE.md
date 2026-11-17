@@ -103,9 +103,25 @@ samples in `crates/samples/`) instead of guessing.
     red (`OVER_PICTURE_*`, `DANGER`). A view spells none of its own: `theme::tests` fails on a
     literal gap, padding, text size, radius or colour in `app/src/*.rs` (0 is allowed; a
     measure that isn't spacing, like an indent, gets a named constant).
-  - **Components** (`widgets.rs`): `page_header` (caption, title, line, actions) on Library, My
-    PC and Settings; `section_label` (+ `count_badge`) for every section and group; cards with
-    `card_header`; `hint` for every secondary line; `working` for every lookup still running.
+  - **Components** (`widgets.rs`, whose `//!` doc has them all): `page_header` (caption, title,
+    line, actions) on Library, My PC and Settings; `section_label` (+ `count_badge`) for every
+    section and group; cards with `card_header`, or `card_header_with` (a status line and
+    actions at the right, Info last); `hint` for every secondary line; `working` for every
+    lookup still running; `error_card` for what couldn't be read.
+    - **A choice** (switch, drop-down, pills) is a `setting_row`: title and hint at the left,
+      the control at the right; drop-downs `SETTING_CONTROL_WIDTH` wide, switches `switch`
+      (On/Off). A description is a hint, never only a tooltip. **A text value** is a `field`
+      (label, box, hint, stacked).
+    - **"Open"** is a `link_button` (a web page, Windows Settings) or a `folder_button`; a
+      `link` is only text inside a sentence.
+    - **A form ends in a button row**: right-aligned, primary first, at least
+      `BUTTON_MIN_WIDTH` wide, never stretched; Reset to … has `glyph::RESET`. A busy button
+      becomes `working_button`, as wide (`busy_width`).
+    - Folding headers are `fold_header`, searches `search_box`, chips sentence case; a page's
+      blocks are `space::L` apart.
+    - `theme::tests::views_use_the_shared_controls` fails on a hover or pressed fill, a card's
+      fill or an inline `link` made in a view, except the few it lists with why (menus, list
+      rows, caption buttons, the icon tile, a mod's version).
   - **Behaviour**: the selected item is the accent's wash (with a bar in lists); Info sits at
     the right of its card; a removal that loses what a click can't bring back asks first in a
     `removal_dialog` with a red `danger_button` (`mods_view::Confirm`, `Message::AskFirst`),

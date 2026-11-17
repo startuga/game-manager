@@ -1,9 +1,27 @@
 //! The window's controls, built from elements and theme tokens so every view looks the same.
 //!
-//! The design system's components (`app/CLAUDE.md` lists them): a page's header (`page_header`:
-//! a caption, a title, a line, actions), a section's label in small capitals (`section_label`,
-//! with a `count_badge`), cards with `card_header`, `hint` for every secondary line, and
-//! `working` for every lookup still running.
+//! The design system's components (`app/CLAUDE.md` lists them, with the rules for using them): a
+//! page's header (`page_header`: a caption, a title, a line, actions), a section's label in small
+//! capitals (`section_label`, with a `count_badge`), cards with `card_header` (or
+//! `card_header_with`: a status line and actions at the right, Info last), `hint` for every
+//! secondary line, and `working` for every lookup still running. Then:
+//! - **A choice** (a switch, a drop-down, option pills) is a `setting_row`: title and hint on the
+//!   left, the control at the right (a drop-down `SETTING_CONTROL_WIDTH` wide, a `switch`). **A
+//!   text value** is a `field`: its label, the text box, a hint, stacked.
+//! - **Opening** a web page or Windows Settings is a `link_button`, a folder a `folder_button`;
+//!   a `link` is only text inside a sentence.
+//! - **A form's buttons** sit in a right-aligned row, primary first, each at least
+//!   `BUTTON_MIN_WIDTH` wide and never stretched across a column; Reset to … has `glyph::RESET`
+//!   (Refresh keeps its own). A button busy with its job becomes `working_button`, as wide as
+//!   `busy_width` keeps it.
+//! - **The rest**: errors are an `error_card`; key and value lists are `facts`; folding headers
+//!   are `fold_header`, other group headers `group_row`; searches `search_box`; a check box
+//!   alone is `check_button` (with a label, `checkbox` or `tri_checkbox`); a button over a
+//!   picture is `picture_icon_button`; chips are `chip`s in sentence case. A page's blocks are
+//!   `space::L` apart, and a card's parts `card`'s own gap.
+//!
+//! `theme::tests::views_use_the_shared_controls` fails on a hover or pressed fill, a card's fill
+//! or an inline `link` made in a view, outside the few exceptions it lists with why.
 //!
 //! Their look:
 //! rimless translucent buttons, chips on a tint's wash, cards with an icon square, a title and a
@@ -80,6 +98,24 @@ pub fn subtle_button<M>(icon: &str, label: impl Into<String>) -> El<M> {
         .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::Button)
+}
+
+/// `icon_button` over a picture (the game page's band), in the dark palette whatever the theme:
+/// on a dark chip, as the pin is on a cover, so it reads on light art too (Half-Life 2's fog).
+/// The pointer lightens it, a press more.
+pub fn picture_icon_button<M>(icon: &str, name: impl Into<String>) -> El<M> {
+    let name = name.into();
+    row([glyph(icon, theme::ICON_SIZE)
+        .color(theme::DARK.text)
+        .text_align(TextAlign::Center)
+        .fill_width()])
+    .size(theme::CONTROL_HEIGHT, theme::CONTROL_HEIGHT)
+    .bg(theme::OVER_PICTURE_CHIP)
+    .hover_overlay(theme::OVER_PICTURE_HOVER)
+    .radius(theme::RADIUS_CONTROL)
+    .role(Role::Button)
+    .tooltip(name.clone())
+    .name(name)
 }
 
 /// A square glyph button; `name` is its tooltip and its UI Automation name.
@@ -166,12 +202,14 @@ pub fn text_box<M>(
         .name(name)
 }
 
-/// The search box: a magnifier, the text, and a ✕ that sends `on_clear` while there is text, in
-/// one input frame. Escape empties it (`clear_on_escape`); Enter sends `on_enter`.
+/// The search box, wherever something is searched: a magnifier, the text, and a ✕ that sends
+/// `on_clear` while there is text, in one input frame. Escape empties it (`clear_on_escape`);
+/// Enter sends `on_enter`. `name` is its UI Automation name.
 pub fn search_box<M>(
     key: impl Into<String>,
     value: &str,
     placeholder: impl Into<String>,
+    name: impl Into<String>,
     on_change: impl Fn(String) -> M + 'static,
     on_enter: M,
     on_clear: M,
@@ -183,7 +221,7 @@ pub fn search_box<M>(
         super::el::edit(key, value, placeholder, on_change)
             .on_enter(on_enter)
             .clear_on_escape()
-            .name("Search games")
+            .name(name)
             .fill_width(),
     ];
     if !value.is_empty() {
@@ -222,15 +260,26 @@ pub fn link<M>(label: impl Into<String>, message: M) -> El<M> {
         .on_click(message)
 }
 
-/// A group's main action while it works: a spinner and "Working…" in place of its label.
+/// A button while its job runs: a spinner and "Working…" in place of its label, as wide as the
+/// button it replaces (`BUTTON_MIN_WIDTH`, which that button takes too: `busy_width`).
 pub fn working_button<M>() -> El<M> {
     row([spinner(14.0), text("Working…")])
         .gap(8.0)
         .pad_xy(14.0, 0.0)
         .height(theme::CONTROL_HEIGHT)
+        .min_width(theme::BUTTON_MIN_WIDTH)
+        .justify(Align::Center)
         .bg(theme::control())
         .radius(theme::RADIUS_CONTROL)
         .enabled(false)
+}
+
+/// A button that becomes `working_button` while its job runs: `button` while idle, as wide as
+/// it will be busy, so the row doesn't move.
+pub fn busy_width<M>(button: El<M>) -> El<M> {
+    button
+        .min_width(theme::BUTTON_MIN_WIDTH)
+        .justify(Align::Center)
 }
 
 /// A choice among a few items, one per line, each with a round mark.
@@ -240,7 +289,7 @@ pub fn radio_group<M>(
     selected: Option<usize>,
     on_select: impl Fn(usize) -> M,
 ) -> El<M> {
-    let mut lines = vec![text(title).bold()];
+    let mut lines = vec![section_label(title)];
     for (index, item) in items.into_iter().enumerate() {
         let chosen = selected == Some(index);
         let mark = paint(
@@ -274,7 +323,8 @@ pub fn radio_group<M>(
     col(lines).gap(2.0)
 }
 
-/// A small label on its tint's wash: a store, an API, an upscaler's version.
+/// A small label on its tint's wash, in sentence case: a store, an API, an upscaler's version,
+/// "Main display".
 pub fn chip<M>(label: impl Into<String>, tint: ColorF) -> El<M> {
     row([text(label)
         .text_size(theme::TEXT_CAPTION)
@@ -282,7 +332,7 @@ pub fn chip<M>(label: impl Into<String>, tint: ColorF) -> El<M> {
         .color(tint)])
     .pad_xy(7.0, 2.0)
     .bg(theme::wash(tint))
-    .radius(theme::RADIUS_CONTROL)
+    .radius(theme::RADIUS_CHIP)
 }
 
 /// A card: a translucent panel with a faint outline.
@@ -315,15 +365,138 @@ pub fn card_header<M>(
     subtitle: impl Into<String>,
 ) -> El<M> {
     let subtitle = subtitle.into();
+    let status = (!subtitle.is_empty()).then(|| hint(subtitle));
+    card_header_with(icon, tint, title, status, Vec::new())
+}
+
+/// A card's header with its state and actions: icon square, title, a status line under it (a
+/// hint, a version link, "Not installed"), and the card's actions at the right, Info last.
+pub fn card_header_with<M>(
+    icon: &str,
+    tint: ColorF,
+    title: impl Into<String>,
+    status: Option<El<M>>,
+    actions: Vec<El<M>>,
+) -> El<M> {
     let mut lines = vec![text(title).text_size(theme::TEXT_SUBTITLE).bold()];
-    if !subtitle.is_empty() {
-        lines.push(hint(subtitle));
-    }
-    row([
+    lines.extend(status);
+    let mut parts = vec![
         icon_square(icon, tint, 32.0),
         col(lines).gap(theme::space::XXS).fill_width(),
-    ])
-    .gap(theme::space::M)
+    ];
+    if !actions.is_empty() {
+        parts.push(row(actions).gap(theme::space::S));
+    }
+    row(parts).gap(theme::space::M)
+}
+
+/// A card saying what couldn't be read or done: the part's header, and why.
+pub fn error_card<M>(icon: &str, tint: ColorF, title: &str, why: impl Into<String>) -> El<M> {
+    card([card_header(icon, tint, title, ""), hint(why).wrap()])
+}
+
+/// A setting, as Windows 11's settings are: its title and what it does on the left, its control
+/// at the right (a `switch`, a drop-down `SETTING_CONTROL_WIDTH` wide, option pills), on a filled
+/// row. Every choice is one; a text value is a `field`. Without a control, only its text.
+pub fn setting_row<M>(title: &str, description: &str, control: Option<El<M>>) -> El<M> {
+    let mut texts = vec![text(title).bold().wrap()];
+    if !description.is_empty() {
+        texts.push(hint(description.to_owned()));
+    }
+    let mut items = vec![col(texts).gap(theme::space::XXS).fill_width()];
+    items.extend(control);
+    row(items)
+        .gap(theme::space::L)
+        .pad_xy(theme::space::M, theme::space::S)
+        .bg(theme::card())
+        .radius(theme::RADIUS_CONTROL)
+}
+
+/// An On/Off switch, `SWITCH_WIDTH` wide: a setting row's control. `name` is its UI Automation
+/// name (the setting's).
+pub fn switch<M>(name: impl Into<String>, on: bool, message: M) -> El<M> {
+    toggle(if on { "On" } else { "Off" }, on, message)
+        .name(name)
+        .width(theme::SWITCH_WIDTH)
+}
+
+/// A form field's label (over its text box).
+pub fn field_label<M>(label: &str) -> El<M> {
+    text(label)
+        .bold()
+        .padding(super::el::Edges::new(0.0, theme::space::S, 0.0, 0.0))
+}
+
+/// A text value: its label, the text box (or a row with it and its Browse…), and a hint under
+/// it when there is one, stacked.
+pub fn field<M>(label: &str, control: El<M>, line: &str) -> El<M> {
+    let mut parts = vec![field_label(label), control];
+    if !line.is_empty() {
+        parts.push(hint(line.to_owned()).wrap());
+    }
+    col(parts).gap(theme::space::S)
+}
+
+/// Opens a web page or a page of Windows' Settings.
+pub fn link_button<M>(label: impl Into<String>) -> El<M> {
+    icon_text_button(theme::glyph::LINK, label)
+}
+
+/// Opens a folder.
+pub fn folder_button<M>(label: impl Into<String>) -> El<M> {
+    icon_text_button(theme::glyph::FOLDER, label)
+}
+
+/// Label and value pairs in two aligned columns (the label `FACT_LABEL_WIDTH` wide); empty values
+/// are left out.
+pub fn facts<M>(rows: Vec<(&str, String)>) -> El<M> {
+    col(rows
+        .into_iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(label, value)| {
+            row([
+                text(label)
+                    .color(theme::text_tertiary())
+                    .width(theme::FACT_LABEL_WIDTH),
+                text(value).wrap().fill_width(),
+            ])
+            .gap(theme::space::M)
+        }))
+    .gap(theme::space::XS)
+}
+
+/// A group's header row: a glyph in a narrow slot (a chevron, a pin), its label (a
+/// `section_label`, a title) and what follows it (a `count_badge`, a hint).
+pub fn group_row<M>(lead: El<M>, label: El<M>, detail: Option<El<M>>) -> El<M> {
+    let mut parts = vec![lead.width(FOLD_SLOT), label];
+    parts.extend(detail);
+    // As tall as a control for one line, taller for a title with a hint under it.
+    row(parts)
+        .gap(theme::space::S)
+        .pad_xy(theme::space::S, 7.0)
+        .radius(theme::RADIUS_CONTROL)
+}
+
+/// A fold header's chevron and its slot.
+const FOLD_GLYPH: f32 = 10.0;
+const FOLD_SLOT: f32 = 16.0;
+
+/// A header that folds what follows (`group_row` with a chevron: right while folded, down while
+/// open); a click sends `message`.
+pub fn fold_header<M>(open: bool, label: El<M>, detail: Option<El<M>>, message: M) -> El<M> {
+    let chevron = if open {
+        theme::glyph::CHEVRON_DOWN
+    } else {
+        theme::glyph::CHEVRON_RIGHT
+    };
+    let lead = glyph(chevron, FOLD_GLYPH)
+        .color(theme::text_secondary())
+        .text_align(TextAlign::Center);
+    group_row(lead, label, detail)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
+        .role(Role::Button)
+        .on_click(message)
 }
 
 /// One tab of a tab strip.
@@ -422,13 +595,34 @@ pub fn check_square<M>(state: Option<bool>) -> El<M> {
 
 /// A check box with its label; the whole row toggles it.
 pub fn checkbox<M>(label: impl Into<String>, checked: bool, message: M) -> El<M> {
-    row([check_square(Some(checked)), text(label).wrap().fill_width()])
+    tri_checkbox(label, Some(checked), message)
+}
+
+/// A check box alone, its label elsewhere (a shader pack's, beside its fold header); `name` is its
+/// UI Automation name. It can be partly checked (`None`).
+pub fn check_button<M>(state: Option<bool>, name: impl Into<String>, message: M) -> El<M> {
+    row([check_square(state)])
+        .pad_xy(4.0, 4.0)
+        .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
+        .radius(theme::RADIUS_CONTROL)
+        .role(Role::CheckBox)
+        .selected(state == Some(true))
+        .name(name)
+        .on_click(message)
+}
+
+/// A check box that can be partly checked (`None`: some of a pack's effects), with its label; the
+/// whole row toggles it.
+pub fn tri_checkbox<M>(label: impl Into<String>, state: Option<bool>, message: M) -> El<M> {
+    row([check_square(state), text(label).wrap().fill_width()])
         .gap(8.0)
         .pad_xy(4.0, 2.0)
         .hover_bg(theme::subtle_hover())
+        .pressed_bg(theme::subtle_pressed())
         .radius(theme::RADIUS_CONTROL)
         .role(Role::CheckBox)
-        .selected(checked)
+        .selected(state == Some(true))
         .on_click(message)
 }
 

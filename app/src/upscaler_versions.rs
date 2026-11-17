@@ -1,14 +1,19 @@
 //! The Upscalers tab's Versions section: the library of the vendors' DLL versions, folded at the
-//! bottom of the tab until its header is clicked (`UpscalerState::versions_open`). Unfolded: one
+//! bottom of the tab until its header is clicked (`UpscalerState::versions_open`; a
+//! `widgets::fold_header`, as each kind's is). Unfolded: one
 //! section per kind (DLSS Super Resolution, Streamline, …), folded until clicked, listing its
 //! versions newest first: downloaded or not (a release archive's size), how many games use it,
 //! and Download or Delete. Deleting is always safe: a game keeps its own copy of what was swapped
-//! in. The library is the one the tab reads (`request_upscalers`); the state is `UpscalerState`
+//! in. Refresh list (a `working_button` while it asks) and Open cache folder (a `folder_button`)
+//! sit above the kinds. The library is the one the tab reads (`request_upscalers`); the state is `UpscalerState`
 //! (`upscalers_view.rs`).
 
-use crate::ui::el::{El, col, glyph, row, text};
+use crate::ui::el::{El, col, row, text};
 use crate::ui::theme::{self, glyph as g};
-use crate::ui::widgets::{card, hint, icon_text_button, working};
+use crate::ui::widgets::{
+    busy_width, card, fold_header, folder_button, hint, icon_text_button, remove_button, working,
+    working_button,
+};
 use crate::upscalers_view::{UpscalerLibrary, UpscalerMessage, megabytes};
 use crate::{GameManager, Message};
 use gm_core::mods::upscalers::{Available, Kind};
@@ -33,17 +38,8 @@ impl GameManager {
                 megabytes(size)
             )
         });
-        let header = row([
-            glyph(
-                if open {
-                    g::CHEVRON_DOWN
-                } else {
-                    g::CHEVRON_RIGHT
-                },
-                10.0,
-            )
-            .color(theme::text_secondary())
-            .width(16.0),
+        let header = fold_header(
+            open,
             col([
                 text("Versions").text_size(theme::TEXT_SUBTITLE).bold(),
                 hint(format!(
@@ -57,24 +53,24 @@ impl GameManager {
             ])
             .gap(theme::space::XXS)
             .fill_width(),
-        ])
-        .gap(theme::space::S)
-        .pad_xy(theme::space::XS, theme::space::XS)
-        .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::subtle_hover())
-        .name("Versions")
-        .on_click(UpscalerMessage::VersionsToggled.into());
+            None,
+            UpscalerMessage::VersionsToggled.into(),
+        )
+        .name("Versions");
         if !open {
-            return card([header]).pad(theme::space::S);
+            return card([header]);
         }
-        let busy = self.upscalers.library_pending || self.upscalers.download.is_some();
-        let actions = row([
-            icon_text_button(g::REFRESH, "Refresh list")
-                .enabled(!busy)
+        let refresh = if self.upscalers.library_pending {
+            working_button()
+        } else {
+            busy_width(icon_text_button(g::REFRESH, "Refresh list"))
+                .enabled(self.upscalers.download.is_none())
                 .tooltip("Ask NVIDIA's, AMD's and Intel's repositories for new versions")
-                .on_click(UpscalerMessage::Refresh.into()),
-            icon_text_button(g::FOLDER, "Open cache folder")
-                .on_click(UpscalerMessage::OpenCacheFolder.into()),
+                .on_click(UpscalerMessage::Refresh.into())
+        };
+        let actions = row([
+            refresh,
+            folder_button("Open cache folder").on_click(UpscalerMessage::OpenCacheFolder.into()),
         ])
         .gap(theme::space::S);
         let mut rows = vec![
@@ -109,7 +105,7 @@ impl GameManager {
             }
             _ => rows.push(working("Listing the versions…")),
         }
-        card(rows).gap(theme::space::M).pad(theme::space::S)
+        card(rows).gap(theme::space::M)
     }
 
     /// A kind's section: a header that folds it, then its versions, each with Download or Delete.
@@ -128,15 +124,8 @@ impl GameManager {
             })
             .count();
         let unfolded = self.upscalers.unfolded.contains(&kind.id);
-        let chevron = if unfolded {
-            g::CHEVRON_DOWN
-        } else {
-            g::CHEVRON_RIGHT
-        };
-        let header = row([
-            glyph(chevron, 10.0)
-                .color(theme::text_secondary())
-                .width(16.0),
+        let header = fold_header(
+            unfolded,
             col([
                 text(kind.name.as_str())
                     .text_size(theme::TEXT_SUBTITLE)
@@ -149,13 +138,10 @@ impl GameManager {
             ])
             .gap(theme::space::XXS)
             .fill_width(),
-        ])
-        .gap(theme::space::S)
-        .pad_xy(theme::space::XS, theme::space::XS)
-        .radius(theme::RADIUS_CONTROL)
-        .hover_bg(theme::subtle_hover())
-        .name(kind.name.as_str())
-        .on_click(UpscalerMessage::KindToggled(kind.id.clone()).into());
+            None,
+            UpscalerMessage::KindToggled(kind.id.clone()).into(),
+        )
+        .name(kind.name.as_str());
         let mut lines = vec![header];
         if unfolded {
             if versions.is_empty() {
@@ -167,7 +153,7 @@ impl GameManager {
                     .map(|available| self.version_row(library, kind, available)),
             );
         }
-        card(lines).gap(theme::space::XS).pad(theme::space::S)
+        card(lines).gap(theme::space::XS)
     }
 
     /// One version: its label, whether it is downloaded and used, and Download or Delete.
@@ -206,10 +192,9 @@ impl GameManager {
         let action = if running {
             working("Downloading…")
         } else if cached.is_some() {
-            icon_text_button(g::DELETE, "Delete")
+            remove_button(format!("Delete {} {version}", kind.name))
                 .enabled(self.upscalers.download.is_none())
-                .name(format!("Delete {} {version}", kind.name))
-                .tooltip("Remove it from the cache; the games it is in keep their copy")
+                .tooltip("Delete it from the cache; the games it is in keep their copy")
                 .on_click(UpscalerMessage::Delete(kind.id.clone(), version.clone()).into())
         } else {
             icon_text_button(g::DOWNLOAD, "Download")
@@ -219,9 +204,7 @@ impl GameManager {
         };
         row([
             text(library.label(&kind.id, available)).fill_width(),
-            text(status)
-                .text_size(theme::TEXT_SMALL)
-                .color(theme::text_tertiary()),
+            hint(status),
             row([action]).width(140.0),
         ])
         .gap(theme::space::M)

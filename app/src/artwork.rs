@@ -9,14 +9,16 @@
 //!   `icon::set_own`); **Use the store's** (the game's, for an icon) drops it. Either way the
 //!   Library, the page and the icons take it at once (`saved`).
 //! - **SteamGridDB** (with the user's key, Settings ▸ SteamGridDB): the game is found when the
-//!   dialog opens (`steamgriddb::find_game`), and another can be searched. Each tab lists its
+//!   dialog opens (`steamgriddb::find_game`), and another can be searched (a `search_box`: Enter
+//!   searches, ✕ goes back to the game's own). Each tab lists its
 //!   pictures a page at a time (animated ones first), their previews downloaded and decoded in
 //!   `THUMB_JOBS` background jobs, the still ones first (`steamgriddb::preview`: an animated one
 //!   is the picture itself), no larger than `THUMB_PIXELS`. A click downloads the picture and
 //!   makes it the part's own, noted as SteamGridDB's (`steamgriddb::record`), so it is marked
 //!   with a check.
 //! - **The key** is read from Credential Manager in the background at start (`KeyRead`), kept in
-//!   memory only, and never shown. Settings saves or removes it (`steamgriddb_card`).
+//!   memory only, and never shown. Settings saves or removes it (`steamgriddb_card`: a `field`
+//!   with Save, or once saved a `setting_row` with Remove).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -27,14 +29,15 @@ use gm_core::page_art::{self, Part};
 use gm_core::steamgriddb::{self as sgdb, Kind, SgdbGame};
 use gm_core::{Game, Launch};
 
-use crate::app_view::{field_label, wide_dialog, wide_dialog_width};
+use crate::app_view::{wide_dialog, wide_dialog_width};
 use crate::shell::WindowInfo;
 use crate::shell::ctx::{Ctx, FilePicker};
-use crate::ui::el::{Align, El, Role, col, glyph, image, layers, row, text};
+use crate::ui::el::{Align, El, Role, col, glyph, image, layers, row, spacer, text};
 use crate::ui::image::{self, Picture};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, card, card_header, chip, hint, link, segmented, text_box, working,
+    accent_button, busy_width, button, card, card_header, chip, field, hint, link_button,
+    search_box, segmented, setting_row, text_box, working, working_button,
 };
 use crate::{GameManager, Message, Page};
 
@@ -858,24 +861,16 @@ impl GameManager {
             (_, Lookup::Found(None)) => format!("No game named {} there", game.name),
             _ => format!("Pictures for {}", game.name),
         };
-        let mut search = vec![
-            text_box(
-                "artwork:search",
-                open.query.clone(),
-                "Search another game",
-                "Search another game on SteamGridDB",
-                |query| ArtworkMessage::Query(query).into(),
-            )
-            .on_enter(ArtworkMessage::Search.into())
-            .clear_on_escape()
-            .fill_width(),
-            button("Search")
-                .enabled(!open.query.trim().is_empty())
-                .on_click(ArtworkMessage::Search.into()),
-        ];
-        if !matches!(open.results, Lookup::Idle) {
-            search.push(button("Cancel").on_click(ArtworkMessage::ClearSearch.into()));
-        }
+        // Enter searches; its ✕ (or Escape) goes back to the game's own pictures.
+        let search = search_box(
+            "artwork:search",
+            &open.query,
+            "Search another game",
+            "Search another game on SteamGridDB",
+            |query| ArtworkMessage::Query(query).into(),
+            ArtworkMessage::Search.into(),
+            ArtworkMessage::ClearSearch.into(),
+        );
         let header = row([
             col([
                 text("From SteamGridDB")
@@ -885,8 +880,7 @@ impl GameManager {
             ])
             .gap(theme::space::XXS)
             .fill_width(),
-            row(search)
-                .gap(theme::space::S)
+            search
                 .width((width * 0.45).max(260.0))
                 .enabled(self.artwork.key().is_some()),
         ])
@@ -1074,24 +1068,21 @@ impl GameManager {
             "Covers, banners, logos and icons people made, to choose from in a game's Artwork.",
         );
         let busy = self.artwork.key_busy;
+        // While saved: a setting row with Remove; else a field and the form's buttons.
         let content = match &self.artwork.key {
             None => working("Reading your key…"),
-            Some(Some(_)) => col([
-                field_label("API key"),
-                row([
-                    text("Your key is saved, encrypted for your Windows account (Credential Manager).")
-                        .wrap()
-                        .fill_width(),
-                    button("Remove")
-                        .enabled(!busy)
-                        .on_click(ArtworkMessage::RemoveKey.into()),
-                ])
-                .gap(theme::space::M),
-            ])
-            .gap(theme::space::S),
+            Some(Some(_)) => setting_row(
+                "API key",
+                "Saved, encrypted for your Windows account (Credential Manager).",
+                Some(if busy {
+                    working_button()
+                } else {
+                    busy_width(button("Remove")).on_click(ArtworkMessage::RemoveKey.into())
+                }),
+            ),
             Some(None) => col([
-                field_label("API key"),
-                row([
+                field(
+                    "API key",
                     text_box(
                         "settings:sgdb-key",
                         self.artwork.key_draft.clone(),
@@ -1099,22 +1090,26 @@ impl GameManager {
                         "SteamGridDB API key",
                         |draft| ArtworkMessage::KeyDraft(draft).into(),
                     )
-                    .on_enter(ArtworkMessage::SaveKey.into())
-                    .fill_width(),
-                    accent_button("Save")
-                        .enabled(!busy && !self.artwork.key_draft.trim().is_empty())
-                        .on_click(ArtworkMessage::SaveKey.into()),
+                    .on_enter(ArtworkMessage::SaveKey.into()),
+                    "Make one in your SteamGridDB profile, under Preferences ▸ API.",
+                ),
+                row([
+                    link_button("Open SteamGridDB's API page")
+                        .on_click(ArtworkMessage::OpenKeyPage.into()),
+                    spacer(),
+                    if busy {
+                        working_button()
+                    } else {
+                        busy_width(accent_button("Save"))
+                            .enabled(!self.artwork.key_draft.trim().is_empty())
+                            .on_click(ArtworkMessage::SaveKey.into())
+                    },
                 ])
                 .gap(theme::space::S),
-                row([
-                    hint("Make one in your SteamGridDB profile:"),
-                    link("Preferences ▸ API", ArtworkMessage::OpenKeyPage.into()),
-                ])
-                .gap(theme::space::XS),
             ])
             .gap(theme::space::S),
         };
-        card([header, content]).gap(theme::space::L)
+        card([header, content])
     }
 }
 
