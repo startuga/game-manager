@@ -116,7 +116,7 @@ fn galaxy_client() -> Option<PathBuf> {
 }
 
 fn parse_info(text: &str) -> Option<Info> {
-    serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(text)).ok()
+    serde_json::from_str(text.trim_prefix('\u{feff}')).ok()
 }
 
 /// Combines a registry entry and its `.info` file into a game, or `None` for DLC and entries

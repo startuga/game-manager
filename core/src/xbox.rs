@@ -331,7 +331,7 @@ fn image_url(answer: &serde_json::Value, purpose: &str) -> Option<String> {
         .iter()
         .find(|image| image["ImagePurpose"].as_str() == Some(purpose))
         .and_then(|image| image["Uri"].as_str())?;
-    let address = uri.strip_prefix("https:").unwrap_or(uri);
+    let address = uri.trim_prefix("https:");
     address
         .starts_with("//")
         .then(|| format!("https:{address}"))

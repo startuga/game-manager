@@ -30,7 +30,7 @@ pub(crate) fn load<T: DeserializeOwned + Default>(file: &Path) -> Result<T> {
     match fs::read(file) {
         Ok(bytes) => {
             // Some editors save UTF-8 with a byte order mark, which JSON parsers reject.
-            let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            let json = bytes.trim_prefix(b"\xEF\xBB\xBF");
             serde_json::from_slice(json).map_err(Error::json(file))
         }
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(T::default()),

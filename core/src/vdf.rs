@@ -132,7 +132,7 @@ impl<'a> Lexer<'a> {
 /// Parses a VDF document into its root object.
 pub fn parse(src: &str) -> Result<Value, VdfError> {
     let mut lexer = Lexer {
-        src: src.strip_prefix('\u{feff}').unwrap_or(src),
+        src: src.trim_prefix('\u{feff}'),
         pos: 0,
     };
     let entries = parse_entries(&mut lexer, 0)?;

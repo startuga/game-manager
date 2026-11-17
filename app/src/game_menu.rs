@@ -577,7 +577,7 @@ impl GameManager {
         let Some(game) = self.games.iter_mut().find(|game| game.id == id) else {
             return;
         };
-        game.hidden = !game.hidden;
+        game.hidden.toggle();
         let hidden = game.hidden;
         if hidden && self.page == Page::Game && self.selected.as_deref() == Some(id.as_str()) {
             self.go_to(Page::Library, context);

@@ -274,7 +274,7 @@ fn matches(text: &str, search: &str) -> bool {
 
 /// An effect's name as listed (`Bloom.fx` for `Shaders\Bloom.fx`).
 fn effect_name(file: &str) -> &str {
-    file.strip_prefix(r"Shaders\").unwrap_or(file)
+    file.trim_prefix(r"Shaders\")
 }
 
 impl GameManager {

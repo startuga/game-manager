@@ -139,8 +139,10 @@ holds the rules and facts that span them.
   - They are loaded before saving, so an unreadable file is never overwritten, and unknown fields
     are kept.
 - `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete.
-- `build.rs` ships every `config/*.json` and `7-Zip\` next to `app.exe`; `config::shipped_file`
-  finds them there or one folder up (examples, tests).
+- `build.rs` ships every `config/*.json` and `7-Zip\` next to `app.exe` (the parent of the
+  `build` folder above `OUT_DIR`, since Cargo gives a build script no other); `config::shipped_file`
+  finds them there or one folder up (examples). Unit tests read the repository's own `config\` and
+  `tools\` instead: Cargo's build folder layout is its own, and Rust 1.100 moved the tests deeper.
 - **Format numbers**: bump the one whose layout changes.
   - `snapshot::VERSION`: the serde form of `Game`.
   - `icon::CACHE_FORMAT`.

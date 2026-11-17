@@ -217,7 +217,7 @@ impl GameManager {
             }
             UpscalerMessage::ShowInfo => self.mod_dialog = Some(ModDialog::UpscalerInfo),
             UpscalerMessage::VersionsToggled => {
-                self.upscalers.versions_open = !self.upscalers.versions_open;
+                self.upscalers.versions_open.toggle();
             }
             UpscalerMessage::Refresh => self.load_upscaler_library(true, context),
             UpscalerMessage::Download(kind, version) => {

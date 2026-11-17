@@ -367,7 +367,7 @@ impl<A: App> Shell<A> {
     /// `WM_TIMER` for the caret: it shows or hides.
     pub(super) fn blink(&mut self) {
         if self.caret_box.is_some() {
-            self.ui.caret_on = !self.ui.caret_on;
+            self.ui.caret_on.toggle();
             self.redraw = true;
         } else {
             // SAFETY: stops our own timer.

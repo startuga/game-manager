@@ -233,7 +233,7 @@ start. Your own choices stay in `%APPDATA%\Game Manager`.
 
 1. **Visual Studio Build Tools** (or Visual Studio) with the **Desktop development with C++**
    workload. Rust needs its MSVC linker and the Windows SDK.
-2. **Rust** via [rustup](https://rustup.rs). The project pins Rust 1.99.1 in
+2. **Rust** via [rustup](https://rustup.rs). The project pins Rust 1.100.0 in
    `rust-toolchain.toml`; rustup installs it automatically on the first build.
    The windows-rs crates come straight from
    [microsoft/windows-rs](https://github.com/microsoft/windows-rs) master, so the first build

@@ -297,7 +297,7 @@ impl Version {
 
     /// `v310.9.16`, `3.1.0a`; `None` for other tags (`fsr3-v3.0.4`).
     pub fn parse(text: &str) -> Option<Self> {
-        let text = text.strip_prefix('v').unwrap_or(text);
+        let text = text.trim_prefix('v');
         let end = text
             .find(|c: char| !(c.is_ascii_digit() || c == '.'))
             .unwrap_or(text.len());

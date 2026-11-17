@@ -197,7 +197,7 @@ pub fn configs_for(names: &[String], api: Option<GraphicsApi>) -> Vec<&str> {
 /// "3 – unsafer" for `dxvk_d3d9_3_unsafer.conf`, "1 – 2nd safest" for
 /// `dxvk_d3d11_and_d3d10_1_2nd_safest.conf`.
 pub fn config_label(name: &str) -> String {
-    let stem = name.strip_suffix(".conf").unwrap_or(name);
+    let stem = name.trim_suffix(".conf");
     let rest = [D3D11_CONFIGS, D3D9_CONFIGS]
         .iter()
         .find_map(|prefix| stem.strip_prefix(prefix))

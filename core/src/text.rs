@@ -34,7 +34,7 @@ pub(crate) fn xml_body(text: &str) -> &str {
 }
 
 pub(crate) fn strip_bom(text: &str) -> &str {
-    text.strip_prefix('\u{feff}').unwrap_or(text)
+    text.trim_prefix('\u{feff}')
 }
 
 /// Everything but unreserved URI characters as `%XX` (UTF-8 bytes), so spaces, quotes, slashes

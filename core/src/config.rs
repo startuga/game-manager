@@ -315,7 +315,7 @@ impl GameSettings {
 }
 
 /// The shipped configuration: `games.json` in the running program's folder, or in its parent
-/// (where examples and tests find it). No file means no defaults.
+/// (where examples find it). No file means no defaults.
 pub fn load_defaults() -> Result<GameDefaults> {
     match shipped_file(Path::new(DEFAULTS_FILE)) {
         Some(file) => json_file::load(&file),
@@ -324,15 +324,28 @@ pub fn load_defaults() -> Result<GameDefaults> {
 }
 
 /// A file shipped next to the app (`games.json`, `7-Zip\7z.exe`): in the running program's
-/// folder, or in its parent (where examples and tests find it).
+/// folder, or in its parent (where examples find it).
+///
+/// Unit tests run deep inside Cargo's build folder, whose layout is Cargo's own and changes
+/// (Rust 1.100 moved them from `target\<profile>\deps` to `build\gm-core\<hash>\out`), so they
+/// read the repository's own `config\` and `tools\` instead of what `build.rs` copied.
 pub(crate) fn shipped_file(name: &Path) -> Option<PathBuf> {
     let program = std::env::current_exe().ok()?;
-    program
+    let found = program
         .ancestors()
         .skip(1)
         .take(2)
         .map(|dir| dir.join(name))
-        .find(|file| file.is_file())
+        .find(|file| file.is_file());
+    #[cfg(test)]
+    let found = found.or_else(|| {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        ["config", "tools"]
+            .into_iter()
+            .map(|dir| root.join(dir).join(name))
+            .find(|file| file.is_file())
+    });
+    found
 }
 
 /// The user's settings; empty when there are none yet.
@@ -1130,8 +1143,8 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_shipped_file_next_to_the_program() {
-        // Tests run in target\<profile>\deps; the build copies games.json to target\<profile>.
+    fn finds_the_shipped_file() {
+        // Tests read the repository's config\games.json (`shipped_file`).
         let shipped = load_defaults().unwrap();
         assert!(!shipped.games.is_empty());
     }
