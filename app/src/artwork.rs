@@ -227,6 +227,11 @@ impl ArtworkState {
         self.open.is_some()
     }
 
+    /// The game the open dialog is for (its icon is kept whole while it is open, `icons.rs`).
+    pub fn game(&self) -> Option<&str> {
+        self.open.as_ref().map(|open| open.game.as_str())
+    }
+
     fn key(&self) -> Option<&str> {
         self.key.as_ref().and_then(Option::as_deref)
     }
@@ -363,9 +368,7 @@ impl GameManager {
                     } else {
                         Source::GameFiles
                     };
-                    let picture = image::decode_icons(vec![(game.id.clone(), bytes)], [icon_px; 2])
-                        .pop()
-                        .map(|(_, [picture, _])| Arc::new(picture));
+                    let picture = image::decode_icon(&bytes, icon_px).map(Arc::new);
                     (picture, source)
                 }
                 None => (None, Source::Nothing),

@@ -2,7 +2,7 @@
 //! premultiplied BGRA pixels, the form Direct2D bitmaps take, and the window's capture written as
 //! a PNG. No Windows API is used here.
 //!
-//! - **Icons** (`decode_icons`): the core gives each icon's best image, a PNG or a one-image
+//! - **Icons** (`decode_icon`): the core gives each icon's best image, a PNG or a one-image
 //!   `.ico` file (`gm_core::icon`). It is made here once for each pixel size it is drawn at
 //!   (`picture::fit`): untouched when it is exactly that size, else scaled with Catmull-Rom,
 //!   premultiplied first so transparent edges stay clean. A picture (an Xbox logo) is fitted too.
@@ -18,7 +18,6 @@
 //! ready pixels.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use gm_core::picture::{self, Rgba};
 
@@ -45,24 +44,9 @@ impl Picture {
     }
 }
 
-/// Decodes the core's icons keyed by id (PNGs, `.ico` files or pictures) for both of `sizes`, in
-/// pixels. Icons that can't be read are left out.
-pub fn decode_icons(
-    items: Vec<(String, Arc<Vec<u8>>)>,
-    sizes: [u32; 2],
-) -> Vec<(String, [Picture; 2])> {
-    items
-        .into_iter()
-        .filter_map(|(id, bytes)| {
-            let small = decode_icon(&bytes, sizes[0])?;
-            let large = decode_icon(&bytes, sizes[1])?;
-            Some((id, [small, large]))
-        })
-        .collect()
-}
-
-/// An icon `size` pixels big (see the module's doc).
-fn decode_icon(bytes: &[u8], size: u32) -> Option<Picture> {
+/// One of the core's icons (a PNG, an `.ico` file or a picture) `size` pixels big (see the
+/// module's doc); `None` when it can't be read.
+pub fn decode_icon(bytes: &[u8], size: u32) -> Option<Picture> {
     let image = picture::icon(bytes, size).ok()?;
     let fitted = picture::fit(image, size).ok()?;
     Some(Picture::from_premultiplied(fitted))
@@ -202,17 +186,10 @@ mod tests {
     fn an_icon_of_the_size_asked_for_is_used_pixel_for_pixel() {
         // Bitmaps store blue, green, red, alpha, as Direct2D takes them.
         let (red, blue) = ([0, 0, 255, 255], [255, 0, 0, 255]);
-        let bytes = Arc::new(ico(&[
-            (16, stripes(16, &[red, blue])),
-            (48, stripes(48, &[blue])),
-        ]));
-        let items = vec![
-            ("game".to_owned(), Arc::clone(&bytes)),
-            ("broken".to_owned(), Arc::new(b"not an icon".to_vec())),
-        ];
-        let icons = decode_icons(items, [16, 32]);
-        assert_eq!(icons.len(), 1);
-        let [small, large] = &icons[0].1;
+        let bytes = ico(&[(16, stripes(16, &[red, blue])), (48, stripes(48, &[blue]))]);
+        assert!(decode_icon(b"not an icon", 16).is_none());
+        let small = decode_icon(&bytes, 16).unwrap();
+        let large = decode_icon(&bytes, 32).unwrap();
         // 16 px: the 16 px image untouched; any scaling would blend its one-pixel stripes.
         assert_eq!((small.width, small.height), (16, 16));
         for (index, pixel) in small.pixels.chunks(4).enumerate() {
@@ -223,8 +200,8 @@ mod tests {
         assert_eq!((large.width, large.height), (32, 32));
         assert_eq!(large.pixels[(16 * 32 + 16) * 4..][..4], blue);
         // Larger than any image: the largest, scaled up.
-        let up = decode_icons(vec![("game".to_owned(), bytes)], [64, 64]);
-        assert_eq!((up[0].1[0].width, up[0].1[0].height), (64, 64));
+        let up = decode_icon(&bytes, 64).unwrap();
+        assert_eq!((up.width, up.height), (64, 64));
     }
 
     #[test]

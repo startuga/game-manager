@@ -27,8 +27,8 @@ holds the rules and facts that span them.
     as they are in the games' files, at their best: each icon's single best
     image, the largest in true colour (its depth as the icon's directory lists it too), byte for
     byte from `.ico` files and programs' icon resources, as a `.png` or a one-image `.ico` so
-    Windows' own decoder shows it too; cached; nothing is decoded or scaled here, no icon
-    handles, no GDI) and `data_module.rs` (a program or DLL mapped as data, for its resources:
+    Windows' own decoder shows it too; cached; handed over one at a time (`each`); nothing is
+    decoded or scaled here, no icon handles, no GDI) and `data_module.rs` (a program or DLL mapped as data, for its resources:
     icons, EA's Game Definition File).
   - `covers.rs` (cover art: the user's own, the stores' originals downloaded once by id or by
     name into the cache, and meanwhile the smaller copies the stores keep on this PC; every file

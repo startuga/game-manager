@@ -130,6 +130,11 @@ impl CoverState {
         self.animations.get(id)
     }
 
+    /// The games whose tiles are near the screen (their icons are kept whole too, `icons.rs`).
+    pub fn near(&self) -> &HashSet<String> {
+        &self.near
+    }
+
     /// The file of a game's cover, once found (the game page blurs it when it has no wide picture).
     pub fn file(&self, id: &str) -> Option<&std::path::Path> {
         self.sources.get(id).map(|(cover, _)| cover.file.as_path())

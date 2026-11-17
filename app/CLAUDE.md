@@ -31,8 +31,11 @@ samples in `crates/samples/`) instead of guessing.
     size only while their tiles are near the screen, a stand-in until each original arrives;
     a game with none gets its icon made into one, as Steam makes covers from wide pictures;
     `add_cover` and `forget` for the Artwork dialog).
-  - `icons.rs` (game icons: the core's best image of each kept, decoded for the 24 and 64 DIP
-    sizes at the window's pixel scaling, again when it changes; `icon` draws one).
+  - `icons.rs` (game icons, from the core's best image of each, at the window's pixel scaling:
+    every game's 24 DIP one; the icon's bytes and its 64 DIP one only for the games that want
+    them (tiles near the screen, the selected game, the Artwork dialog's), read again from the
+    icon cache when they do (`want_icons`); all read again when the scaling changes; `icon` draws
+    one). Measured with 1,900 games: 353 MB of icons before, 22 MB with this.
   - `game_page.rs` (header, launch bar, tabs, Overview; picks the page, each with its own
     scroll position). The header is a band of the game's art from edge to edge on every game
     (`page_art.rs`: the selected game's wide background and logo, the user's own or the

@@ -42,6 +42,9 @@
 //! program's length and modified time, so a game's program is only read again when it changes.
 //! They are written whole, through a temporary file of their own (`whole_file::write`).
 //! `.ico` and picture files are read where they are. No icon handle, GDI or WIC is used here.
+//!
+//! `each` hands the icons over one at a time as they are read, so the app keeps only what it
+//! decodes from them: a large library's files are about 100 KB an icon.
 
 use crate::bytes::{u16_at, u32_at};
 use crate::covers::{find_own, remove_own, safe_name, save_own};
@@ -371,35 +374,44 @@ fn own_icon(dir: &Path, game_id: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// The icons of `games`, keyed by game id (see `read`; the user's own first), from the icon cache
-/// when present. Games without a usable icon are left out. Blocking: run it off the UI thread.
-pub fn extract_all(games: &[Game]) -> Vec<(String, Vec<u8>)> {
-    extract_cached(games, IconCache::open().as_ref(), own_dir().ok().as_deref()).0
-}
-
-/// Like `extract_all`, then deletes cached icons no game uses any more. For a full library only:
-/// pruning after a partial list would drop the other games' icons.
-pub fn refresh_all(games: &[Game]) -> Vec<(String, Vec<u8>)> {
+/// The icons of `games` (see `read`; the user's own first), from the icon cache when present,
+/// each given to `found` with its game's id as soon as it is read, so a large library never holds
+/// every icon's bytes at once. Games without a usable icon are skipped. With `prune` (a full
+/// library only: pruning after a partial list would drop the other games' icons), cached icons no
+/// game uses any more are then deleted. Blocking: run it off the UI thread.
+pub fn each(games: &[Game], prune: bool, mut found: impl FnMut(String, Vec<u8>)) {
     let cache = IconCache::open();
-    let (icons, used) = extract_cached(games, cache.as_ref(), own_dir().ok().as_deref());
-    if let Some(cache) = &cache {
+    let used = each_cached(games, cache.as_ref(), own_dir().ok().as_deref(), &mut found);
+    if prune && let Some(cache) = &cache {
         cache.prune(&used);
     }
-    icons
 }
 
-/// The user's own icons in `own`, else icons from `cache` when present, else read and cached
-/// (programs' only: other files are read where they are). Also returns the cache files used.
+/// `each_cached`, collected.
+#[cfg(test)]
 fn extract_cached(
     games: &[Game],
     cache: Option<&IconCache>,
     own: Option<&Path>,
 ) -> (Vec<(String, Vec<u8>)>, HashSet<PathBuf>) {
-    let mut used = HashSet::new();
     let mut icons = Vec::new();
+    let used = each_cached(games, cache, own, &mut |id, bytes| icons.push((id, bytes)));
+    (icons, used)
+}
+
+/// The user's own icons in `own`, else icons from `cache` when present, else read and cached
+/// (programs' only: other files are read where they are), each given to `found`. Returns the
+/// cache files used.
+fn each_cached(
+    games: &[Game],
+    cache: Option<&IconCache>,
+    own: Option<&Path>,
+    found: &mut dyn FnMut(String, Vec<u8>),
+) -> HashSet<PathBuf> {
+    let mut used = HashSet::new();
     for game in games {
         if let Some(bytes) = own.and_then(|dir| own_icon(dir, &game.id)) {
-            icons.push((game.id.clone(), bytes));
+            found(game.id.clone(), bytes);
             continue;
         }
         let Some(icon) = &game.icon else {
@@ -421,10 +433,10 @@ fn extract_cached(
             })
         };
         if let Some(bytes) = bytes {
-            icons.push((game.id.clone(), bytes));
+            found(game.id.clone(), bytes);
         }
     }
-    (icons, used)
+    used
 }
 
 /// Bump when what is cached changes, so icons cached by an older version are not reused.

@@ -459,6 +459,9 @@ impl App for GameManager {
         if let Some(id) = self.selected.clone() {
             self.request_game_folders(&id, ctx);
         }
+        // The icons kept whole follow the tiles near the screen, the selected game and the
+        // Artwork dialog's (the page's band below may blur the selected one).
+        self.want_icons(ctx);
         // The game page's background and logo, whenever another game shows.
         self.request_page_art(ctx);
         // Whatever showed HDR-mod in DXVK settings, its configs are listed.
@@ -849,7 +852,7 @@ impl GameManager {
                 }
             }
             Message::Icon(message) => self.handle_icon(message, context),
-            Message::ScaleChanged => self.redecode_icons(context),
+            Message::ScaleChanged => self.rescale_icons(context),
             Message::Search(query) => self.query = query,
             Message::ClearSearch => self.query.clear(),
             Message::SearchSubmit => {
