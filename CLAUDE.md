@@ -41,9 +41,13 @@ DLSS overrides in their driver profiles.
 - **Dependencies and lints**: every dependency's version is in the root
   `[workspace.dependencies]`.
   - `[workspace.lints]` denies `undocumented_unsafe_blocks` and `dbg_macro`, and warns on
-    `multiple_unsafe_ops_per_block`, `unwrap_used`, `expect_used` and `todo`.
+    `multiple_unsafe_ops_per_block`, `unwrap_used`, `expect_used`, `todo` and `map_unwrap_or`
+    (`x.map_or_default(f)`, not `x.map(f).unwrap_or_default()`).
   - Tests may unwrap (`clippy.toml`); `build.rs` and `examples/scan.rs` allow `expect` with a
     reason.
+  - **Cooldown**: `.cargo/config.toml` has Cargo take no crates.io version under 7 days old
+    (`global-min-publish-age`); `Cargo.lock` keeps what it holds, and windows-rs (git) isn't
+    reached. `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow` lifts it for one command.
 - **Release profile**, tuned for speed: `opt-level = 3`, `lto`, `codegen-units = 1`,
   `panic = "abort"` (nothing catches an unwinding panic), `strip`. `app.exe` was 4.08 MB on
   2026-11-13 with pictures decoded in Rust (2.87 MB before: the JPEG, PNG and WebP decoders add

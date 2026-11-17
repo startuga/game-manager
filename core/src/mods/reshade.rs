@@ -51,8 +51,8 @@ use super::reshade_settings::{Part, ReshadeSettings};
 use super::shader_packs::{Catalog, Selection};
 use super::{
     BACKUP_SUFFIX, Build, FileOp, Installed, InstalledFile, ModsFile, SourceHashes, check_download,
-    drop_staging, files_under, folder_writable, fresh_staging, get_json, latest_run, plan,
-    reshade_settings, run_artifact, run_then, shader_packs, update, with_suffix,
+    files_under, folder_writable, fresh_staging, get_json, latest_run, plan, reshade_settings,
+    run_artifact, run_then, scratch, shader_packs, update, with_suffix,
 };
 use crate::graphics::GraphicsApi;
 use crate::text::{percent_decode, percent_encode};
@@ -478,9 +478,8 @@ pub(crate) fn cached_build(variant: ReshadeVariant, build: &Build) -> Result<Pat
     let Some(root) = dir.parent() else {
         return Err(Error::NoModBuild(dir));
     };
-    let work = root.join("download");
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(Error::io(&work))?;
+    // Removed when this returns, however it ends, before the lock is let go.
+    let work = scratch(root.join("download"))?;
     let download = work.join(&build.file_name);
     http::download(&build.url, &download)?;
     check_download(build, &download)?;
@@ -517,23 +516,20 @@ pub(crate) fn cached_build(variant: ReshadeVariant, build: &Build) -> Result<Pat
         fs::remove_dir_all(&dir).map_err(Error::io(&dir))?;
     }
     fs::rename(&kept, &dir).map_err(Error::io(&dir))?;
-    let _ = fs::remove_dir_all(&work);
     Ok(dir)
 }
 
 fn files_with_extension(folder: &Path, extension: &str) -> Vec<PathBuf> {
-    fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    fs::read_dir(folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+            })
+            .collect()
+    })
 }
 
 /// The `ReShade.ini` Game Manager writes when the game has none, as ReShade's setup does.
@@ -1024,7 +1020,6 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     )?;
     prepared.job.ops.extend(ops);
     run_job(&prepared.job)?;
-    drop_staging(&staging);
     let mut installed = prepared.installed;
     if state.variant == ReshadeVariant::NoAddons {
         installed.version = format!("{} (no add-ons)", installed.version);
@@ -1213,7 +1208,6 @@ pub fn deploy(games: &[Game], to: &DeployTo) -> Result<ModsFile> {
             ),
         }
     }
-    drop_staging(&staging);
     // Every game changed is recorded, even when another one's record can't be saved.
     let mut saved = mods;
     for (id, (effects, addons)) in done {

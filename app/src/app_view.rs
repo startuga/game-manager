@@ -167,8 +167,7 @@ impl GameManager {
                 .games
                 .iter()
                 .find(|game| game.id == *id)
-                .map(|game| game.name.clone())
-                .unwrap_or_default();
+                .map_or_default(|game| game.name.clone());
             return Some(removal_dialog(
                 window,
                 &format!("Remove {name}?"),

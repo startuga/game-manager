@@ -101,11 +101,7 @@ pub fn detect(game: &Game) -> Option<GraphicsInfo> {
 
 /// The APIs the game's files show; `None` when they show none.
 pub fn from_files(game: &Game) -> Option<GraphicsInfo> {
-    let files = game
-        .install_dir
-        .as_deref()
-        .map(binaries)
-        .unwrap_or_default();
+    let files = game.install_dir.as_deref().map_or_default(binaries);
     let mut apis: BTreeSet<GraphicsApi> = main_programs(game, &files)
         .iter()
         .filter_map(|program| pe::imported_dlls(program))

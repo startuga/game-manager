@@ -29,8 +29,7 @@ pub fn scan() -> Result<Vec<Game>> {
         let log = data.join("installations.jsonl");
         if let Ok(text) = fs::read_to_string(&log) {
             let titles = fs::read_to_string(data.join(r"cache\prod\catalog-cache.json"))
-                .map(|text| parse_catalog_titles(&text))
-                .unwrap_or_default();
+                .map_or_default(|text| parse_catalog_titles(&text));
             games.extend(
                 parse_installations(&text, &titles)
                     .into_iter()
@@ -175,16 +174,14 @@ struct CatalogItem {
 
 /// Maps catalog item id → title from the launcher's `catalog-cache.json`.
 fn parse_catalog_titles(text: &str) -> HashMap<String, String> {
-    serde_json::from_str::<Catalog>(text)
-        .map(|catalog| {
-            catalog
-                .items
-                .into_iter()
-                .filter(|(_, entry)| !entry.item.title.is_empty())
-                .map(|(id, entry)| (id, entry.item.title))
-                .collect()
-        })
-        .unwrap_or_default()
+    serde_json::from_str::<Catalog>(text).map_or_default(|catalog| {
+        catalog
+            .items
+            .into_iter()
+            .filter(|(_, entry)| !entry.item.title.is_empty())
+            .map(|(id, entry)| (id, entry.item.title))
+            .collect()
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

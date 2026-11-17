@@ -148,14 +148,12 @@ fn build_game(entry: &RegistryEntry, info: Option<&Info>, galaxy: Option<&Path>)
     .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
     .unwrap_or_else(|| entry.game_id.clone());
 
-    let alt_launches = galaxy
-        .map(|client| {
-            vec![LaunchOption {
-                label: "Play via Galaxy".to_owned(),
-                launch: galaxy_launch(client, &entry.game_id, &entry.path),
-            }]
-        })
-        .unwrap_or_default();
+    let alt_launches = galaxy.map_or_default(|client| {
+        vec![LaunchOption {
+            label: "Play via Galaxy".to_owned(),
+            launch: galaxy_launch(client, &entry.game_id, &entry.path),
+        }]
+    });
     let program = info.and_then(|info| game_program(info, &dir));
 
     Some(Game {

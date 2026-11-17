@@ -168,13 +168,12 @@ fn search_names(name: &str) -> Vec<String> {
 fn search_titles(answer: &Value) -> Vec<String> {
     answer["query"]["search"]
         .as_array()
-        .map(|results| {
+        .map_or_default(|results| {
             results
                 .iter()
                 .filter_map(|result| result["title"].as_str().map(str::to_owned))
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// The longest of `titles` that is the game called `name` (`same_game`).

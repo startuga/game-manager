@@ -110,11 +110,7 @@ impl GameManager {
 
     /// A kind's section: a header that folds it, then its versions, each with Download or Delete.
     fn kind_section(&self, library: &UpscalerLibrary, kind: &Kind) -> El<Message> {
-        let versions = library
-            .versions
-            .get(&kind.id)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+        let versions = library.versions.get(&kind.id).map_or_default(Vec::as_slice);
         let downloaded = versions
             .iter()
             .filter(|available| {

@@ -31,8 +31,7 @@ fn tool() -> Result<PathBuf> {
 pub(crate) fn extract(archive: &Path, dest: &Path) -> Result<()> {
     let name = archive
         .file_name()
-        .map(|name| name.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().to_ascii_lowercase());
     if !(name.ends_with(".tar.gz") || name.ends_with(".tgz")) {
         return unpack(archive, dest);
     }

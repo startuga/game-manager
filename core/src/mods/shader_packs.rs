@@ -282,18 +282,12 @@ fn pack_files(dir: &Path) -> Result<Vec<PathBuf>> {
 /// A cached pack's effects (`Shaders\Bloom.fx`), for picking single ones; empty when it is not
 /// downloaded. Blocking.
 pub fn effects(id: &str) -> Vec<String> {
-    pack_dir(id)
-        .ok()
-        .map(|dir| effects_in(&dir))
-        .unwrap_or_default()
+    pack_dir(id).ok().map_or_default(|dir| effects_in(&dir))
 }
 
 /// The user's own effects, in the custom folder. Blocking.
 pub fn custom_effects() -> Vec<String> {
-    custom_dir()
-        .ok()
-        .map(|dir| effects_in(&dir))
-        .unwrap_or_default()
+    custom_dir().ok().map_or_default(|dir| effects_in(&dir))
 }
 
 fn effects_in(dir: &Path) -> Vec<String> {
@@ -448,8 +442,7 @@ pub(crate) fn lay_out(catalog: &Catalog, unpacked: &Path, kept: &Path) -> Result
             for relative in files_under(&root)? {
                 let extension = relative
                     .extension()
-                    .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-                    .unwrap_or_default();
+                    .map_or_default(|ext| ext.to_string_lossy().to_ascii_lowercase());
                 if extension == "fx" || extension == "fxh" {
                     copy(&root, &relative, &kept.join(SHADERS))?;
                 } else if TEXTURE_EXTENSIONS.contains(&extension.as_str()) {
@@ -502,8 +495,7 @@ fn shallowest_folder(root: &Path, name: &str) -> Option<PathBuf> {
 /// `root`'s only folder when it holds nothing else (an archive's `<repo>-<branch>`), else `root`.
 fn single_top_folder(root: &Path) -> PathBuf {
     let entries: Vec<PathBuf> = fs::read_dir(root)
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|entries| entries.flatten().map(|entry| entry.path()).collect());
     match entries.as_slice() {
         [only] if only.is_dir() => only.clone(),
         _ => root.to_path_buf(),
@@ -534,8 +526,7 @@ pub fn import(archive: &Path) -> Result<usize> {
 fn import_into(archive: &Path, custom: &Path, work: &Path) -> Result<usize> {
     let name: String = archive
         .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|stem| stem.to_string_lossy().into_owned())
         .chars()
         .filter(|c| !r#"\/:*?"<>|"#.contains(*c))
         .collect();

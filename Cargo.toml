@@ -41,6 +41,8 @@ unwrap_used = "warn"
 expect_used = "warn"
 dbg_macro = "deny"
 todo = "warn"
+# Rust 1.100: `x.map(f).unwrap_or_default()` reads as `x.map_or_default(f)`, and the like.
+map_unwrap_or = "warn"
 
 # Tuned for speed: optimizations across crates (`lto`) in one unit, no unwinding code (nothing
 # catches a panic). `strip` only drops symbols, which costs nothing at run time. A clean release

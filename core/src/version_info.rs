@@ -69,17 +69,16 @@ impl VersionInfo {
     /// A string value such as `ProductName`, in the program's first listed language.
     pub(crate) fn string(&mut self, key: &str) -> Option<String> {
         // Language and code page pairs, e.g. 0x0409 0x04B0 for US English, Unicode.
-        let mut languages: Vec<String> = self
-            .query(r"\VarFileInfo\Translation")
-            .map(|pairs| {
-                pairs
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|[language, code_page]| format!("{language:04x}{code_page:04x}"))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut languages: Vec<String> =
+            self.query(r"\VarFileInfo\Translation")
+                .map_or_default(|pairs| {
+                    pairs
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|[language, code_page]| format!("{language:04x}{code_page:04x}"))
+                        .collect()
+                });
         languages.push("040904b0".to_owned());
         languages.iter().find_map(|language| {
             let value = self.query(&format!(r"\StringFileInfo\{language}\{key}"))?;

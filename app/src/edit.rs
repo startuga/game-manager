@@ -70,8 +70,7 @@ impl EditFields {
             program: game
                 .program
                 .as_deref()
-                .map(|program| program.display().to_string())
-                .unwrap_or_default(),
+                .map_or_default(|program| program.display().to_string()),
             arch: game.edits.as_ref().and_then(|edits| edits.arch),
             graphics_api: game.edits.as_ref().and_then(|edits| edits.graphics_api),
         }

@@ -437,8 +437,7 @@ pub fn versions(
             let listed = listings
                 .lists
                 .get(&kind.listing_key())
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+                .map_or_default(Vec::as_slice);
             (kind.id.clone(), available(kind, listed))
         })
         .collect();
@@ -628,37 +627,32 @@ pub fn delete_download(kind: &str, version: &str) -> Result<()> {
 }
 
 fn folders_in(folder: &Path) -> Vec<PathBuf> {
-    let mut folders: Vec<PathBuf> = fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut folders: Vec<PathBuf> = fs::read_dir(folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect()
+    });
     folders.sort();
     folders
 }
 
 fn name_of(path: &Path) -> String {
     path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|name| name.to_string_lossy().into_owned())
 }
 
 /// The DLLs directly in `folder`, by name.
 fn dlls_in(folder: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.path().is_file())
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.to_ascii_lowercase().ends_with(".dll"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = fs::read_dir(folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".dll"))
+            .collect()
+    });
     names.sort();
     names
 }

@@ -660,8 +660,7 @@ impl GameManager {
         let with_config = state
             .and_then(|state| state.config.hdr_mod_config.as_deref())
             .filter(|_| variant == DxvkVariant::HdrMod)
-            .map(|name| format!(" with config {}", dxvk::config_label(name)))
-            .unwrap_or_default();
+            .map_or_default(|name| format!(" with config {}", dxvk::config_label(name)));
         let hint = if working {
             "Working… Windows asks for administrator rights when the game's folder needs them."
                 .to_owned()

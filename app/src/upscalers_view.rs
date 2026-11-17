@@ -323,8 +323,7 @@ impl GameManager {
         self.upscalers.pending.insert(game.id.clone());
         context.spawn_background(move || {
             let found = upscalers::catalog()
-                .map(|catalog| upscalers::scan(&game, &catalog, &mods))
-                .unwrap_or_default();
+                .map_or_default(|catalog| upscalers::scan(&game, &catalog, &mods));
             UpscalerMessage::Scanned(game.id, found).into()
         });
     }

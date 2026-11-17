@@ -65,12 +65,10 @@ pub fn scan() -> Result<Vec<Game>> {
             continue;
         };
         let app_ids = fs::read_to_string(dir.join("AppxManifest.xml"))
-            .map(|text| parse_manifest_app_ids(&text))
-            .unwrap_or_default();
+            .map_or_default(|text| parse_manifest_app_ids(&text));
         let display_name = package
             .DisplayName()
-            .map(|name| name.to_string_lossy())
-            .unwrap_or_default();
+            .map_or_default(|name| name.to_string_lossy());
 
         if let Some(mut game) = build_game(&family, &display_name, &dir, &config, &app_ids) {
             game.icon = resolve_logo(&dir, &config.logos);
@@ -103,8 +101,7 @@ fn parse_game_config(text: &str) -> Option<GameConfig> {
     };
     let attr = |node: Option<roxmltree::Node>, name: &str| {
         node.and_then(|n| n.attribute(name))
-            .map(str::trim)
-            .unwrap_or_default()
+            .map_or_default(str::trim)
             .to_owned()
     };
 

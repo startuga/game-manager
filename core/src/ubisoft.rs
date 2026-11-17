@@ -141,11 +141,9 @@ fn build_game(
         install.display_name.trim().to_owned(),
         configuration
             .and_then(|configuration| configuration.name.as_deref())
-            .map(search_name)
-            .unwrap_or_default(),
+            .map_or_default(search_name),
         dir.file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+            .map_or_default(|name| name.to_string_lossy().into_owned()),
     ]
     .into_iter()
     .find(|name| !name.is_empty())
@@ -153,8 +151,7 @@ fn build_game(
 
     // The configuration's programs that exist: the first is the game, the others are extras.
     let mut programs = configuration
-        .map(|configuration| configuration.executables.as_slice())
-        .unwrap_or_default()
+        .map_or_default(|configuration| configuration.executables.as_slice())
         .iter()
         .filter_map(|executable| {
             let folder = inside(dir, &executable.append)?;
@@ -170,8 +167,7 @@ fn build_game(
         let label = match executable.label.trim() {
             "" => path
                 .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|stem| stem.to_string_lossy().into_owned()),
             label => search_name(label),
         };
         // The game itself is Play; a program listed twice is offered once.
@@ -259,8 +255,7 @@ impl Launcher {
     pub(crate) fn find() -> Option<Self> {
         let dir = Self::folder()?;
         let configurations = fs::read(dir.join(r"cache\configuration\configurations"))
-            .map(|bytes| parse_cache(&bytes))
-            .unwrap_or_default();
+            .map_or_default(|bytes| parse_cache(&bytes));
         Some(Self {
             dir,
             configurations,

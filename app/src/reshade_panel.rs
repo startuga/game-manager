@@ -648,8 +648,7 @@ impl GameManager {
                         Ok((zip, failed)) if failed.is_empty() => format!(
                             "{} is on the clipboard: paste it into Discord or a folder to share.",
                             zip.file_name()
-                                .map(|name| name.to_string_lossy())
-                                .unwrap_or_default()
+                                .map_or_default(|name| name.to_string_lossy())
                         ),
                         Ok((_, failed)) => format!(
                             "The ZIP is on the clipboard, without what could not be downloaded:\n{}",
@@ -1065,11 +1064,7 @@ impl GameManager {
             .iter()
             .filter(|pack| pack.category == category)
             .filter(|pack| {
-                let effects = library
-                    .effects
-                    .get(&pack.id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
+                let effects = library.effects.get(&pack.id).map_or_default(Vec::as_slice);
                 draft.search.is_empty()
                     || matches(&pack.name, &draft.search)
                     || matches(&pack.description, &draft.search)

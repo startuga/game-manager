@@ -1118,8 +1118,7 @@ fn game_name(games: &[Game], id: &str) -> String {
     games
         .iter()
         .find(|game| game.id == id)
-        .map(|game| game.name.clone())
-        .unwrap_or_default()
+        .map_or_default(|game| game.name.clone())
 }
 
 /// The games a search found, each a button that shows its pictures.

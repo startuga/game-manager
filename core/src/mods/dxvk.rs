@@ -28,8 +28,8 @@
 //! directory: the program's folder for nearly every launch.
 
 use super::{
-    Build, Installed, ModsFile, apply, check_download, drop_staging, fresh_staging, get_json,
-    latest_run, plan, reshade, run_artifact, update,
+    Build, Installed, ModsFile, apply, check_download, fresh_staging, get_json, latest_run, plan,
+    reshade, run_artifact, scratch, update,
 };
 use crate::graphics::GraphicsApi;
 use crate::nvidia::{self, NvidiaChoice, NvidiaOriginal};
@@ -439,12 +439,8 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     if let Some(text) = config_text(&state.config, &cache, Some(api))? {
         files.push((CONFIG_FILE.to_owned(), staged_config(&staging, &text)?));
     }
-    let applied = plan(state.installed.as_ref(), &target.folder, &files).and_then(|plan| {
-        apply(&plan.ops)?;
-        Ok(plan)
-    });
-    drop_staging(&staging);
-    let plan = applied?;
+    let plan = plan(state.installed.as_ref(), &target.folder, &files)?;
+    apply(&plan.ops)?;
     let installed = Installed {
         version: build.version,
         page: build.page,
@@ -500,12 +496,8 @@ pub fn save_settings(
             Some(text) => vec![(CONFIG_FILE.to_owned(), staged_config(&staging, &text)?)],
             None => Vec::new(),
         };
-        let applied = plan(Some(&previous), &record.folder, &new).and_then(|plan| {
-            apply(&plan.ops)?;
-            Ok(plan)
-        });
-        drop_staging(&staging);
-        let plan = applied?;
+        let plan = plan(Some(&previous), &record.folder, &new)?;
+        apply(&plan.ops)?;
         files.extend(plan.files);
         backups.extend(plan.backups);
         record.files = files;
@@ -621,15 +613,13 @@ fn check_config(name: &str, api: Option<GraphicsApi>) -> Result<()> {
 /// when it is not cached yet. Blocking.
 pub fn hdr_mod_configs() -> Result<Vec<String>> {
     let build = cached_build(&latest(DxvkVariant::HdrMod)?)?;
-    let mut names: Vec<String> = fs::read_dir(build.join(CONFIGS))
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.to_ascii_lowercase().ends_with(".conf"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = fs::read_dir(build.join(CONFIGS)).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".conf"))
+            .collect()
+    });
     names.sort();
     Ok(names)
 }
@@ -674,9 +664,8 @@ fn cached_build(build: &Build) -> Result<PathBuf> {
     let Some(root) = dir.parent() else {
         return Err(Error::NoModBuild(dir));
     };
-    let work = root.join("download");
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(Error::io(&work))?;
+    // Removed when this returns, however it ends, before the lock is let go.
+    let work = scratch(root.join("download"))?;
     let archive = work.join(&build.file_name);
     http::download(&build.url, &archive)?;
     check_download(build, &archive)?;
@@ -709,7 +698,6 @@ fn cached_build(build: &Build) -> Result<PathBuf> {
         fs::remove_dir_all(&dir).map_err(Error::io(&dir))?;
     }
     fs::rename(&kept, &dir).map_err(Error::io(&dir))?;
-    let _ = fs::remove_dir_all(&work);
     Ok(dir)
 }
 
@@ -762,18 +750,16 @@ fn find_build_folder(root: &Path, name: &str) -> Option<PathBuf> {
 }
 
 fn dlls_in(folder: &Path) -> Vec<PathBuf> {
-    fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    fs::read_dir(folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

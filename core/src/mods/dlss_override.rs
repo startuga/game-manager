@@ -242,8 +242,7 @@ impl OverrideState {
     pub fn choice(&self) -> BTreeMap<u32, u32> {
         self.record
             .as_ref()
-            .map(|record| record.choice.clone())
-            .unwrap_or_default()
+            .map_or_default(|record| record.choice.clone())
     }
 
     /// The settings Game Manager set that the profile no longer holds, with what it holds now

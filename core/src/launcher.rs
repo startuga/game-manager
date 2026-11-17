@@ -22,8 +22,7 @@ pub fn launch(launch: &Launch) -> Result<()> {
             (
                 HSTRING::from(path.as_os_str()),
                 HSTRING::from(args.as_str()),
-                dir.map(|d| HSTRING::from(d.as_os_str()))
-                    .unwrap_or_default(),
+                dir.map_or_default(|d| HSTRING::from(d.as_os_str())),
             )
         }
     };

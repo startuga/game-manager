@@ -116,8 +116,7 @@ pub(super) fn cpu() -> Result<Cpu> {
         .map_err(Error::windows(CPU_KEY))?;
     let name = key
         .get_string("ProcessorNameString")
-        .map(|name| collapse(&name))
-        .unwrap_or_else(|_| "Unknown processor".to_owned());
+        .map_or_else(|_| "Unknown processor".to_owned(), |name| collapse(&name));
     // SAFETY: no pointers; counts the processors of every group.
     let threads = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS as u16) };
     Ok(Cpu {

@@ -354,8 +354,7 @@ struct Choices {
 pub fn chosen(game_id: &str) -> BTreeMap<Kind, u64> {
     json_file::user_file(CHOICES_FILE)
         .ok()
-        .map(|file| chosen_in(&file, game_id))
-        .unwrap_or_default()
+        .map_or_default(|file| chosen_in(&file, game_id))
 }
 
 fn chosen_in(file: &Path, game_id: &str) -> BTreeMap<Kind, u64> {

@@ -356,7 +356,7 @@ fn initials(normalized: &str) -> String {
             if word.chars().all(|c| c.is_ascii_digit()) {
                 word.to_owned()
             } else {
-                word.chars().next().map(String::from).unwrap_or_default()
+                word.chars().next().map_or_default(String::from)
             }
         })
         .collect()
@@ -372,8 +372,7 @@ pub fn matches(game: &Game, query: &str) -> bool {
         .program
         .as_deref()
         .and_then(|program| program.file_stem())
-        .map(|stem| normalize(&stem.to_string_lossy()))
-        .unwrap_or_default();
+        .map_or_default(|stem| normalize(&stem.to_string_lossy()));
     let words: Vec<&str> = query.split(' ').collect();
     // Every word somewhere in the name, in any order, or in the program's file name.
     if words

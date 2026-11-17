@@ -94,8 +94,7 @@ fn read_text(
 /// The name a shortcut shows: its file name without `.lnk`.
 pub(crate) fn shortcut_name(lnk: &Path) -> String {
     lnk.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|stem| stem.to_string_lossy().into_owned())
 }
 
 /// Expands `%NAME%` environment variables, as Explorer does for icon locations such as

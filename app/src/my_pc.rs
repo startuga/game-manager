@@ -126,8 +126,7 @@ impl GameManager {
                 let displays: Vec<Display> = snapshot
                     .displays
                     .as_ref()
-                    .map(|displays| displays.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|displays| displays.clone());
                 state.brightness.clear();
                 state.snapshot = Some(snapshot);
                 context.spawn_background(move || {

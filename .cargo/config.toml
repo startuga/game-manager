@@ -1,0 +1,9 @@
+# Cargo's settings for building this repository.
+
+# Dependency cooldown (Rust 1.100): when Cargo resolves (`cargo update`, a new dependency), it takes
+# no crates.io version published less than a week ago, so a hijacked release has time to be found
+# and yanked before it reaches this build. What Cargo.lock already holds stays as it is. The
+# windows-rs crates come from git, which this doesn't reach. To take a newer release at once, run
+# that one command with CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow.
+[registry]
+global-min-publish-age = "7 days"

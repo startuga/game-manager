@@ -57,7 +57,8 @@ holds the rules and facts that span them.
     Windows Credential Manager).
 - **Mods**:
   - `mods/mod.rs` (`mods.json`, `FileOp` plans that undo themselves, `apply`; `CopyTree` and
-    `DeleteFiles` move a folder of files as one operation).
+    `DeleteFiles` move a folder of files as one operation; `scratch` folders, removed however a
+    step ends: a job's staging, a download being unpacked).
   - `mods/dxvk.rs` (Stable, Development, HDR-mod).
   - `mods/laa.rs` (Large Address Aware for 32-bit programs: status, enable, restore; the patched
     program is recorded in `mods.json` under `laa`).

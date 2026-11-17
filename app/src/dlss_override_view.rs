@@ -160,8 +160,7 @@ impl GameManager {
         let choice = self
             .mods
             .dlss_override(&game.id)
-            .map(|record| record.choice.clone())
-            .unwrap_or_default();
+            .map_or_default(|record| record.choice.clone());
         self.upscalers.overrides = Some(OverrideDraft {
             game: game.id.clone(),
             choice,
@@ -239,8 +238,7 @@ impl GameManager {
         let saved = self
             .mods
             .dlss_override(&game.id)
-            .map(|record| record.choice.clone())
-            .unwrap_or_default();
+            .map_or_default(|record| record.choice.clone());
         let Some(catalog) = self
             .override_library()
             .map(|library| library.catalog.clone())

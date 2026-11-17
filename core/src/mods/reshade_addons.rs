@@ -14,7 +14,7 @@
 //! are). A `.source` file names its version: the release tag, or the ETag of its download.
 
 use super::shader_packs::{self, Catalog, SHADERS, TEXTURES};
-use super::{files_under, get_json};
+use super::{files_under, get_json, scratch};
 use crate::{Error, Result, config, http, json_file, seven_zip};
 use serde::Deserialize;
 use std::fs;
@@ -193,16 +193,14 @@ fn slug(name: &str) -> String {
 /// The user's own add-ons: each name in `custom\Addons` with a `.addon32` and/or `.addon64`.
 fn custom() -> Result<Vec<Addon>> {
     let folder = custom_dir()?;
-    let mut names: Vec<String> = fs::read_dir(&folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| addon_bits(path).is_some())
-                .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = fs::read_dir(&folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| addon_bits(path).is_some())
+            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+            .collect()
+    });
     names.sort();
     names.dedup();
     Ok(names
@@ -350,8 +348,8 @@ pub fn ensure(addon: &Addon, refresh: bool) -> Result<PathBuf> {
     let Some(root) = dir.parent() else {
         return Err(Error::NoModBuild(dir));
     };
-    let work = root.join("download");
-    let _ = fs::remove_dir_all(&work);
+    // Removed when this returns, however it ends, before the lock is let go.
+    let work = scratch(root.join("download"))?;
     let kept = work.join("addon");
     fs::create_dir_all(&kept).map_err(Error::io(&kept))?;
     // One of two links may be broken (ReShade's list has had such): the other still counts.
@@ -381,15 +379,12 @@ pub fn ensure(addon: &Addon, refresh: bool) -> Result<PathBuf> {
             shader_packs::lay_out(&Catalog::default(), &unpacked, &kept)?;
         }
     }
-    let has_files = fs::read_dir(&kept)
-        .map(|entries| {
-            entries
-                .flatten()
-                .any(|entry| addon_bits(&entry.path()).is_some())
-        })
-        .unwrap_or(false);
+    let has_files = fs::read_dir(&kept).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| addon_bits(&entry.path()).is_some())
+    });
     if !has_files {
-        let _ = fs::remove_dir_all(&work);
         if cached.is_some() {
             return Ok(dir);
         }
@@ -401,7 +396,6 @@ pub fn ensure(addon: &Addon, refresh: bool) -> Result<PathBuf> {
         fs::remove_dir_all(&dir).map_err(Error::io(&dir))?;
     }
     fs::rename(&kept, &dir).map_err(Error::io(&dir))?;
-    let _ = fs::remove_dir_all(&work);
     Ok(dir)
 }
 
@@ -420,9 +414,8 @@ fn latest(addon: &Addon) -> Result<(Vec<(String, String)>, String)> {
             let url = format!("https://api.github.com/repos/{github}/releases/latest");
             let release = get_json(&url)?;
             let tag = release["tag_name"].as_str().unwrap_or_default().to_owned();
-            let assets: Vec<(String, String)> = release["assets"]
-                .as_array()
-                .map(|assets| {
+            let assets: Vec<(String, String)> =
+                release["assets"].as_array().map_or_default(|assets| {
                     assets
                         .iter()
                         .filter_map(|asset| {
@@ -431,8 +424,7 @@ fn latest(addon: &Addon) -> Result<(Vec<(String, String)>, String)> {
                             Some((link.to_owned(), name.to_owned()))
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             let files: Vec<(String, String)> = assets
                 .iter()
                 .filter(|(_, name)| addon_bits(Path::new(name)).is_some())

@@ -124,9 +124,7 @@ impl Place {
 
 /// The layer on this computer.
 pub fn status() -> LayerStatus {
-    Place::system()
-        .map(|place| status_at(&place))
-        .unwrap_or_default()
+    Place::system().map_or_default(|place| status_at(&place))
 }
 
 fn status_at(place: &Place) -> LayerStatus {
@@ -136,9 +134,7 @@ fn status_at(place: &Place) -> LayerStatus {
         .open(key)
         .and_then(|key| key.get_u32(manifest.to_string_lossy()))
         .is_ok();
-    let apps = read_apps(&place.folder.join(APPS_FILE))
-        .map(|text| apps_in(&text))
-        .unwrap_or_default();
+    let apps = read_apps(&place.folder.join(APPS_FILE)).map_or_default(|text| apps_in(&text));
     LayerStatus {
         installed: registered && manifest.is_file(),
         version: version_info::product_version(&place.folder.join("ReShade64.dll")),
@@ -279,14 +275,13 @@ fn apps_in(text: &str) -> Vec<String> {
         .lines()
         .take_while(|line| !line.trim_start().starts_with('['))
         .find_map(|line| apps_value(line))
-        .map(|value| {
+        .map_or_default(|value| {
             value
                 .split(',')
                 .filter(|app| !app.trim().is_empty())
                 .map(str::to_owned)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 fn apps_value(line: &str) -> Option<&str> {
@@ -305,7 +300,7 @@ fn apps_after(text: &str, add: Option<&Path>, remove: Option<&Path>) -> Result<(
         .iter()
         .take_while(|line| !line.trim_start().starts_with('['))
         .position(|line| apps_value(line).is_some());
-    let mut apps = at.map(|at| apps_in(&lines[at])).unwrap_or_default();
+    let mut apps = at.map_or_default(|at| apps_in(&lines[at]));
     if let Some(remove) = remove {
         let remove = remove.to_string_lossy();
         apps.retain(|app| !app.eq_ignore_ascii_case(&remove));

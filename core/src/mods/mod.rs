@@ -10,6 +10,11 @@
 //! up empty, once everything succeeded. Folders of many files (ReShade's shaders) travel as one
 //! `CopyTree` or `DeleteFiles`, so an elevated run's command line stays short.
 //!
+//! **Scratch folders** (`scratch`, `fresh_staging`): a job's staging and a download being
+//! unpacked into the cache live in a folder that a `std::mem::DropGuard` removes when the step
+//! ends, however it ends, so a step that fails halfway leaves no archive or staged files in
+//! `%LOCALAPPDATA%`.
+//!
 //! **As administrator** (`--file-ops`, and ReShade's `--reshade-ops`), the operations are
 //! checked before any runs (`vet`): every path they read or change, the files a `CopyTree`
 //! writes and each `DeleteFiles` name too, must be one work may reach (`elevate::check_paths`:
@@ -42,6 +47,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::mem::DropGuard;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use windows::Win32::{
@@ -398,14 +404,30 @@ pub(crate) fn plan(
     })
 }
 
+/// A folder for a step's own files (a job's staging, a download being unpacked): made empty,
+/// and removed again when it is dropped, however the step ends (`std::mem::DropGuard`). A step
+/// that fails halfway with `?` leaves nothing behind. It dereferences to its path.
+pub(crate) type Scratch = DropGuard<PathBuf, fn(PathBuf)>;
+
+/// `folder` as a `Scratch`, emptied of what an earlier run left.
+pub(crate) fn scratch(folder: PathBuf) -> Result<Scratch> {
+    let _ = fs::remove_dir_all(&folder);
+    fs::create_dir_all(&folder).map_err(Error::io(&folder))?;
+    Ok(DropGuard::new(folder, remove_scratch as fn(PathBuf)))
+}
+
+fn remove_scratch(folder: PathBuf) {
+    let _ = fs::remove_dir_all(folder);
+}
+
 /// A fresh folder of `%LOCALAPPDATA%\Game Manager\mods\staging`, where a job lays out what it
-/// copies (a patched program, a `dxvk.conf`, ReShade's files); the job removes it once done
-/// (`drop_staging`). Files an older version left loose in `staging` go too.
-pub(crate) fn fresh_staging(name: &str) -> Result<PathBuf> {
+/// copies (a patched program, a `dxvk.conf`, ReShade's files), removed when the job ends
+/// (`Scratch`). Files an older version left loose in `staging` go too.
+pub(crate) fn fresh_staging(name: &str) -> Result<Scratch> {
     fresh_staging_in(&json_file::local_file("mods")?.join("staging"), name)
 }
 
-fn fresh_staging_in(root: &Path, name: &str) -> Result<PathBuf> {
+fn fresh_staging_in(root: &Path, name: &str) -> Result<Scratch> {
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|kind| kind.is_file()) {
@@ -413,15 +435,7 @@ fn fresh_staging_in(root: &Path, name: &str) -> Result<PathBuf> {
             }
         }
     }
-    let staging = root.join(name);
-    let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging).map_err(Error::io(&staging))?;
-    Ok(staging)
-}
-
-/// Removes a job's staging folder (`fresh_staging`) once what it held was copied.
-pub(crate) fn drop_staging(staging: &Path) {
-    let _ = fs::remove_dir_all(staging);
+    scratch(root.join(name))
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -1317,15 +1331,41 @@ mod tests {
         fs::create_dir_all(dir.join("laa")).unwrap();
         fs::write(dir.join(r"laa\old.exe"), b"MZ").unwrap();
         let staging = fresh_staging_in(&dir, "laa").unwrap();
-        assert_eq!(staging, dir.join("laa"));
-        assert!(fs::read_dir(&staging).unwrap().next().is_none());
+        assert_eq!(*staging, dir.join("laa"));
+        assert!(fs::read_dir(&*staging).unwrap().next().is_none());
         assert!(!dir.join("trl.exe").exists() && !dir.join("dxvk.conf").exists());
         assert!(
             dir.join(r"reshade\effects").is_dir(),
             "another job's folder stays"
         );
-        drop_staging(&staging);
-        assert!(!staging.exists());
+        drop(staging);
+        assert!(!dir.join("laa").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_scratch_folder_goes_however_the_step_ends() {
+        let dir = temp_dir("scratch");
+        let step = |fail: bool| -> Result<()> {
+            let work = scratch(dir.join("download"))?;
+            fs::write(work.join("archive.zip"), b"PK").unwrap();
+            if fail {
+                return Err(Error::NoModBuild(work.join("archive.zip")));
+            }
+            Ok(())
+        };
+        assert!(step(true).is_err());
+        assert!(
+            !dir.join("download").exists(),
+            "a failed step leaves nothing"
+        );
+        step(false).unwrap();
+        assert!(!dir.join("download").exists());
+        // What an earlier run left is emptied out first.
+        fs::create_dir_all(dir.join(r"download\old")).unwrap();
+        let work = scratch(dir.join("download")).unwrap();
+        assert!(fs::read_dir(&*work).unwrap().next().is_none());
+        drop(work);
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -193,8 +193,7 @@ fn subkeys(path: &str) -> impl Iterator<Item = (String, windows_registry::Key)> 
     let names: Vec<String> = parent
         .as_ref()
         .and_then(|key| key.keys().ok())
-        .map(|keys| keys.collect())
-        .unwrap_or_default();
+        .map_or_default(|keys| keys.collect());
     names.into_iter().filter_map(move |name| {
         let key = parent.as_ref()?.open(&name).ok()?;
         Some((name, key))
@@ -328,9 +327,7 @@ fn resolve_manifest_path(
     let file_path = file_path.replace('/', "\\");
     let (base, rest) = match file_path.strip_prefix('[').and_then(|s| s.split_once(']')) {
         Some((reference, rest)) => (
-            read_ref(reference)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| install_dir.to_path_buf()),
+            read_ref(reference).map_or_else(|| install_dir.to_path_buf(), PathBuf::from),
             rest.to_owned(),
         ),
         None => (install_dir.to_path_buf(), file_path),

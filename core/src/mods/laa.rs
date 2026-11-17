@@ -9,8 +9,8 @@
 //! then stale, and enabling LAA again or ✕ removes it.
 
 use super::{
-    BACKUP_SUFFIX, FileOp, Installed, InstalledFile, ModsFile, apply, drop_staging, fresh_staging,
-    plan, update, with_suffix,
+    BACKUP_SUFFIX, FileOp, Installed, InstalledFile, ModsFile, apply, fresh_staging, plan, update,
+    with_suffix,
 };
 use crate::mods::dxvk::Blocked;
 use crate::{Error, Game, Result, pe};
@@ -67,14 +67,10 @@ pub fn enable(game: &Game) -> Result<ModsFile> {
     if record.is_some_and(is_patched) {
         return Ok(mods);
     }
+    // The patched copy is laid out here; the folder goes when the job ends, however it does.
     let staging = fresh_staging("laa")?;
-    let applied = enable_ops(&program, record, &staging).and_then(|(ops, installed)| {
-        apply(&ops)?;
-        Ok(installed)
-    });
-    // The patched copy is in the game now, or the job failed: either way it goes.
-    drop_staging(&staging);
-    let installed = applied?;
+    let (ops, installed) = enable_ops(&program, record, &staging)?;
+    apply(&ops)?;
     update(&game.id, |entry| entry.laa = Some(installed))
 }
 
@@ -97,8 +93,7 @@ fn program(game: &Game) -> Result<PathBuf> {
 fn file_name(program: &Path) -> String {
     program
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|name| name.to_string_lossy().into_owned())
 }
 
 fn not_a_program(exe: &str) -> Error {
@@ -159,7 +154,7 @@ fn enable_ops(
     let staged = staging.join(&exe);
     fs::write(&staged, &bytes).map_err(Error::io(&staged))?;
 
-    let stale = record.map(backups).unwrap_or_default();
+    let stale = record.map_or_default(backups);
     let backup = with_suffix(program, BACKUP_SUFFIX);
     if backup.exists() && !stale.contains(&backup) {
         return Err(Error::NotInstallable(format!(
