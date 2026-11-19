@@ -1,4 +1,4 @@
-//! Text and XML helpers shared by the scanners that read store files.
+//! Text helpers shared by the scanners that read store files.
 
 use std::fs;
 use std::path::Path;
@@ -21,16 +21,6 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
         _ => String::from_utf8_lossy(bytes).into_owned(),
     };
     strip_bom(text.trim_end_matches('\0')).to_owned()
-}
-
-/// The document without BOM or XML declaration. Text reaching roxmltree is already decoded to
-/// UTF-8, but the declaration may still claim `encoding="utf-16"`.
-pub(crate) fn xml_body(text: &str) -> &str {
-    let text = strip_bom(text).trim_start();
-    match text.strip_prefix("<?xml") {
-        Some(rest) => rest.split_once("?>").map_or(text, |(_, body)| body),
-        None => text,
-    }
 }
 
 pub(crate) fn strip_bom(text: &str) -> &str {
@@ -144,15 +134,6 @@ pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
-}
-
-/// Trimmed, non-empty text of the first child element called `name` (namespaces ignored).
-pub(crate) fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Option<&'a str> {
-    node.children()
-        .find(|c| c.is_element() && c.tag_name().name() == name)?
-        .text()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
 }
 
 /// A file or folder name made from a game's name: without the characters Windows refuses in one,

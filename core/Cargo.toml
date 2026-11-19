@@ -8,11 +8,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-roxmltree = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-fast_image_resize = { workspace = true }
 image-webp = { workspace = true }
 png = { workspace = true }
 zune-jpeg = { workspace = true }

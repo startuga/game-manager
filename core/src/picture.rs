@@ -17,9 +17,10 @@
 //!   its AND mask (one bit a pixel, set where it is transparent), which counts when the bitmap has
 //!   no alpha, as Windows draws icons.
 //! - **Icons** (`icon`): an `.ico` file gives the image `icon::pick` chooses for a size. `fit`
-//!   then makes it that many pixels, premultiplied first so transparent edges stay clean, with
-//!   Catmull-Rom (fast_image_resize), which rings less than Lanczos around an icon's hard edges.
-//!   An image already that size is only premultiplied: pixel for pixel.
+//!   then makes it that many pixels, premultiplied first so transparent edges stay clean, with our
+//!   own `Q14` fixed-point Catmull-Rom resampler (streaming ring buffer, AVX2 `vpmaddwd` with a
+//!   bit-identical portable scalar fallback), which rings less than Lanczos around an icon's hard
+//!   edges. An image already that size is only premultiplied: pixel for pixel.
 //! - **The game page's art**: `trimmed` cuts a logo to its visible pixels (Steam draws its logos
 //!   on a 1280 × 720 transparent canvas); `blurred` makes a cover small (`fit`) and softens it
 //!   with a box blur three times over, to be drawn stretched across the page when a game has no
@@ -42,14 +43,11 @@
 
 use crate::bytes::{u16_at, u32_at};
 use crate::icon;
-use fast_image_resize::images::Image;
-use fast_image_resize::{FilterType, MulDiv, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::path::Path;
 use std::time::Duration;
-use thiserror::Error;
 
 /// Larger pictures are refused before they are decoded.
 pub const MAX_SIDE: u32 = 16_384;
@@ -90,21 +88,42 @@ impl fmt::Display for Format {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PictureError {
     /// None of the formats this reads.
-    #[error("not a picture Game Manager reads (JPEG, PNG, WebP, BMP or ICO)")]
     UnknownFormat,
-    #[error("a {width} × {height} picture is too large")]
-    TooLarge { width: u32, height: u32 },
+    TooLarge {
+        width: u32,
+        height: u32,
+    },
     /// Cut off, damaged, or a variant this doesn't read (a compressed bitmap).
-    #[error("the {format} picture can't be read: {reason}")]
-    Damaged { format: Format, reason: String },
-    #[error("the picture could not be scaled: {0}")]
+    Damaged {
+        format: Format,
+        reason: String,
+    },
     Scale(String),
-    #[error("the PNG could not be written: {0}")]
     Encode(String),
 }
+
+impl fmt::Display for PictureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownFormat => {
+                f.write_str("not a picture Game Manager reads (JPEG, PNG, WebP, BMP or ICO)")
+            }
+            Self::TooLarge { width, height } => {
+                write!(f, "a {width} × {height} picture is too large")
+            }
+            Self::Damaged { format, reason } => {
+                write!(f, "the {format} picture can't be read: {reason}")
+            }
+            Self::Scale(reason) => write!(f, "the picture could not be scaled: {reason}"),
+            Self::Encode(reason) => write!(f, "the PNG could not be written: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for PictureError {}
 
 fn damaged(format: Format, reason: impl fmt::Display) -> PictureError {
     PictureError::Damaged {
@@ -555,40 +574,49 @@ pub fn fitted(width: u32, height: u32, size: u32) -> (u32, u32) {
     (side(width), side(height))
 }
 
-fn image(picture: Rgba) -> Result<Image<'static>, PictureError> {
-    Image::from_vec_u8(
-        picture.width,
-        picture.height,
-        picture.pixels,
-        PixelType::U8x4,
-    )
-    .map_err(|error| PictureError::Scale(error.to_string()))
-}
-
-fn rgba(image: Image<'static>) -> Rgba {
-    Rgba {
-        width: image.width(),
-        height: image.height(),
-        pixels: image.into_vec(),
+/// Checks that a picture has non-zero dimensions and exactly `width * height * 4` pixel bytes.
+fn check_rgba(picture: &Rgba) -> Result<(), PictureError> {
+    if picture.width == 0
+        || picture.height == 0
+        || picture.pixels.len() as u64 != u64::from(picture.width) * u64::from(picture.height) * 4
+    {
+        return Err(PictureError::Scale(
+            "its pixels don't match its size".to_owned(),
+        ));
     }
+    Ok(())
 }
 
 /// Straight RGBA made premultiplied: each colour scaled by its alpha.
-pub fn premultiply(picture: Rgba) -> Result<Rgba, PictureError> {
-    let mut image = image(picture)?;
-    MulDiv::new()
-        .multiply_alpha_inplace(&mut image)
-        .map_err(|error| PictureError::Scale(error.to_string()))?;
-    Ok(rgba(image))
+pub fn premultiply(mut picture: Rgba) -> Result<Rgba, PictureError> {
+    check_rgba(&picture)?;
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: `avx2` was just verified on this CPU.
+        unsafe {
+            avx2::premultiply(&mut picture.pixels);
+        }
+        return Ok(picture);
+    }
+    premultiply_scalar(&mut picture.pixels);
+    Ok(picture)
 }
 
 /// Premultiplied RGBA made straight again (for writing a PNG).
-pub fn unpremultiply(picture: Rgba) -> Result<Rgba, PictureError> {
-    let mut image = image(picture)?;
-    MulDiv::new()
-        .divide_alpha_inplace(&mut image)
-        .map_err(|error| PictureError::Scale(error.to_string()))?;
-    Ok(rgba(image))
+pub fn unpremultiply(mut picture: Rgba) -> Result<Rgba, PictureError> {
+    check_rgba(&picture)?;
+    for px in picture.pixels.as_chunks_mut::<4>().0 {
+        let a = u32::from(px[3]);
+        if a == 0 {
+            *px = [0, 0, 0, 0];
+        } else if a < 255 {
+            let half = a / 2;
+            for channel in &mut px[..3] {
+                *channel = ((u32::from(*channel) * 255 + half) / a).min(255) as u8;
+            }
+        }
+    }
+    Ok(picture)
 }
 
 /// A straight-RGBA picture inside `size` × `size` pixels, its shape kept, premultiplied: as it is
@@ -598,22 +626,888 @@ pub fn fit(picture: Rgba, size: u32) -> Result<Rgba, PictureError> {
     resized(premultiply(picture)?, width, height)
 }
 
-/// A premultiplied picture made `width` × `height` pixels with Catmull-Rom, or as it is when it
-/// already has that size.
+/// A premultiplied picture made `width` × `height` pixels with Catmull-Rom (see the module's doc),
+/// or as it is when it already has that size.
 fn resized(premultiplied: Rgba, width: u32, height: u32) -> Result<Rgba, PictureError> {
+    check_rgba(&premultiplied)?;
+    if width == 0 || height == 0 {
+        return Err(PictureError::Scale("target size is empty".to_owned()));
+    }
     if (width, height) == (premultiplied.width, premultiplied.height) {
         return Ok(premultiplied);
     }
-    let source = image(premultiplied)?;
-    let mut target = Image::new(width, height, PixelType::U8x4);
-    let mut options =
-        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::CatmullRom));
-    // Already premultiplied.
-    options.mul_div_alpha = false;
-    Resizer::new()
-        .resize(&source, &mut target, &options)
-        .map_err(|error| PictureError::Scale(error.to_string()))?;
-    Ok(rgba(target))
+    let (in_w, in_h) = (premultiplied.width as usize, premultiplied.height as usize);
+    let (out_w, out_h) = (width as usize, height as usize);
+    let mut pixels = vec![0u8; out_w * out_h * 4];
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: `avx2` was just verified on this CPU.
+        unsafe {
+            avx2::resize(&premultiplied.pixels, in_w, in_h, out_w, out_h, &mut pixels);
+        }
+        return Ok(Rgba {
+            width,
+            height,
+            pixels,
+        });
+    }
+    resize_scalar(&premultiplied.pixels, in_w, in_h, out_w, out_h, &mut pixels);
+    Ok(Rgba {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Fixed-point precision for Catmull-Rom filter weights: `1 << 14 = 16384`.
+/// Catmull-Rom's largest normalized weight is at most ~1.15 (~18842 <= i16::MAX), and the sum of
+/// `|w_i|` is at most ~1.35 * 16384 (~22118), so `255 * 22118 ≈ 5.64M << i32::MAX` never overflows
+/// `i32` for any image dimensions.
+const WEIGHT_BITS: i32 = 14;
+const WEIGHT_SCALE: i32 = 1 << WEIGHT_BITS;
+const WEIGHT_HALF: i32 = 1 << (WEIGHT_BITS - 1);
+
+/// Catmull-Rom's cubic (B = 0, C = ½), 2 pixels to each side: sharp, with less ringing than
+/// Lanczos around an icon's hard edges.
+fn catmull_rom(x: f64) -> f64 {
+    let x = x.abs();
+    if x < 1.0 {
+        (1.5 * x - 2.5) * x * x + 1.0
+    } else if x < 2.0 {
+        ((-0.5 * x + 2.5) * x - 4.0) * x + 2.0
+    } else {
+        0.0
+    }
+}
+
+/// One output coordinate's slice of source coordinates and weights inside a flat `Filter`.
+#[derive(Clone, Copy)]
+struct Span {
+    first: u32,
+    offset: u32,
+    len: u32,
+}
+
+/// Precomputed 1D Catmull-Rom filter along one axis: all `Q14` `i16` weights packed flat so
+/// resampling never chases per-pixel heap allocations, padded to even tap counts whenever possible
+/// for pairwise `vpmaddwd` accumulation.
+struct Filter {
+    spans: Vec<Span>,
+    weights: Vec<i16>,
+    max_taps: usize,
+}
+
+impl Filter {
+    /// Weights for mapping `len` source coordinates to `out` output coordinates, summing to
+    /// exactly `WEIGHT_SCALE`. Shrinking widens the filter with the scale so every source pixel
+    /// counts; enlarging keeps it 2 pixels to each side. Leading and trailing zero weights are
+    /// trimmed.
+    fn new(len: usize, out: usize) -> Self {
+        let scale = len as f64 / out as f64;
+        let stretch = scale.max(1.0);
+        let support = 2.0 * stretch;
+        let approx_taps = (support * 2.0).ceil() as usize + 2;
+        let mut spans = Vec::with_capacity(out);
+        let mut weights = Vec::with_capacity(out * approx_taps);
+        let mut raw = Vec::with_capacity(approx_taps);
+        let mut max_taps = 0usize;
+
+        for index in 0..out {
+            let centre = (index as f64 + 0.5) * scale;
+            let mut first = (centre - support).floor().max(0.0) as usize;
+            let last = ((centre + support).ceil() as usize).clamp(first + 1, len);
+            raw.clear();
+            raw.extend((first..last).map(|x| catmull_rom((x as f64 + 0.5 - centre) / stretch)));
+            let mut start = 0;
+            let mut end = raw.len();
+            while start + 1 < end && raw[start] == 0.0 {
+                start += 1;
+            }
+            while end > start + 1 && raw[end - 1] == 0.0 {
+                end -= 1;
+            }
+            first += start;
+            let kept = &raw[start..end];
+            let sum: f64 = kept.iter().sum();
+            let inv = if sum == 0.0 {
+                f64::from(WEIGHT_SCALE)
+            } else {
+                f64::from(WEIGHT_SCALE) / sum
+            };
+            let offset = weights.len();
+            let mut total = 0i32;
+            let mut peak_idx = 0usize;
+            let mut peak_val = i16::MIN;
+            for (i, &w) in kept.iter().enumerate() {
+                let q = (w * inv)
+                    .round()
+                    .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+                if q > peak_val {
+                    peak_val = q;
+                    peak_idx = i;
+                }
+                total += i32::from(q);
+                weights.push(q);
+            }
+            // Adjust the peak tap so weights sum to exactly `WEIGHT_SCALE` (solid colours stay
+            // bit-exact).
+            let diff = WEIGHT_SCALE - total;
+            weights[offset + peak_idx] = (i32::from(weights[offset + peak_idx]) + diff)
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                as i16;
+
+            let mut taps = kept.len();
+            // Pad to an even tap count when room exists so pairwise SIMD skips the odd-tap tail.
+            if taps % 2 == 1 {
+                if first + taps < len {
+                    weights.push(0);
+                    taps += 1;
+                } else if first > 0 {
+                    weights.insert(offset, 0);
+                    first -= 1;
+                    taps += 1;
+                }
+            }
+            max_taps = max_taps.max(taps);
+            spans.push(Span {
+                first: first as u32,
+                offset: offset as u32,
+                len: taps as u32,
+            });
+        }
+        Self {
+            spans,
+            weights,
+            max_taps,
+        }
+    }
+}
+
+/// Converts a `Q14` fixed-point RGBA sum into a clamped `u8` pixel; when `clamp_alpha` is true,
+/// colour channels are also clamped to `<= alpha` (keeping premultiplied RGBA valid for Direct2D).
+#[inline(always)]
+fn finish_pixel(sums: [i32; 4], clamp_alpha: bool) -> [u8; 4] {
+    let r = ((sums[0] + WEIGHT_HALF) >> WEIGHT_BITS).clamp(0, 255) as u8;
+    let g = ((sums[1] + WEIGHT_HALF) >> WEIGHT_BITS).clamp(0, 255) as u8;
+    let b = ((sums[2] + WEIGHT_HALF) >> WEIGHT_BITS).clamp(0, 255) as u8;
+    let a = ((sums[3] + WEIGHT_HALF) >> WEIGHT_BITS).clamp(0, 255) as u8;
+    if clamp_alpha {
+        [r.min(a), g.min(a), b.min(a), a]
+    } else {
+        [r, g, b, a]
+    }
+}
+
+/// Baseline horizontal pass for one RGBA row (`u8 -> u8`), bit-identical to the AVX2 kernel.
+fn resample_row_scalar(src: &[[u8; 4]], dst: &mut [[u8; 4]], h: &Filter, clamp_alpha: bool) {
+    for (span, out) in h.spans.iter().zip(dst.iter_mut()) {
+        let first = span.first as usize;
+        let offset = span.offset as usize;
+        let len = span.len as usize;
+        let pixels = &src[first..first + len];
+        let ws = &h.weights[offset..offset + len];
+        let mut acc = [0i32; 4];
+        for (px, &w) in pixels.iter().zip(ws) {
+            let w = i32::from(w);
+            acc[0] += i32::from(px[0]) * w;
+            acc[1] += i32::from(px[1]) * w;
+            acc[2] += i32::from(px[2]) * w;
+            acc[3] += i32::from(px[3]) * w;
+        }
+        *out = finish_pixel(acc, clamp_alpha);
+    }
+}
+
+/// Baseline horizontal pass for four RGBA rows at once, sharing weight loads across all four.
+fn resample_4_rows_scalar(
+    src: [&[[u8; 4]]; 4],
+    dst: [&mut [[u8; 4]]; 4],
+    h: &Filter,
+    clamp_alpha: bool,
+) {
+    let [s0, s1, s2, s3] = src;
+    let [d0, d1, d2, d3] = dst;
+    for ((((span, o0), o1), o2), o3) in h
+        .spans
+        .iter()
+        .zip(d0.iter_mut())
+        .zip(d1.iter_mut())
+        .zip(d2.iter_mut())
+        .zip(d3.iter_mut())
+    {
+        let first = span.first as usize;
+        let offset = span.offset as usize;
+        let len = span.len as usize;
+        let p0 = &s0[first..first + len];
+        let p1 = &s1[first..first + len];
+        let p2 = &s2[first..first + len];
+        let p3 = &s3[first..first + len];
+        let ws = &h.weights[offset..offset + len];
+        let mut a0 = [0i32; 4];
+        let mut a1 = [0i32; 4];
+        let mut a2 = [0i32; 4];
+        let mut a3 = [0i32; 4];
+        for ((((px0, px1), px2), px3), &w) in p0.iter().zip(p1).zip(p2).zip(p3).zip(ws) {
+            let w = i32::from(w);
+            for c in 0..4 {
+                a0[c] += i32::from(px0[c]) * w;
+                a1[c] += i32::from(px1[c]) * w;
+                a2[c] += i32::from(px2[c]) * w;
+                a3[c] += i32::from(px3[c]) * w;
+            }
+        }
+        *o0 = finish_pixel(a0, clamp_alpha);
+        *o1 = finish_pixel(a1, clamp_alpha);
+        *o2 = finish_pixel(a2, clamp_alpha);
+        *o3 = finish_pixel(a3, clamp_alpha);
+    }
+}
+
+/// Chunk size (in channels, = 64 pixels = 1 KB of `i32` accumulators) for the scalar vertical
+/// pass so the accumulator stays in L1.
+const VERTICAL_CHUNK: usize = 256;
+
+/// Baseline vertical pass combining one span of `u8` ring-buffer rows into a `u8` output row.
+fn combine_vertical_scalar(
+    ring: &[u8],
+    ring_cap: usize,
+    stride: usize,
+    first: usize,
+    ws: &[i16],
+    dst_row: &mut [u8],
+) {
+    let mut chunk_start = 0;
+    while chunk_start < stride {
+        let chunk_len = (stride - chunk_start).min(VERTICAL_CHUNK);
+        let mut acc = [0i32; VERTICAL_CHUNK];
+        let acc_slice = &mut acc[..chunk_len];
+        for (k, &w) in ws.iter().enumerate() {
+            let w = i32::from(w);
+            let slot = (first + k) % ring_cap;
+            let row = &ring[slot * stride + chunk_start..slot * stride + chunk_start + chunk_len];
+            for (a, &p) in acc_slice.iter_mut().zip(row) {
+                *a += i32::from(p) * w;
+            }
+        }
+        for (out, sums) in dst_row[chunk_start..chunk_start + chunk_len]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(acc_slice.as_chunks::<4>().0)
+        {
+            *out = finish_pixel(*sums, true);
+        }
+        chunk_start += chunk_len;
+    }
+}
+
+/// Baseline streaming Catmull-Rom resampler (portable, 100% safe, bit-identical to the AVX2 path).
+fn resize_scalar(src: &[u8], in_w: usize, in_h: usize, out_w: usize, out_h: usize, dst: &mut [u8]) {
+    let in_stride = in_w * 4;
+    let out_stride = out_w * 4;
+
+    if out_h == in_h {
+        let h = Filter::new(in_w, out_w);
+        let mut y = 0;
+        while y + 4 <= in_h {
+            let s0 = src[y * in_stride..(y + 1) * in_stride].as_chunks::<4>().0;
+            let s1 = src[(y + 1) * in_stride..(y + 2) * in_stride]
+                .as_chunks::<4>()
+                .0;
+            let s2 = src[(y + 2) * in_stride..(y + 3) * in_stride]
+                .as_chunks::<4>()
+                .0;
+            let s3 = src[(y + 3) * in_stride..(y + 4) * in_stride]
+                .as_chunks::<4>()
+                .0;
+            let dst_quad = &mut dst[y * out_stride..(y + 4) * out_stride];
+            let (d0, rest) = dst_quad.split_at_mut(out_stride);
+            let (d1, rest) = rest.split_at_mut(out_stride);
+            let (d2, d3) = rest.split_at_mut(out_stride);
+            resample_4_rows_scalar(
+                [s0, s1, s2, s3],
+                [
+                    d0.as_chunks_mut::<4>().0,
+                    d1.as_chunks_mut::<4>().0,
+                    d2.as_chunks_mut::<4>().0,
+                    d3.as_chunks_mut::<4>().0,
+                ],
+                &h,
+                true,
+            );
+            y += 4;
+        }
+        while y < in_h {
+            resample_row_scalar(
+                src[y * in_stride..(y + 1) * in_stride].as_chunks::<4>().0,
+                dst[y * out_stride..(y + 1) * out_stride]
+                    .as_chunks_mut::<4>()
+                    .0,
+                &h,
+                true,
+            );
+            y += 1;
+        }
+        return;
+    }
+
+    let h = (out_w != in_w).then(|| Filter::new(in_w, out_w));
+    let v = Filter::new(in_h, out_h);
+
+    // Without a horizontal pass, read straight from `src` without copying into a ring buffer.
+    let Some(h) = h else {
+        for (v_span, dst_row) in v.spans.iter().zip(dst.chunks_exact_mut(out_stride)) {
+            let offset = v_span.offset as usize;
+            let len = v_span.len as usize;
+            combine_vertical_scalar(
+                src,
+                in_h,
+                out_stride,
+                v_span.first as usize,
+                &v.weights[offset..offset + len],
+                dst_row,
+            );
+        }
+        return;
+    };
+
+    // Sizing the ring to a power of two >= 4 that is at least `max_taps + 3` guarantees that
+    // computing four source rows at `next_src_y` (a multiple of 4) neither wraps past the end of
+    // `ring` nor overwrites any row still needed by the current vertical span, and turns `%` into
+    // a single bitmask.
+    let ring_cap = (v.max_taps + 3).next_power_of_two().max(4);
+    let ring_mask = ring_cap - 1;
+    let mut ring = vec![0u8; ring_cap * out_stride];
+    let mut next_src_y = 0usize;
+
+    for (v_span, dst_row) in v.spans.iter().zip(dst.chunks_exact_mut(out_stride)) {
+        let first = v_span.first as usize;
+        let len = v_span.len as usize;
+        let need_end = first + len;
+
+        while next_src_y < need_end {
+            let slot = next_src_y & ring_mask;
+            if next_src_y + 4 <= in_h {
+                let s0 = src[next_src_y * in_stride..(next_src_y + 1) * in_stride]
+                    .as_chunks::<4>()
+                    .0;
+                let s1 = src[(next_src_y + 1) * in_stride..(next_src_y + 2) * in_stride]
+                    .as_chunks::<4>()
+                    .0;
+                let s2 = src[(next_src_y + 2) * in_stride..(next_src_y + 3) * in_stride]
+                    .as_chunks::<4>()
+                    .0;
+                let s3 = src[(next_src_y + 3) * in_stride..(next_src_y + 4) * in_stride]
+                    .as_chunks::<4>()
+                    .0;
+                let ring_quad = &mut ring[slot * out_stride..(slot + 4) * out_stride];
+                let (d0, rest) = ring_quad.split_at_mut(out_stride);
+                let (d1, rest) = rest.split_at_mut(out_stride);
+                let (d2, d3) = rest.split_at_mut(out_stride);
+                resample_4_rows_scalar(
+                    [s0, s1, s2, s3],
+                    [
+                        d0.as_chunks_mut::<4>().0,
+                        d1.as_chunks_mut::<4>().0,
+                        d2.as_chunks_mut::<4>().0,
+                        d3.as_chunks_mut::<4>().0,
+                    ],
+                    &h,
+                    false,
+                );
+                next_src_y += 4;
+            } else {
+                resample_row_scalar(
+                    src[next_src_y * in_stride..(next_src_y + 1) * in_stride]
+                        .as_chunks::<4>()
+                        .0,
+                    ring[slot * out_stride..(slot + 1) * out_stride]
+                        .as_chunks_mut::<4>()
+                        .0,
+                    &h,
+                    false,
+                );
+                next_src_y += 1;
+            }
+        }
+
+        let offset = v_span.offset as usize;
+        combine_vertical_scalar(
+            &ring,
+            ring_cap,
+            out_stride,
+            first,
+            &v.weights[offset..offset + len],
+            dst_row,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    //! AVX2 `vpmaddwd` Catmull-Rom resampler and `u16` premultiply, bit-identical to the scalar
+    //! path. Only the fixed-size unaligned load/store wrappers touch raw pointers (validated by
+    //! fixed-length array references); every arithmetic and shuffle intrinsic is safe.
+    use super::{Filter, WEIGHT_BITS, WEIGHT_HALF, finish_pixel, resample_row_scalar};
+    use std::arch::x86_64::*;
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn load_256(bytes: &[u8; 32]) -> __m256i {
+        // SAFETY: `bytes` is a valid 32-byte array; `_mm256_loadu_si256` allows unaligned reads.
+        unsafe { _mm256_loadu_si256(bytes.as_ptr().cast()) }
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn store_256(v: __m256i, out: &mut [u8; 32]) {
+        // SAFETY: `out` is a valid 32-byte array; `_mm256_storeu_si256` allows unaligned writes.
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr().cast(), v) }
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn load_128(bytes: &[u8; 16]) -> __m128i {
+        // SAFETY: `bytes` is a valid 16-byte array; `_mm_loadu_si128` allows unaligned reads.
+        unsafe { _mm_loadu_si128(bytes.as_ptr().cast()) }
+    }
+
+    /// Loads four RGBA pixels from `lo` into lane 0 and four from `hi` into lane 1.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn load_2x4px(lo: &[u8; 16], hi: &[u8; 16]) -> __m256i {
+        _mm256_set_m128i(load_128(hi), load_128(lo))
+    }
+
+    /// Loads two RGBA pixels from `lo` into lane 0 (low 64 bits) and two from `hi` into lane 1.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn load_2x2px(lo: &[u8; 8], hi: &[u8; 8]) -> __m256i {
+        _mm256_set_epi64x(0, i64::from_ne_bytes(*hi), 0, i64::from_ne_bytes(*lo))
+    }
+
+    /// Packs two `i16` weights into one `i32` for broadcasting to `vpmaddwd`.
+    #[inline(always)]
+    fn pack_w2(w0: i16, w1: i16) -> i32 {
+        (u32::from(w0 as u16) | (u32::from(w1 as u16) << 16)) as i32
+    }
+
+    /// Packs two pixels' `i32` RGBA sums (lane 0 and lane 1) into two `[u8; 4]` pixels.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn pack_2px(acc: __m256i, clamp_alpha: bool, alpha_mask: __m256i) -> ([u8; 4], [u8; 4]) {
+        let shifted = _mm256_srai_epi32::<WEIGHT_BITS>(acc);
+        let p16 = _mm256_packs_epi32(shifted, shifted);
+        let mut p8 = _mm256_packus_epi16(p16, p16);
+        if clamp_alpha {
+            let alphas = _mm256_shuffle_epi8(p8, alpha_mask);
+            p8 = _mm256_min_epu8(p8, alphas);
+        }
+        (
+            _mm256_extract_epi32::<0>(p8).to_ne_bytes(),
+            _mm256_extract_epi32::<4>(p8).to_ne_bytes(),
+        )
+    }
+
+    /// Horizontal pass for four RGBA rows at once: two YMM registers hold `[row0 | row1]` and
+    /// `[row2 | row3]`, multiplying 4 taps per inner iteration via `vpmaddwd` with zero inner
+    /// bounds checks.
+    #[target_feature(enable = "avx2")]
+    fn resample_4_rows(src: [&[u8]; 4], dst: [&mut [[u8; 4]]; 4], h: &Filter, clamp_alpha: bool) {
+        let [s0, s1, s2, s3] = src;
+        let [d0, d1, d2, d3] = dst;
+        // Reorders `[R0 G0 B0 A0 R1 G1 B1 A1 ...]` into `[R0 0 R1 0 G0 0 G1 0 B0 0 B1 0 A0 0 A1 0]`
+        // (zero-extended `i16` pairs ready for `vpmaddwd`).
+        let shuf_01 = _mm256_setr_epi8(
+            0, -1, 4, -1, 1, -1, 5, -1, 2, -1, 6, -1, 3, -1, 7, -1, 0, -1, 4, -1, 1, -1, 5, -1, 2,
+            -1, 6, -1, 3, -1, 7, -1,
+        );
+        let shuf_23 = _mm256_setr_epi8(
+            8, -1, 12, -1, 9, -1, 13, -1, 10, -1, 14, -1, 11, -1, 15, -1, 8, -1, 12, -1, 9, -1, 13,
+            -1, 10, -1, 14, -1, 11, -1, 15, -1,
+        );
+        let alpha_mask = _mm256_setr_epi8(
+            3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15, 3, 3, 3, 3, 7, 7, 7, 7, 11, 11,
+            11, 11, 15, 15, 15, 15,
+        );
+        let half = _mm256_set1_epi32(WEIGHT_HALF);
+
+        for ((((span, o0), o1), o2), o3) in h
+            .spans
+            .iter()
+            .zip(d0.iter_mut())
+            .zip(d1.iter_mut())
+            .zip(d2.iter_mut())
+            .zip(d3.iter_mut())
+        {
+            let start = span.first as usize * 4;
+            let bytes = span.len as usize * 4;
+            let offset = span.offset as usize;
+            let len = span.len as usize;
+
+            let (q0, rem0) = s0[start..start + bytes].as_chunks::<16>();
+            let (q1, rem1) = s1[start..start + bytes].as_chunks::<16>();
+            let (q2, rem2) = s2[start..start + bytes].as_chunks::<16>();
+            let (q3, rem3) = s3[start..start + bytes].as_chunks::<16>();
+            let (wq, w_rem) = h.weights[offset..offset + len].as_chunks::<4>();
+
+            let mut acc01 = half;
+            let mut acc23 = half;
+            for ((((c0, c1), c2), c3), &[w0, w1, w2, w3]) in
+                q0.iter().zip(q1).zip(q2).zip(q3).zip(wq)
+            {
+                let w01 = _mm256_set1_epi32(pack_w2(w0, w1));
+                let w23 = _mm256_set1_epi32(pack_w2(w2, w3));
+
+                let v01 = load_2x4px(c0, c1);
+                acc01 = _mm256_add_epi32(
+                    acc01,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v01, shuf_01), w01),
+                );
+                acc01 = _mm256_add_epi32(
+                    acc01,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v01, shuf_23), w23),
+                );
+
+                let v23 = load_2x4px(c2, c3);
+                acc23 = _mm256_add_epi32(
+                    acc23,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v23, shuf_01), w01),
+                );
+                acc23 = _mm256_add_epi32(
+                    acc23,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v23, shuf_23), w23),
+                );
+            }
+            let (p0, t0) = rem0.as_chunks::<8>();
+            let (p1, t1) = rem1.as_chunks::<8>();
+            let (p2, t2) = rem2.as_chunks::<8>();
+            let (p3, t3) = rem3.as_chunks::<8>();
+            let (wp, wt) = w_rem.as_chunks::<2>();
+            for ((((c0, c1), c2), c3), &[w0, w1]) in p0.iter().zip(p1).zip(p2).zip(p3).zip(wp) {
+                let w01 = _mm256_set1_epi32(pack_w2(w0, w1));
+                let v01 = load_2x2px(c0, c1);
+                acc01 = _mm256_add_epi32(
+                    acc01,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v01, shuf_01), w01),
+                );
+                let v23 = load_2x2px(c2, c3);
+                acc23 = _mm256_add_epi32(
+                    acc23,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v23, shuf_01), w01),
+                );
+            }
+            if let Some(&w0) = wt.first() {
+                let w = _mm256_set1_epi32(pack_w2(w0, 0));
+                let pad = |t: &[u8]| [t[0], t[1], t[2], t[3], 0, 0, 0, 0];
+                let v01 = load_2x2px(&pad(t0), &pad(t1));
+                acc01 = _mm256_add_epi32(
+                    acc01,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v01, shuf_01), w),
+                );
+                let v23 = load_2x2px(&pad(t2), &pad(t3));
+                acc23 = _mm256_add_epi32(
+                    acc23,
+                    _mm256_madd_epi16(_mm256_shuffle_epi8(v23, shuf_01), w),
+                );
+            }
+            (*o0, *o1) = pack_2px(acc01, clamp_alpha, alpha_mask);
+            (*o2, *o3) = pack_2px(acc23, clamp_alpha, alpha_mask);
+        }
+    }
+
+    /// Vertical pass combining one span of `u8` rows into a `u8` output row: 8 RGBA pixels (32
+    /// bytes) per chunk, accumulating two vertical rows per `vpmaddwd` step with precomputed row
+    /// offsets and weight pairs (zero modulo or weight packing inside the pixel loop).
+    #[target_feature(enable = "avx2")]
+    fn combine_vertical(
+        ring: &[u8],
+        ring_cap: usize,
+        stride: usize,
+        first: usize,
+        ws: &[i16],
+        dst_row: &mut [u8],
+        pairs: &mut Vec<(usize, usize, i32)>,
+    ) {
+        let zero = _mm256_setzero_si256();
+        let half = _mm256_set1_epi32(WEIGHT_HALF);
+        let alpha_mask = _mm256_setr_epi8(
+            3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15, 3, 3, 3, 3, 7, 7, 7, 7, 11, 11,
+            11, 11, 15, 15, 15, 15,
+        );
+        // Precompute `(row0_byte_offset, row1_byte_offset, packed_weights)` once per output row.
+        pairs.clear();
+        let (w_pairs, w_odd) = ws.as_chunks::<2>();
+        let pow2_mask = ring_cap.is_power_of_two().then_some(ring_cap - 1);
+        let row_at = |y: usize| {
+            let slot = match pow2_mask {
+                Some(mask) => y & mask,
+                None => y % ring_cap,
+            };
+            slot * stride
+        };
+        for (pair_idx, &[w0, w1]) in w_pairs.iter().enumerate() {
+            let k = pair_idx * 2;
+            pairs.push((row_at(first + k), row_at(first + k + 1), pack_w2(w0, w1)));
+        }
+        let odd = w_odd
+            .first()
+            .map(|&w| (row_at(first + w_pairs.len() * 2), pack_w2(w, 0)));
+
+        let (dst_chunks, dst_tail) = dst_row.as_chunks_mut::<32>();
+        let mut x = 0usize;
+        for dst_chunk in dst_chunks {
+            let mut acc0 = half;
+            let mut acc1 = half;
+            let mut acc2 = half;
+            let mut acc3 = half;
+            for &(r0, r1, w_packed) in pairs.iter() {
+                let w01 = _mm256_set1_epi32(w_packed);
+                let (c0, _) = ring[r0 + x..r0 + x + 32].as_chunks::<32>();
+                let (c1, _) = ring[r1 + x..r1 + x + 32].as_chunks::<32>();
+                let p0 = load_256(&c0[0]);
+                let p1 = load_256(&c1[0]);
+                let lo = _mm256_unpacklo_epi8(p0, p1);
+                let hi = _mm256_unpackhi_epi8(p0, p1);
+                acc0 =
+                    _mm256_add_epi32(acc0, _mm256_madd_epi16(_mm256_unpacklo_epi8(lo, zero), w01));
+                acc1 =
+                    _mm256_add_epi32(acc1, _mm256_madd_epi16(_mm256_unpackhi_epi8(lo, zero), w01));
+                acc2 =
+                    _mm256_add_epi32(acc2, _mm256_madd_epi16(_mm256_unpacklo_epi8(hi, zero), w01));
+                acc3 =
+                    _mm256_add_epi32(acc3, _mm256_madd_epi16(_mm256_unpackhi_epi8(hi, zero), w01));
+            }
+            if let Some((r0, w_packed)) = odd {
+                let w = _mm256_set1_epi32(w_packed);
+                let (c0, _) = ring[r0 + x..r0 + x + 32].as_chunks::<32>();
+                let p0 = load_256(&c0[0]);
+                let lo = _mm256_unpacklo_epi8(p0, zero);
+                let hi = _mm256_unpackhi_epi8(p0, zero);
+                acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(_mm256_unpacklo_epi8(lo, zero), w));
+                acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(_mm256_unpackhi_epi8(lo, zero), w));
+                acc2 = _mm256_add_epi32(acc2, _mm256_madd_epi16(_mm256_unpacklo_epi8(hi, zero), w));
+                acc3 = _mm256_add_epi32(acc3, _mm256_madd_epi16(_mm256_unpackhi_epi8(hi, zero), w));
+            }
+            let r0 = _mm256_srai_epi32::<WEIGHT_BITS>(acc0);
+            let r1 = _mm256_srai_epi32::<WEIGHT_BITS>(acc1);
+            let r2 = _mm256_srai_epi32::<WEIGHT_BITS>(acc2);
+            let r3 = _mm256_srai_epi32::<WEIGHT_BITS>(acc3);
+            let p01 = _mm256_packs_epi32(r0, r1);
+            let p23 = _mm256_packs_epi32(r2, r3);
+            let packed = _mm256_packus_epi16(p01, p23);
+            let alphas = _mm256_shuffle_epi8(packed, alpha_mask);
+            store_256(_mm256_min_epu8(packed, alphas), dst_chunk);
+            x += 32;
+        }
+        // Remaining 0..7 pixels at the right edge.
+        for out in dst_tail.as_chunks_mut::<4>().0 {
+            let mut acc = [0i32; 4];
+            for (k, &w) in ws.iter().enumerate() {
+                let w = i32::from(w);
+                let at = row_at(first + k) + x;
+                for c in 0..4 {
+                    acc[c] += i32::from(ring[at + c]) * w;
+                }
+            }
+            *out = finish_pixel(acc, true);
+            x += 4;
+        }
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn resize(
+        src: &[u8],
+        in_w: usize,
+        in_h: usize,
+        out_w: usize,
+        out_h: usize,
+        dst: &mut [u8],
+    ) {
+        let in_stride = in_w * 4;
+        let out_stride = out_w * 4;
+
+        if out_h == in_h {
+            let h = Filter::new(in_w, out_w);
+            let mut y = 0;
+            while y + 4 <= in_h {
+                let dst_quad = &mut dst[y * out_stride..(y + 4) * out_stride];
+                let (d0, rest) = dst_quad.split_at_mut(out_stride);
+                let (d1, rest) = rest.split_at_mut(out_stride);
+                let (d2, d3) = rest.split_at_mut(out_stride);
+                resample_4_rows(
+                    [
+                        &src[y * in_stride..(y + 1) * in_stride],
+                        &src[(y + 1) * in_stride..(y + 2) * in_stride],
+                        &src[(y + 2) * in_stride..(y + 3) * in_stride],
+                        &src[(y + 3) * in_stride..(y + 4) * in_stride],
+                    ],
+                    [
+                        d0.as_chunks_mut::<4>().0,
+                        d1.as_chunks_mut::<4>().0,
+                        d2.as_chunks_mut::<4>().0,
+                        d3.as_chunks_mut::<4>().0,
+                    ],
+                    &h,
+                    true,
+                );
+                y += 4;
+            }
+            while y < in_h {
+                resample_row_scalar(
+                    src[y * in_stride..(y + 1) * in_stride].as_chunks::<4>().0,
+                    dst[y * out_stride..(y + 1) * out_stride]
+                        .as_chunks_mut::<4>()
+                        .0,
+                    &h,
+                    true,
+                );
+                y += 1;
+            }
+            return;
+        }
+
+        let h = (out_w != in_w).then(|| Filter::new(in_w, out_w));
+        let v = Filter::new(in_h, out_h);
+        let mut pairs = Vec::with_capacity(v.max_taps.div_ceil(2));
+
+        let Some(h) = h else {
+            for (v_span, dst_row) in v.spans.iter().zip(dst.chunks_exact_mut(out_stride)) {
+                let offset = v_span.offset as usize;
+                let len = v_span.len as usize;
+                combine_vertical(
+                    src,
+                    in_h,
+                    out_stride,
+                    v_span.first as usize,
+                    &v.weights[offset..offset + len],
+                    dst_row,
+                    &mut pairs,
+                );
+            }
+            return;
+        };
+
+        let ring_cap = (v.max_taps + 3).next_power_of_two().max(4);
+        let ring_mask = ring_cap - 1;
+        let mut ring = vec![0u8; ring_cap * out_stride];
+        let mut next_src_y = 0usize;
+
+        for (v_span, dst_row) in v.spans.iter().zip(dst.chunks_exact_mut(out_stride)) {
+            let first = v_span.first as usize;
+            let len = v_span.len as usize;
+            let need_end = first + len;
+
+            while next_src_y < need_end {
+                let slot = next_src_y & ring_mask;
+                if next_src_y + 4 <= in_h {
+                    let ring_quad = &mut ring[slot * out_stride..(slot + 4) * out_stride];
+                    let (d0, rest) = ring_quad.split_at_mut(out_stride);
+                    let (d1, rest) = rest.split_at_mut(out_stride);
+                    let (d2, d3) = rest.split_at_mut(out_stride);
+                    resample_4_rows(
+                        [
+                            &src[next_src_y * in_stride..(next_src_y + 1) * in_stride],
+                            &src[(next_src_y + 1) * in_stride..(next_src_y + 2) * in_stride],
+                            &src[(next_src_y + 2) * in_stride..(next_src_y + 3) * in_stride],
+                            &src[(next_src_y + 3) * in_stride..(next_src_y + 4) * in_stride],
+                        ],
+                        [
+                            d0.as_chunks_mut::<4>().0,
+                            d1.as_chunks_mut::<4>().0,
+                            d2.as_chunks_mut::<4>().0,
+                            d3.as_chunks_mut::<4>().0,
+                        ],
+                        &h,
+                        false,
+                    );
+                    next_src_y += 4;
+                } else {
+                    resample_row_scalar(
+                        src[next_src_y * in_stride..(next_src_y + 1) * in_stride]
+                            .as_chunks::<4>()
+                            .0,
+                        ring[slot * out_stride..(slot + 1) * out_stride]
+                            .as_chunks_mut::<4>()
+                            .0,
+                        &h,
+                        false,
+                    );
+                    next_src_y += 1;
+                }
+            }
+
+            let offset = v_span.offset as usize;
+            combine_vertical(
+                &ring,
+                ring_cap,
+                out_stride,
+                first,
+                &v.weights[offset..offset + len],
+                dst_row,
+                &mut pairs,
+            );
+        }
+    }
+
+    /// Premultiplies 8 RGBA pixels per iteration in `u16` (`((c * a + 128) + ((c * a + 128) >> 8))
+    /// >> 8`), skipping writes completely for opaque 8-pixel chunks (JPEGs and opaque covers).
+    #[target_feature(enable = "avx2")]
+    pub(super) fn premultiply(pixels: &mut [u8]) {
+        let zero = _mm256_setzero_si256();
+        let all_ff = _mm256_set1_epi8(-1);
+        let c128 = _mm256_set1_epi16(128);
+        let c255 = _mm256_set1_epi16(255);
+        // Bit mask of the 8 alpha byte positions (bytes 3, 7, 11, 15, 19, 23, 27, 31).
+        const ALPHA_BITS: i32 = 0x8888_8888u32.cast_signed();
+
+        let (chunks, tail) = pixels.as_chunks_mut::<32>();
+        for chunk in chunks {
+            let v = load_256(chunk);
+            // Opaque fast path: all 8 pixels have alpha 255, so nothing changes and no cache line
+            // is dirtied.
+            if (_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, all_ff)) & ALPHA_BITS) == ALPHA_BITS {
+                continue;
+            }
+            let lo = _mm256_unpacklo_epi8(v, zero);
+            let hi = _mm256_unpackhi_epi8(v, zero);
+
+            // Broadcast each pixel's alpha across its 4 `u16` lanes, keeping 255 in the alpha lane
+            // so `mul(a, 255) == a`.
+            let a_lo = _mm256_blend_epi16::<0x88>(
+                _mm256_shufflelo_epi16::<0xFF>(_mm256_shufflehi_epi16::<0xFF>(lo)),
+                c255,
+            );
+            let a_hi = _mm256_blend_epi16::<0x88>(
+                _mm256_shufflelo_epi16::<0xFF>(_mm256_shufflehi_epi16::<0xFF>(hi)),
+                c255,
+            );
+
+            let t_lo = _mm256_add_epi16(_mm256_mullo_epi16(lo, a_lo), c128);
+            let r_lo = _mm256_srli_epi16::<8>(_mm256_add_epi16(t_lo, _mm256_srli_epi16::<8>(t_lo)));
+
+            let t_hi = _mm256_add_epi16(_mm256_mullo_epi16(hi, a_hi), c128);
+            let r_hi = _mm256_srli_epi16::<8>(_mm256_add_epi16(t_hi, _mm256_srli_epi16::<8>(t_hi)));
+
+            store_256(_mm256_packus_epi16(r_lo, r_hi), chunk);
+        }
+        super::premultiply_scalar(tail);
+    }
+}
+
+fn premultiply_scalar(pixels: &mut [u8]) {
+    for px in pixels.as_chunks_mut::<4>().0 {
+        let a = u16::from(px[3]);
+        // Exact division-free `(c * a + 127) / 255` for all 0..=255 without overflowing `u16`
+        // (max `t` is 65153, `t + (t >> 8)` is 65407 <= 65535).
+        let mul = |c: u8| {
+            let t = u16::from(c) * a + 128;
+            ((t + (t >> 8)) >> 8) as u8
+        };
+        px[0] = mul(px[0]);
+        px[1] = mul(px[1]);
+        px[2] = mul(px[2]);
+    }
 }
 
 /// A pixel with less alpha than this counts as empty for `trimmed`: a logo's faint glow at its
@@ -1446,6 +2340,150 @@ mod tests {
                     .all(|p| p[0] <= p[3]),
                 "size {size}"
             );
+        }
+    }
+
+    #[test]
+    fn resampler_matches_across_paths_and_edge_shapes() {
+        let pattern = |w: u32, h: u32| -> Rgba {
+            let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let a = ((x * 29 + y * 53 + 17) % 256) as u8;
+                    let r = ((x * 73 + y * 19) % 256) as u8;
+                    let g = ((x * 41 + y * 97) % 256) as u8;
+                    let b = ((x * 13 + y * 61) % 256) as u8;
+                    pixels.extend_from_slice(&[r, g, b, a]);
+                }
+            }
+            premultiply(Rgba {
+                width: w,
+                height: h,
+                pixels,
+            })
+            .unwrap()
+        };
+
+        // Exercise tiny, odd, horizontal-only, vertical-only, upscale, and downscale shapes
+        // (including `in_w == 1`, unpadded `in_w == 3`, `in_h % 4 != 0`, and vertical tails).
+        let cases = [
+            (1, 1, 5, 5),
+            (3, 3, 7, 7),
+            (7, 5, 3, 2),
+            (13, 9, 9, 13),
+            (33, 17, 19, 11),
+            (64, 16, 23, 16), // horizontal-only
+            (23, 64, 23, 19), // vertical-only
+            (64, 64, 24, 24),
+            (64, 64, 54, 54),
+            (64, 64, 150, 150),
+        ];
+        for (in_w, in_h, out_w, out_h) in cases {
+            let src = pattern(in_w, in_h);
+            let mut scalar = vec![0u8; (out_w * out_h * 4) as usize];
+            resize_scalar(
+                &src.pixels,
+                in_w as usize,
+                in_h as usize,
+                out_w as usize,
+                out_h as usize,
+                &mut scalar,
+            );
+            // Premultiplied invariant: no channel above its alpha.
+            assert!(
+                scalar
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]),
+                "{in_w}x{in_h} -> {out_w}x{out_h}"
+            );
+            #[cfg(target_arch = "x86_64")]
+            if std::arch::is_x86_feature_detected!("avx2") {
+                let mut simd = vec![0u8; (out_w * out_h * 4) as usize];
+                // SAFETY: `avx2` was just verified above.
+                unsafe {
+                    avx2::resize(
+                        &src.pixels,
+                        in_w as usize,
+                        in_h as usize,
+                        out_w as usize,
+                        out_h as usize,
+                        &mut simd,
+                    );
+                }
+                assert_eq!(scalar, simd, "{in_w}x{in_h} -> {out_w}x{out_h}");
+            }
+            // A solid premultiplied colour stays bit-exact through any resize.
+            let flat = solid(in_w, in_h, [40, 80, 120, 200]);
+            let flat_out = resized(flat, out_w, out_h).unwrap();
+            assert!(
+                flat_out
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|&p| p == [40, 80, 120, 200]),
+                "solid drift on {in_w}x{in_h} -> {out_w}x{out_h}"
+            );
+        }
+
+        // Invalid dimensions or mismatched pixel buffers fail cleanly rather than panicking.
+        let bad = Rgba {
+            width: 4,
+            height: 4,
+            pixels: vec![0; 12],
+        };
+        assert!(matches!(
+            premultiply(bad.clone()),
+            Err(PictureError::Scale(_))
+        ));
+        assert!(matches!(
+            unpremultiply(bad.clone()),
+            Err(PictureError::Scale(_))
+        ));
+        assert!(matches!(resized(bad, 2, 2), Err(PictureError::Scale(_))));
+        assert!(matches!(
+            resized(solid(2, 2, RED), 0, 2),
+            Err(PictureError::Scale(_))
+        ));
+    }
+
+    #[test]
+    fn premultiply_is_exact_for_all_byte_pairs() {
+        // Every (channel, alpha) pair in 0..=255, plus an odd tail (< 8 pixels) and opaque run.
+        let mut pixels = Vec::with_capacity((256 * 256 + 11) * 4);
+        for a in 0..=255u8 {
+            for c in 0..=255u8 {
+                pixels.extend_from_slice(&[c, 255 - c, c / 2, a]);
+            }
+        }
+        // 8 opaque pixels (exercises the opaque skip) + 3 tail pixels.
+        for i in 0..8u8 {
+            pixels.extend_from_slice(&[i * 30, i * 20, i * 10, 255]);
+        }
+        pixels.extend_from_slice(&[200, 100, 50, 128, 255, 255, 255, 0, 10, 20, 30, 255]);
+
+        let mut expected = pixels.clone();
+        for px in expected.as_chunks_mut::<4>().0 {
+            let a = u32::from(px[3]);
+            for ch in &mut px[..3] {
+                *ch = ((u32::from(*ch) * a + 127) / 255) as u8;
+            }
+        }
+
+        let mut scalar = pixels.clone();
+        premultiply_scalar(&mut scalar);
+        assert_eq!(scalar, expected);
+
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            let mut simd = pixels;
+            // SAFETY: `avx2` was just verified above.
+            unsafe {
+                avx2::premultiply(&mut simd);
+            }
+            assert_eq!(simd, expected);
         }
     }
 

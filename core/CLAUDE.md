@@ -126,7 +126,8 @@ holds the rules and facts that span them.
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its
     text read back, through a message-only window).
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
-  - `text.rs` (`file_name_for`: a file or folder name from a game's name).
+  - `text.rs` (`file_name_for`: a file or folder name from a game's name) and `xml.rs` (flat-arena
+    XML reader for EA and Xbox manifests).
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v` (with each game's uninstall route and Nexus Mods
   page), `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source,

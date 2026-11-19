@@ -38,12 +38,23 @@ impl Value {
     }
 }
 
-#[derive(Debug, PartialEq, thiserror::Error)]
-#[error("VDF parse error at byte {offset}: {message}")]
+#[derive(Debug, PartialEq)]
 pub struct VdfError {
     pub offset: usize,
     pub message: &'static str,
 }
+
+impl std::fmt::Display for VdfError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "VDF parse error at byte {}: {}",
+            self.offset, self.message
+        )
+    }
+}
+
+impl std::error::Error for VdfError {}
 
 #[derive(Debug, PartialEq)]
 enum Token {

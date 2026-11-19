@@ -12,7 +12,8 @@
 //! catalog, and the game page's art (for `page_art.rs`): its super hero art and logo.
 
 use crate::page_art::ArtUrls;
-use crate::text::{child_text, read_text, xml_body};
+use crate::text::read_text;
+use crate::xml;
 use crate::{Arch, Error, Game, IconRef, Launch, LaunchOption, Result, Store};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -93,24 +94,21 @@ pub fn scan() -> Result<Vec<Game>> {
 }
 
 fn parse_game_config(text: &str) -> Option<GameConfig> {
-    let doc = roxmltree::Document::parse(xml_body(text)).ok()?;
+    let doc = xml::Document::parse(text)?;
     let root = doc.root_element();
-    if root.tag_name().name() != "Game" {
+    if !root.has_tag_name("Game") {
         return None;
     }
-    let element = |name: &str| {
-        doc.descendants()
-            .find(|n| n.is_element() && n.tag_name().name() == name)
-    };
-    let attr = |node: Option<roxmltree::Node>, name: &str| {
+    let element = |name: &str| doc.descendants().find(|n| n.has_tag_name(name));
+    let attr = |node: Option<xml::Node<'_, '_>>, name: &str| {
         node.and_then(|n| n.attribute(name))
             .map_or_default(str::trim)
             .to_owned()
     };
 
-    let mut executables: Vec<roxmltree::Node> = doc
+    let mut executables: Vec<xml::Node<'_, '_>> = doc
         .descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == "Executable")
+        .filter(|n| n.has_tag_name("Executable"))
         .collect();
     // Prefer executables meant for PC over other device families.
     executables.sort_by_key(|n| {
@@ -120,7 +118,7 @@ fn parse_game_config(text: &str) -> Option<GameConfig> {
 
     let visuals = element("ShellVisuals");
     Some(GameConfig {
-        store_id: child_text(root, "StoreId").unwrap_or_default().to_owned(),
+        store_id: root.child_text("StoreId").unwrap_or_default().to_owned(),
         executable_ids: executables
             .iter()
             .filter_map(|n| n.attribute("Id"))
@@ -143,11 +141,11 @@ fn parse_game_config(text: &str) -> Option<GameConfig> {
 
 /// `Id`s of the `<Application>` entries in `AppxManifest.xml`.
 fn parse_manifest_app_ids(text: &str) -> Vec<String> {
-    let Ok(doc) = roxmltree::Document::parse(xml_body(text)) else {
+    let Some(doc) = xml::Document::parse(text) else {
         return Vec::new();
     };
     doc.descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == "Application")
+        .filter(|n| n.has_tag_name("Application"))
         .filter(|n| n.parent().is_some_and(|p| p.has_tag_name("Applications")))
         .filter_map(|n| n.attribute("Id"))
         .map(str::to_owned)

@@ -5,92 +5,68 @@ use crate::Store;
 use crate::vdf::VdfError;
 use std::fmt;
 use std::path::PathBuf;
-use thiserror::Error;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum Error {
     /// A file or folder could not be read or written.
-    #[error("{}: {source}", .path.display())]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
     /// A JSON file does not hold the expected data, or the data could not be written as JSON.
-    #[error("{}: {source}", .path.display())]
     Json {
         path: PathBuf,
         source: serde_json::Error,
     },
     /// A Valve KeyValues (`.vdf`) file could not be parsed.
-    #[error("{}: {source}", .path.display())]
     Vdf { path: PathBuf, source: VdfError },
     /// A Windows API failed; `context` names what it was working on (a file, a registry key).
-    #[error("{context}: {source}")]
     Windows {
         context: String,
         source: windows::core::Error,
     },
     /// A web request was answered with something other than `200 OK`.
-    #[error("{url}: {}", http_status(.status))]
     Http { url: String, status: u32 },
     /// A web answer was not the JSON expected.
-    #[error("{url}: {source}")]
     WebJson {
         url: String,
         source: serde_json::Error,
     },
     /// A web answer was far larger than expected.
-    #[error("{url}: the answer is too large")]
     ResponseTooLarge { url: String },
     /// An address that is not `https://host/…`.
-    #[error("{0} is not an https address")]
     InvalidUrl(String),
     /// A program that ships next to Game Manager is missing.
-    #[error("{} is missing: it ships in Game Manager's folder", .0.display())]
     ToolMissing(PathBuf),
     /// 7-Zip could not unpack an archive; `code` is its exit code.
-    #[error("7-Zip could not unpack {} (exit code {code})", .archive.display())]
     Extract { archive: PathBuf, code: i32 },
     /// 7-Zip could not pack a folder into an archive; `code` is its exit code.
-    #[error(
-        "7-Zip could not pack {} into {} (exit code {code})",
-        .folder.display(),
-        .archive.display()
-    )]
     Pack {
         folder: PathBuf,
         archive: PathBuf,
         code: i32,
     },
     /// An archive lacks what had to be in it (`what`: "TAR archive").
-    #[error("{} holds no {what}", .archive.display())]
     NotInArchive {
         archive: PathBuf,
         what: &'static str,
     },
     /// Work ran longer than it may and was stopped (`what`: "7-Zip unpacking …").
-    #[error("{what} took over {minutes} minutes and was stopped")]
     TookTooLong { what: String, minutes: u64 },
     /// A file is larger than what reads it takes (`limit_mb`).
-    #[error("{} is larger than {limit_mb} MB", .path.display())]
     FileTooLarge { path: PathBuf, limit_mb: u64 },
     /// A download the cache doesn't hold, by its kind and version as asked for.
-    #[error("{kind} {version} is not a download in Game Manager's cache")]
     NotADownload { kind: String, version: String },
     /// Windows gave text that isn't Unicode for `what`.
-    #[error("Windows gave unreadable text for {what}")]
     UnreadableText { what: String },
     /// The user said No when Windows asked for administrator rights.
-    #[error("Administrator rights were refused, so nothing was changed.")]
     ElevationRefused,
     /// The copy of Game Manager running as administrator failed; `code` is its exit code, the
     /// HRESULT of what failed.
-    #[error("The change made as administrator failed: {}", hresult_message(.code))]
     Elevated { code: u32 },
     /// Windows refused a display mode; `code` is what `ChangeDisplaySettingsExW` answered.
-    #[error("Windows refused {width} × {height} at {hz} Hz on {display} (code {code}).")]
     DisplayModeRefused {
         display: String,
         width: u32,
@@ -99,96 +75,215 @@ pub enum Error {
         code: i32,
     },
     /// A display mode was saved, but Windows needs a restart to use it.
-    #[error("Windows needs a restart to use the new mode on {0}.")]
     DisplayModeNeedsRestart(String),
     /// A display did not take a change; `what` names it ("brightness").
-    #[error("{display} did not take the new {what}.")]
     DisplayRefused { display: String, what: &'static str },
     /// A display a game's settings name isn't connected (or is off).
-    #[error("{0} isn't connected.")]
     DisplayNotConnected(String),
     /// Windows didn't say where the Documents folder is (save backups go there).
-    #[error(
-        "Windows didn't say where your Documents folder is, so save backups have nowhere to go."
-    )]
     NoDocumentsFolder,
     /// Windows didn't say where the desktop is (shortcuts go there).
-    #[error("Windows didn't say where your desktop is, so the shortcut has nowhere to go.")]
     NoDesktopFolder,
     /// A folder to back up holds no file.
-    #[error("{} is empty: there is nothing to back up.", .0.display())]
     EmptyFolder(PathBuf),
     /// A folder to back up is larger than the limit.
-    #[error("{} is larger than {limit_gb} GB, too large to back up.", .folder.display())]
     FolderTooLarge { folder: PathBuf, limit_gb: u64 },
     /// Something an earlier step left is where Game Manager must put a folder.
-    #[error("{} is in the way: move or delete it, then try again.", .0.display())]
     InTheWay(PathBuf),
     /// A release list or build list answered with nothing to download.
-    #[error("{url} lists no build to download")]
     NoRelease { url: String },
     /// GitHub lists no SHA-256 for a development build, so it can't be checked and isn't
     /// downloaded.
-    #[error("GitHub lists no SHA-256 for {url}, so it was not downloaded")]
     NoDigest { url: String },
     /// A download is not the file GitHub lists: its SHA-256 differs, so it isn't used.
-    #[error("{url} did not download as GitHub lists it (its SHA-256 differs), so it was not used")]
     DigestMismatch { url: String },
     /// A downloaded mod has no build for Windows in it.
-    #[error("{} holds no 32 or 64-bit Windows build", .0.display())]
     NoModBuild(PathBuf),
     /// The mod cannot be installed in this game; the text says why.
-    #[error("{0}")]
     NotInstallable(String),
     /// A job did and saved its work, but left some of it out; the text names what.
-    #[error("{0}")]
     Incomplete(String),
     /// An NVIDIA driver settings call failed; `status` is NVAPI's.
-    #[error(
-        "NVIDIA driver settings: could not {action}: {} (NVAPI {status})",
-        crate::nvidia::status_text(*.status)
-    )]
     Nvapi { action: &'static str, status: i32 },
     /// The folder for the app's files is unknown: this environment variable is not set.
-    #[error("{0} is not set")]
     MissingEnvVar(&'static str),
     /// A file or folder that has to exist does not.
-    #[error("{} does not exist", .0.display())]
     NotFound(PathBuf),
     /// The Windows shell could not start or open `target`; `code` is what `ShellExecuteW` returned.
-    #[error("failed to {action} {target} (code {code})")]
     Shell {
         action: &'static str,
         target: String,
         code: usize,
     },
     /// A game added by hand needs a name.
-    #[error("a game needs a name")]
     MissingName,
     /// None of the dropped files is a program or a shortcut.
-    #[error("Drop a game's .exe or its shortcut to add it.")]
     NothingToAdd,
     /// More than one program or shortcut was dropped.
-    #[error("Drop one game at a time.")]
     SeveralGames,
     /// A dropped shortcut starts a file that is no longer there.
-    #[error("The shortcut {name} starts {}, which does not exist.", .target.display())]
     ShortcutTargetMissing { name: String, target: PathBuf },
     /// A dropped shortcut starts something other than a program (a Store app, a folder).
-    #[error(
-        "The shortcut {name} does not start a program. Steam, Epic, GOG, EA and Xbox games are \
-         found automatically."
-    )]
     ShortcutNotAProgram { name: String },
     /// A file chosen as a game's cover is not a picture Windows can read.
-    #[error("{} is not a picture Windows can open.", .0.display())]
     NotAPicture(PathBuf),
     /// A secret too long for Credential Manager (`credentials.rs`).
-    #[error("{target}: a secret of more than {limit} bytes can't be kept")]
     SecretTooLong { target: String, limit: usize },
     /// SteamGridDB has no API key here: Settings ▸ SteamGridDB asks for one.
-    #[error("SteamGridDB needs your API key: add it in Settings")]
     NoSteamGridDbKey,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Json { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Vdf { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Windows { context, source } => write!(f, "{context}: {source}"),
+            Self::Http { url, status } => write!(f, "{url}: {}", http_status(status)),
+            Self::WebJson { url, source } => write!(f, "{url}: {source}"),
+            Self::ResponseTooLarge { url } => write!(f, "{url}: the answer is too large"),
+            Self::InvalidUrl(url) => write!(f, "{url} is not an https address"),
+            Self::ToolMissing(path) => write!(
+                f,
+                "{} is missing: it ships in Game Manager's folder",
+                path.display()
+            ),
+            Self::Extract { archive, code } => {
+                write!(
+                    f,
+                    "7-Zip could not unpack {} (exit code {code})",
+                    archive.display()
+                )
+            }
+            Self::Pack {
+                folder,
+                archive,
+                code,
+            } => write!(
+                f,
+                "7-Zip could not pack {} into {} (exit code {code})",
+                folder.display(),
+                archive.display()
+            ),
+            Self::NotInArchive { archive, what } => {
+                write!(f, "{} holds no {what}", archive.display())
+            }
+            Self::TookTooLong { what, minutes } => {
+                write!(f, "{what} took over {minutes} minutes and was stopped")
+            }
+            Self::FileTooLarge { path, limit_mb } => {
+                write!(f, "{} is larger than {limit_mb} MB", path.display())
+            }
+            Self::NotADownload { kind, version } => {
+                write!(f, "{kind} {version} is not a download in Game Manager's cache")
+            }
+            Self::UnreadableText { what } => {
+                write!(f, "Windows gave unreadable text for {what}")
+            }
+            Self::ElevationRefused => {
+                f.write_str("Administrator rights were refused, so nothing was changed.")
+            }
+            Self::Elevated { code } => write!(
+                f,
+                "The change made as administrator failed: {}",
+                hresult_message(code)
+            ),
+            Self::DisplayModeRefused {
+                display,
+                width,
+                height,
+                hz,
+                code,
+            } => write!(
+                f,
+                "Windows refused {width} × {height} at {hz} Hz on {display} (code {code})."
+            ),
+            Self::DisplayModeNeedsRestart(display) => {
+                write!(f, "Windows needs a restart to use the new mode on {display}.")
+            }
+            Self::DisplayRefused { display, what } => {
+                write!(f, "{display} did not take the new {what}.")
+            }
+            Self::DisplayNotConnected(display) => write!(f, "{display} isn't connected."),
+            Self::NoDocumentsFolder => f.write_str(
+                "Windows didn't say where your Documents folder is, so save backups have nowhere to go.",
+            ),
+            Self::NoDesktopFolder => f.write_str(
+                "Windows didn't say where your desktop is, so the shortcut has nowhere to go.",
+            ),
+            Self::EmptyFolder(path) => {
+                write!(f, "{} is empty: there is nothing to back up.", path.display())
+            }
+            Self::FolderTooLarge { folder, limit_gb } => write!(
+                f,
+                "{} is larger than {limit_gb} GB, too large to back up.",
+                folder.display()
+            ),
+            Self::InTheWay(path) => write!(
+                f,
+                "{} is in the way: move or delete it, then try again.",
+                path.display()
+            ),
+            Self::NoRelease { url } => write!(f, "{url} lists no build to download"),
+            Self::NoDigest { url } => {
+                write!(f, "GitHub lists no SHA-256 for {url}, so it was not downloaded")
+            }
+            Self::DigestMismatch { url } => write!(
+                f,
+                "{url} did not download as GitHub lists it (its SHA-256 differs), so it was not used"
+            ),
+            Self::NoModBuild(path) => {
+                write!(f, "{} holds no 32 or 64-bit Windows build", path.display())
+            }
+            Self::NotInstallable(message) | Self::Incomplete(message) => f.write_str(message),
+            Self::Nvapi { action, status } => write!(
+                f,
+                "NVIDIA driver settings: could not {action}: {} (NVAPI {status})",
+                crate::nvidia::status_text(*status)
+            ),
+            Self::MissingEnvVar(name) => write!(f, "{name} is not set"),
+            Self::NotFound(path) => write!(f, "{} does not exist", path.display()),
+            Self::Shell {
+                action,
+                target,
+                code,
+            } => write!(f, "failed to {action} {target} (code {code})"),
+            Self::MissingName => f.write_str("a game needs a name"),
+            Self::NothingToAdd => f.write_str("Drop a game's .exe or its shortcut to add it."),
+            Self::SeveralGames => f.write_str("Drop one game at a time."),
+            Self::ShortcutTargetMissing { name, target } => write!(
+                f,
+                "The shortcut {name} starts {}, which does not exist.",
+                target.display()
+            ),
+            Self::ShortcutNotAProgram { name } => write!(
+                f,
+                "The shortcut {name} does not start a program. Steam, Epic, GOG, EA and Xbox games are found automatically."
+            ),
+            Self::NotAPicture(path) => {
+                write!(f, "{} is not a picture Windows can open.", path.display())
+            }
+            Self::SecretTooLong { target, limit } => {
+                write!(f, "{target}: a secret of more than {limit} bytes can't be kept")
+            }
+            Self::NoSteamGridDbKey => {
+                f.write_str("SteamGridDB needs your API key: add it in Settings")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Json { source, .. } | Self::WebJson { source, .. } => Some(source),
+            Self::Vdf { source, .. } => Some(source),
+            Self::Windows { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 impl Error {
@@ -240,12 +335,22 @@ impl fmt::Display for ScanPart {
 }
 
 /// A part of `scan_all` that failed. The other parts' games are still listed.
-#[derive(Debug, Error)]
-#[error("{part}: {error}")]
+#[derive(Debug)]
 pub struct ScanError {
     pub part: ScanPart,
-    #[source]
     pub error: Error,
+}
+
+impl fmt::Display for ScanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.part, self.error)
+    }
+}
+
+impl std::error::Error for ScanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 #[cfg(test)]

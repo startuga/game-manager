@@ -14,7 +14,8 @@
 //! `Origin Games\<contentID>` key or an uninstall entry that runs EA's installer cleanup.
 
 use crate::data_module::DataModule;
-use crate::text::{child_text, decode_text, read_text, xml_body};
+use crate::text::{decode_text, read_text};
+use crate::xml;
 use crate::{Game, IconRef, Launch, Result, Store, UNINSTALL_KEYS, folder_key};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -289,17 +290,17 @@ impl InstallerData {
 /// Parses both manifest generations: `<game manifestVersion="3.0">` (titles in
 /// `<localeInfo><title>`) and `<DiPManifest>` (titles in `<gameTitles><gameTitle>`).
 fn parse_installer_data(text: &str) -> Option<InstallerData> {
-    let doc = roxmltree::Document::parse(xml_body(text)).ok()?;
+    let doc = xml::Document::parse(text)?;
     let mut data = InstallerData::default();
 
-    for node in doc.descendants().filter(|n| n.is_element()) {
-        match node.tag_name().name() {
+    for node in doc.descendants() {
+        match node.tag_name() {
             // Launchers carry their own <contentID>; only the top-level list identifies the game.
             "contentID" if node.parent().is_some_and(|p| p.has_tag_name("contentIDs")) => {
                 push_text(&mut data.content_ids, node)
             }
             "localeInfo" => {
-                if let Some(title) = child_text(node, "title") {
+                if let Some(title) = node.child_text("title") {
                     let locale = node.attribute("locale").unwrap_or_default();
                     data.titles.push((locale.to_owned(), title.to_owned()));
                 }
@@ -311,13 +312,13 @@ fn parse_installer_data(text: &str) -> Option<InstallerData> {
                 }
             }
             "launcher" if node.parent().is_some_and(|p| p.has_tag_name("runtime")) => {
-                if let Some(file_path) = child_text(node, "filePath") {
+                if let Some(file_path) = node.child_text("filePath") {
                     data.launchers.push(RuntimeLauncher {
                         file_path: file_path.to_owned(),
-                        parameters: child_text(node, "parameters")
-                            .unwrap_or_default()
-                            .to_owned(),
-                        trial: child_text(node, "trial").is_some_and(|t| t == "1" || t == "true"),
+                        parameters: node.child_text("parameters").unwrap_or_default().to_owned(),
+                        trial: node
+                            .child_text("trial")
+                            .is_some_and(|t| t == "1" || t == "true"),
                     });
                 }
             }
@@ -327,7 +328,7 @@ fn parse_installer_data(text: &str) -> Option<InstallerData> {
     Some(data)
 }
 
-fn push_text(list: &mut Vec<String>, node: roxmltree::Node) {
+fn push_text(list: &mut Vec<String>, node: xml::Node<'_, '_>) {
     if let Some(text) = node.text().map(str::trim).filter(|t| !t.is_empty()) {
         list.push(text.to_owned());
     }
@@ -398,23 +399,18 @@ fn read_gdf_resource(dll: &Path) -> Option<String> {
 }
 
 fn parse_gdf(text: &str) -> Option<Gdf> {
-    let doc = roxmltree::Document::parse(xml_body(text)).ok()?;
-    let element = |name: &str| {
-        doc.descendants()
-            .find(|n| n.is_element() && n.tag_name().name() == name)
-    };
+    let doc = xml::Document::parse(text)?;
+    let element = |name: &str| doc.descendants().find(|n| n.has_tag_name(name));
 
     let mut gdf = Gdf {
         name: element("GameDefinition")
-            .and_then(|def| child_text(def, "Name"))
+            .and_then(|def| def.child_text("Name"))
             .unwrap_or_default()
             .to_owned(),
         ..Gdf::default()
     };
     gdf.primary = element("Primary").and_then(|primary| {
-        let task = primary
-            .children()
-            .find(|c| c.is_element() && c.tag_name().name() == "FileTask")?;
+        let task = primary.children().find(|c| c.has_tag_name("FileTask"))?;
         let path = task.attribute("path").filter(|p| !p.is_empty())?;
         Some((
             path.to_owned(),
@@ -423,7 +419,7 @@ fn parse_gdf(text: &str) -> Option<Gdf> {
     });
     gdf.executables = doc
         .descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == "GameExecutable")
+        .filter(|n| n.has_tag_name("GameExecutable"))
         .filter_map(|n| n.attribute("path").filter(|p| !p.is_empty()))
         .map(str::to_owned)
         .collect();

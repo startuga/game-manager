@@ -51,6 +51,7 @@ mod version_info;
 pub mod watch;
 mod whole_file;
 pub mod xbox;
+mod xml;
 
 pub use elevate::elevated_work;
 pub use error::{Error, Result, ScanError, ScanPart};
