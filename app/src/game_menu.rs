@@ -10,8 +10,9 @@
 //!   Open folder, PCGamingWiki, Nexus Mods, Saves folder and Config folder (as
 //!   the game page's buttons; a folder not looked up yet is looked up, then opened or the error
 //!   bar says why not);
-//!   Rename…, Artwork… (its cover, banner, logo and icon, `artwork.rs`), Hide from the list (or
-//!   Show in the list);
+//!   Rename…, Artwork… (its cover, banner, logo and icon, `artwork.rs`), Create desktop shortcut
+//!   (`--play`, `gm_core::create_desktop_shortcut`; the notice bar says where it went), Hide from
+//!   the list (or Show in the list);
 //!   Uninstall… for a store's game, Remove from Game Manager for one added by hand. Groups are
 //!   split by lines, and the two destructive items are red.
 //! - **Its size** is worked out from its rows, so it flips up or left to stay in the window.
@@ -66,6 +67,8 @@ pub(crate) enum MenuAction {
     Rename,
     /// The Artwork dialog: its cover, banner, logo and icon (`artwork.rs`).
     Artwork,
+    /// A desktop shortcut that plays it through Game Manager (`--play`).
+    Shortcut,
     /// Hides it from the list, or shows it again.
     Hide,
     Uninstall,
@@ -320,6 +323,12 @@ impl GameManager {
             format!("Change the artwork of {}", game.name),
             MenuAction::Artwork,
         );
+        rows.item(
+            g::LINK,
+            "Create desktop shortcut",
+            format!("Create a desktop shortcut to {}", game.name),
+            MenuAction::Shortcut,
+        );
         let (eye, hide) = if game.hidden {
             (g::VIEW, "Show in the list")
         } else {
@@ -559,6 +568,7 @@ impl GameManager {
                     crate::artwork::ArtworkMessage::Open(id, gm_core::steamgriddb::Kind::Cover);
                 self.handle_artwork(open, context);
             }
+            MenuAction::Shortcut => self.handle(Message::CreateShortcut(id), context),
             MenuAction::Hide => self.toggle_hidden(id, context),
             MenuAction::Uninstall => {
                 let game = game.clone();

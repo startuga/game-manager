@@ -35,6 +35,14 @@ const PUBLISHER_KEYS: [&str; 4] = [
     r"SOFTWARE\WOW6432Node\EA Games",
 ];
 const ORIGIN_GAMES_KEY: &str = r"SOFTWARE\WOW6432Node\Origin Games";
+/// The keys that list the EA app's games, for `watch`.
+pub(crate) const WATCHED_KEYS: &[&str] = &[
+    ORIGIN_GAMES_KEY,
+    PUBLISHER_KEYS[0],
+    PUBLISHER_KEYS[1],
+    PUBLISHER_KEYS[2],
+    PUBLISHER_KEYS[3],
+];
 const DEFAULT_LOCALE: &str = "en_US";
 
 /// A folder that may hold an EA game, with what the registry says about it.

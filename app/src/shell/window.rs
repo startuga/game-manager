@@ -25,8 +25,8 @@ use windows::Win32::{
     HTTOPRIGHT, HWND, MINMAXINFO, NCCALCSIZE_PARAMS, POINT, PostMessageW, RECT, SM_CXPADDEDBORDER,
     SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMAXIMIZED,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, ScreenToClient,
-    SetWindowPos, ShowWindow, SystemParametersInfoW, WINDOWPLACEMENT, WM_CLOSE, WM_NCCALCSIZE,
-    WM_NCHITTEST,
+    SetForegroundWindow, SetWindowPos, ShowWindow, SystemParametersInfoW, WINDOWPLACEMENT,
+    WM_CLOSE, WM_NCCALCSIZE, WM_NCHITTEST,
 };
 
 use super::ctx::WindowCommand;
@@ -241,6 +241,13 @@ pub fn command(window: isize, command: WindowCommand) {
         WindowCommand::Minimize => SW_MINIMIZE,
         WindowCommand::Maximize if is_maximized(window) => SW_RESTORE,
         WindowCommand::Maximize => SW_MAXIMIZE,
+        WindowCommand::Show => {
+            // SAFETY: restores our own window if minimized, and brings it to the front.
+            let _ = unsafe { ShowWindow(hwnd(window), SW_RESTORE) };
+            // SAFETY: as above.
+            let _ = unsafe { SetForegroundWindow(hwnd(window)) };
+            return;
+        }
         WindowCommand::Close => {
             // SAFETY: asks our own window to close, as its close button would.
             let _ = unsafe { PostMessageW(Some(hwnd(window)), WM_CLOSE as u32, 0, 0) };

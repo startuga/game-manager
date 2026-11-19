@@ -22,7 +22,7 @@
 //! - One backup or restore at a time (`WORK`), as a session's end and a click can meet.
 
 use crate::local_time::{self, LocalTime};
-use crate::{Error, Game, Result, game_data, json_file, mods, seven_zip};
+use crate::{Error, Game, Result, game_data, json_file, mods, seven_zip, text};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -171,7 +171,7 @@ fn entry(places: &Places, game: &Game, keep: bool) -> Result<GameEntry> {
         .map(|entry| entry.folder.as_str())
         .collect();
     let entry = GameEntry {
-        folder: unique(folder_name(&game.name, &game.id), &taken),
+        folder: unique(text::file_name_for(&game.name, &game.id), &taken),
         auto: true,
         other: serde_json::Map::new(),
     };
@@ -189,53 +189,6 @@ fn set_auto_in(places: &Places, game: &Game, auto: bool) -> Result<()> {
         .games
         .insert(game.id.clone(), GameEntry { auto, ..entry });
     json_file::save(&places.settings, &settings)
-}
-
-/// A folder name for a game: its name without the characters Windows refuses in one, trailing
-/// dots and spaces, or the device names Windows keeps (`CON`, `COM1`…); its id when nothing is
-/// left.
-pub(crate) fn folder_name(name: &str, id: &str) -> String {
-    let clean = |text: &str| -> String {
-        let kept: String = text
-            .chars()
-            .map(|c| {
-                if c < ' ' || r#"<>:"/\|?*"#.contains(c) {
-                    ' '
-                } else {
-                    c
-                }
-            })
-            .collect();
-        let words = kept.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut short: String = words.chars().take(80).collect();
-        while short.ends_with(['.', ' ']) {
-            short.pop();
-        }
-        short
-    };
-    let mut folder = clean(name);
-    if folder.is_empty() {
-        folder = clean(id);
-    }
-    if folder.is_empty() {
-        folder = "Game".to_owned();
-    }
-    let device = folder
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .trim_end()
-        .to_ascii_uppercase();
-    let numbered = |prefix: &str| {
-        device
-            .strip_prefix(prefix)
-            .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
-    };
-    if ["CON", "PRN", "AUX", "NUL"].contains(&device.as_str()) || numbered("COM") || numbered("LPT")
-    {
-        folder.push_str(" (game)");
-    }
-    folder
 }
 
 /// `base`, or `base 2`, `base 3`… when another game has it (Windows ignores case in names).
@@ -564,17 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_names_are_ones_windows_takes() {
-        assert_eq!(folder_name("Half-Life 2", "steam:220"), "Half-Life 2");
-        assert_eq!(
-            folder_name("Ghostbusters: Spirits Unleashed", "x"),
-            "Ghostbusters Spirits Unleashed"
-        );
-        assert_eq!(folder_name("What?.. ", "x"), "What");
-        assert_eq!(folder_name("Con", "x"), "Con (game)");
-        assert_eq!(folder_name("COM1.exe", "x"), "COM1.exe (game)");
-        assert_eq!(folder_name("Combat", "x"), "Combat");
-        assert_eq!(folder_name("???", "steam:220"), "steam 220");
+    fn folder_names_are_unique() {
         assert_eq!(unique("Doom".into(), &["doom", "Doom 2"]), "Doom 3");
         assert_eq!(unique("Quake".into(), &["doom"]), "Quake");
     }

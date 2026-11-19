@@ -79,6 +79,8 @@ rebuild `app.exe`: build again before checking a change, or you'll be checking a
 - **UI Automation** sees every control by name (buttons, rows, tabs, drop-downs, text boxes with
   their Value, sliders). Invoke, SelectionItem, Toggle, ExpandCollapse, Value and RangeValue act
   like clicks, typing and dragging; Focus and Expand scroll the element into view first.
+- **Over 200 games shown** (`library::VIRTUAL_FROM`) only the rows near the screen are built: a
+  game far down isn't in the tree until it is scrolled to, or found with the search first.
 - **Names repeat**: "ReShade" is a tab, a view pill (both TabItems, the tab first) and a card. Pick
   elements by control type, and the nth match where names repeat.
 - **An open drop-down's items** aren't in the UI Automation tree (2026-11-14): `Expand-GmElement`
@@ -87,6 +89,10 @@ rebuild `app.exe`: build again before checking a change, or you'll be checking a
 - **Timing a job** (a deploy queued behind another): `Find-GmElement` walks every element and
   takes 300–500 ms; `FindAll` with an `AndCondition` of name and control type is far quicker. A
   Streamline swap to a version not downloaded took about 5 s, a DLSS one under 2 s.
+- **Arrows and focus**: `Send-GmKey 0x25`–`0x28` (← ↑ → ↓) move focus; which element has it is
+  UI Automation's `HasKeyboardFocus` (`FindFirst` with that condition on `$GmWindow`). Never press
+  Enter with Play focused: it starts a real game. A gamepad can't be checked here: the user tries
+  it.
 - **Typing**: `Send-GmText` and `Send-GmKey` (Backspace, Delete, the arrows, Home, End, Enter,
   Escape). Ctrl and Shift can't be held by posted messages, because the app reads the real key
   state. Check Ctrl shortcuts through the text box menu and the unit tests
@@ -141,7 +147,7 @@ Never install into the user's real games, whose folders may hold their own DXVK 
 - **Live downloads**: `cargo test -p gm-core live_builds -- --ignored` fetches each ReShade variant
   and the default effects; `live_upscalers` one version of each upscaler DLL.
 
-## Play tracking, display settings and save backups with a throwaway game
+## Play tracking, display settings, save backups and shortcuts with a throwaway game
 - **The throwaway game**: a copy of `System32\PING.EXE` as `target\agent\check\playtest\PlayTest.exe`,
   added to `custom-games.json`; `PlayTest.exe -n 25 127.0.0.1` started outside the app runs about
   25 s, and the watcher sees it within 5 s. Sessions under 10 s don't count.
@@ -156,6 +162,15 @@ Never install into the user's real games, whose folders may hold their own DXVK 
   the top edge: pick the one inside the dialog by its position.
 - **Display settings while playing**: choosing them only writes `game-settings.json`; Play with a
   choice switches the user's display, so the user tries it.
+- **The user's own window**: when it is open too (the user's build in `target\release`), both copies
+  count the same sessions and save `play-history.json` in turn. Keep the check short, copy the file
+  first, and afterwards remove only the throwaway's entries (never put the old file back whole).
+- **Desktop shortcuts and `--play`**: Create desktop shortcut writes the user's real Desktop
+  (`[Environment]::GetFolderPath('Desktop')`); read it back with `WScript.Shell`'s
+  `CreateShortcut(path)` (read only), and remove only the shortcut whose target is
+  `target\agent\debug\app.exe`. `Start-Process $GmExe -ArgumentList '--play','"<id>"'` tests a
+  shortcut: with the agent window open it hands over and exits; without, the window opens
+  minimized (`IsIconic`) and plays. A minimized window has no accessibility tree until it lays out.
 
 ## Icons
 - `cargo run -p gm-core --example scan -- --icons <dir>` saves each game's icon as the app gets it

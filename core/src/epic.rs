@@ -76,6 +76,15 @@ fn launch_uri(namespace: &str, item_id: &str, app_name: &str) -> Launch {
 // ---------------------------------------------------------------------------------------------
 
 /// `%LOCALAPPDATA%\com.epicgames.eglv2`, the current launcher's data folder.
+/// The folders whose files list Epic's games, for `watch`: the current launcher's data
+/// (`installations.jsonl`) and the legacy launcher's `Manifests`.
+pub(crate) fn watched_folders() -> Vec<PathBuf> {
+    eglv2_dir()
+        .into_iter()
+        .chain(legacy_manifests_dir())
+        .collect()
+}
+
 pub fn eglv2_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("com.epicgames.eglv2");
     dir.is_dir().then_some(dir)

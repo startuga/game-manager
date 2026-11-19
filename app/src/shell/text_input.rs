@@ -463,7 +463,7 @@ impl<A: App> Shell<A> {
 
     fn on_enter(&self, id: u64) -> Option<A::Message> {
         match &self.frame.as_ref()?.find(id)?.el.kind {
-            Kind::Edit { on_enter, .. } => on_enter.clone(),
+            Kind::Edit { on_enter, .. } => on_enter.as_deref().cloned(),
             _ => None,
         }
     }

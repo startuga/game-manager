@@ -8,7 +8,8 @@ holds the rules and facts that span them.
 - **Stores**: `steam.rs` (+ `vdf.rs`, Valve KeyValues text and binary), `epic.rs`, `gog.rs`,
   `ea.rs`, `ubisoft.rs` (Ubisoft Connect; its own small protobuf and YAML readers), `xbox.rs`;
   `custom.rs` (games added by hand, `NewGame` from a picked or dropped file), `shortcut.rs`
-  (`.lnk` via `ShellLink`).
+  (`.lnk` via `ShellLink`: read, and a game's desktop shortcut made, `app.exe --play "<id>"`,
+  never over a file already there).
 - **Game data**:
   - `lib.rs` (`Game`, `Launch`, `Arch`, `scan_all`, `complete_game`).
   - `config.rs` (shipped `games.json`, the user's `game-settings.json`: edits, hidden games,
@@ -24,6 +25,10 @@ holds the rules and facts that span them.
     back when it ends, kept in the history meanwhile); `local_time.rs` (dates on this PC's clock,
     no date crate).
   - `pe.rs` (architecture and imports from PE headers).
+  - `sizes.rs` (each game's install folder measured, links not followed, kept a day in
+    `cache\sizes.json`) and `watch.rs` (new installs: the folders and `HKLM` keys the store
+    scanners read, each scanner's `watched_folders` or `WATCHED_KEYS`, waited on together with
+    change notifications; Xbox and custom games aren't watched).
   - `unreal.rs` (an Unreal Engine game's root launcher names the program the game runs as, where
     mods go: its resource `RCDATA 201`).
 - **Around games**:
@@ -121,7 +126,7 @@ holds the rules and facts that span them.
   - `clipboard.rs` (a file (`CF_HDROP`) or text (`CF_UNICODETEXT`) put on the clipboard, and its
     text read back, through a message-only window).
   - `version_info.rs` (a file's `ProductName`/`ProductVersion`, and its fixed file version).
-  - `text.rs`.
+  - `text.rs` (`file_name_for`: a file or folder name from a game's name).
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v` (with each game's uninstall route and Nexus Mods
   page), `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source,
@@ -160,7 +165,8 @@ holds the rules and facts that span them.
   Credential Manager, not in a file.
   - They are loaded before saving, so an unreadable file is never overwritten, and unknown fields
     are kept.
-- `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete.
+- `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete
+  (`cache\sizes.json` among them: each game's size and when it was measured).
 - `Documents\Game Manager\Save backups\<game>\<YYYY-MM-DD HH-MM-SS>.zip` (`save_backups.rs`):
   the user's save backups, never a cache.
 - `build.rs` ships every `config/*.json` and `7-Zip\` next to `app.exe` (the parent of the

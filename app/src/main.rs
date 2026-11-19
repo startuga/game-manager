@@ -12,6 +12,11 @@
 //! - **Logic**: `mods_view.rs` (ReShade, DXVK, LAA), `reshade_panel.rs` (shaders and add-ons),
 //!   `upscalers_view.rs` and `dlss_override_view.rs` (upscaler DLLs, NVIDIA overrides), `my_pc.rs`
 //!   (hardware, displays, Windows' game switches), `edit.rs` and `library.rs` (UI-free, tested).
+//! - **A desktop shortcut's game** (`--play <game id>`, `gm_core::create_desktop_shortcut`): a
+//!   first start opens minimized and plays it once the games, the play history and the display
+//!   choices are loaded (`pending_play`, `play_when_ready`); a second start hands it to the
+//!   running window instead (`shell::instance`, `App::command`). A game no longer there is said
+//!   in the error bar, the window brought forward.
 //! - **Elevated copy**: started with `--file-ops`, `--reshade-ops`, `--nvidia-ops` or
 //!   `--gpu-scheduling`, it is the copy that changes a protected game folder, ReShade's Vulkan
 //!   layer, NVIDIA driver settings or GPU scheduling as administrator, and shows no window.
@@ -27,6 +32,7 @@ mod filter_menu;
 mod game_menu;
 mod game_page;
 mod icons;
+mod installs;
 mod library;
 mod library_page;
 mod mods_view;
@@ -203,6 +209,14 @@ enum Message {
     /// An earlier run's crash log, read at start (`gm_core::crash`), shown once.
     CrashFound(gm_core::crash::Crash),
     DismissCrash,
+    /// A game to play from a desktop shortcut (`--play <id>`): at start, or handed over by
+    /// another start (`App::command`). It starts once the games, the play history and the
+    /// display choices are loaded (`play_when_ready`).
+    PlayRequested(String),
+    /// The game menu's Create desktop shortcut, and where it went.
+    CreateShortcut(String),
+    ShortcutMade(String, Result<PathBuf, String>),
+    DismissNotice,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
     /// The chosen program; `None` when the dialog was cancelled.
@@ -320,6 +334,10 @@ enum Message {
     /// The My PC page (`my_pc.rs`).
     MyPc(MyPcMessage),
     Play(play::PlayMessage),
+    Installs(installs::InstallsMessage),
+    /// The keys of the watched elements near the screen (`App::near_screen`): Library tiles,
+    /// whose covers are decoded, and the rows long lists build (`library::rows_to_build`).
+    NearScreen(HashSet<String>),
     SaveBackup(save_backups::SaveBackupMessage),
 }
 
@@ -370,6 +388,10 @@ struct GameManager {
     error: Option<String>,
     /// The crash an earlier run left, until dismissed: its own bar, which a scan doesn't clear.
     crash: Option<gm_core::crash::Crash>,
+    /// Something done as asked, said in the notice bar under the title bar.
+    notice: Option<(String, String)>,
+    /// A game to play once everything it needs is loaded (`PlayRequested`).
+    pending_play: Option<String>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
     picking: bool,
     /// The custom game being set up in the Add a game dialog.
@@ -418,11 +440,20 @@ struct GameManager {
     my_pc: MyPcState,
     /// Play tracking: running games, last played, play time (`play.rs`).
     play: play::PlayTracking,
+    /// Each game's size on disk once measured (`installs.rs`), and the sizes' and the stores'
+    /// watcher's state.
+    sizes: HashMap<String, u64>,
+    /// The keys of the sidebar's and the Library's rows near the screen: long lists build only
+    /// those (`library::rows_to_build`).
+    near_rows: HashSet<String>,
+    installs: installs::InstallsState,
     save_backups: save_backups::SaveBackupsState,
 }
 
 /// The window's title, by which a second start finds it.
 const TITLE: &str = "Game Manager";
+/// What a second start hands the first to play a game: `play:<game id>`.
+const PLAY_REQUEST: &str = "play:";
 
 fn main() -> ExitCode {
     // A panic ends the process at once (`panic = "abort"`): it writes the crash log first.
@@ -431,7 +462,8 @@ fn main() -> ExitCode {
     // NVIDIA driver settings: do that, show no window, and exit with the result (0, or a code
     // saying what failed).
     let mut args = std::env::args().skip(1);
-    let elevated: Option<fn(&str) -> u32> = match args.next().as_deref() {
+    let first_arg = args.next();
+    let elevated: Option<fn(&str) -> u32> = match first_arg.as_deref() {
         Some(gm_core::mods::FILE_OPS_ARG) => Some(gm_core::mods::run_encoded),
         Some(gm_core::mods::reshade::RESHADE_OPS_ARG) => Some(gm_core::mods::reshade::run_encoded),
         Some(gm_core::nvidia::NVIDIA_OPS_ARG) => Some(gm_core::nvidia::run_encoded),
@@ -446,8 +478,15 @@ fn main() -> ExitCode {
         };
         std::process::exit(code as i32);
     }
-    // A second start of this program shows the first one's window instead (see `instance`).
-    let Some(_instance) = shell::instance::first(TITLE) else {
+    // A desktop shortcut's `--play <game id>`.
+    let play = (first_arg.as_deref() == Some(gm_core::PLAY_ARG))
+        .then(|| args.next())
+        .flatten()
+        .filter(|id| !id.trim().is_empty());
+    // A second start of this program shows the first one's window instead, or hands it the
+    // game to play (see `instance`).
+    let request = play.as_ref().map(|id| format!("{PLAY_REQUEST}{id}"));
+    let Some(_instance) = shell::instance::first(TITLE, request.as_deref()) else {
         return ExitCode::SUCCESS;
     };
     // The palette and the window's look before the window opens, so its first frame has them.
@@ -457,8 +496,10 @@ fn main() -> ExitCode {
         size: (1200.0, 760.0),
         min_size: (860.0, 520.0),
         look,
+        // Started to play a game: out of its way.
+        minimized: play.is_some(),
     };
-    let create = move |ctx: &Ctx<Message>| GameManager::create(ctx, appearance, windows_look);
+    let create = move |ctx: &Ctx<Message>| GameManager::create(ctx, appearance, windows_look, play);
     match shell::run(create, options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -473,6 +514,8 @@ impl App for GameManager {
 
     fn update(&mut self, message: Message, ctx: &Ctx<Message>) {
         self.handle(message, ctx);
+        // A game a desktop shortcut asked for, once everything it needs is loaded.
+        self.play_when_ready(ctx);
         // Whatever selected a game (a click, a scan, a game added), its APIs are looked up, and
         // its saves and config folders.
         self.request_graphics(ctx);
@@ -543,6 +586,38 @@ impl App for GameManager {
         Some(SettingsMessage::WindowsChanged.into())
     }
 
+    /// The gamepad's own buttons: LB and RB the previous and next tab of a game's page, Start
+    /// plays the selected game, View goes to Library.
+    fn gamepad(&self, button: shell::gamepad::PadButton) -> Option<Message> {
+        use shell::gamepad::PadButton;
+        match button {
+            PadButton::PreviousTab | PadButton::NextTab => {
+                if self.page != Page::Game {
+                    return None;
+                }
+                let tabs = self.shown_tabs();
+                let at = tabs.iter().position(|tab| *tab == self.tab)?;
+                let next = if button == PadButton::NextTab {
+                    (at + 1) % tabs.len()
+                } else {
+                    (at + tabs.len() - 1) % tabs.len()
+                };
+                Some(Message::Tab(tabs[next]))
+            }
+            PadButton::Play => {
+                let id = self.selected.clone().filter(|_| self.page == Page::Game)?;
+                Some(Message::Launch { id, option: None })
+            }
+            PadButton::Library => Some(Message::Page(Page::Library)),
+        }
+    }
+
+    /// Another start's `play:<game id>` (a desktop shortcut while the window is open).
+    fn command(&self, text: &str) -> Option<Message> {
+        let id = text.strip_prefix(PLAY_REQUEST)?.trim();
+        (!id.is_empty()).then(|| Message::PlayRequested(id.to_owned()))
+    }
+
     /// A game's program or its shortcut dropped anywhere on the window adds it.
     fn drop_files(&self, paths: Vec<PathBuf>) -> Option<Message> {
         self.can_add_game().then_some(Message::Dropped(paths))
@@ -560,12 +635,17 @@ impl App for GameManager {
 
     /// The Library's tiles near the screen: their covers are decoded, the others' dropped.
     fn near_screen(&self, keys: &std::collections::HashSet<String>) -> Option<Message> {
-        Some(covers::CoverMessage::Near(covers::near_tiles(keys)).into())
+        Some(Message::NearScreen(keys.clone()))
     }
 }
 
 impl GameManager {
-    fn create(ctx: &Ctx<Message>, appearance: Appearance, windows_look: WindowsLook) -> Self {
+    fn create(
+        ctx: &Ctx<Message>,
+        appearance: Appearance,
+        windows_look: WindowsLook,
+        play: Option<String>,
+    ) -> Self {
         let mut this = Self {
             games: Vec::new(),
             icons: icons::IconState::default(),
@@ -593,6 +673,8 @@ impl GameManager {
             open_after_lookup: None,
             scanning: false,
             error: None,
+            notice: None,
+            pending_play: play,
             crash: None,
             picking: false,
             draft: None,
@@ -620,6 +702,9 @@ impl GameManager {
             nvidia_profile: None,
             my_pc: MyPcState::default(),
             play: play::PlayTracking::default(),
+            sizes: HashMap::new(),
+            near_rows: HashSet::new(),
+            installs: installs::InstallsState::default(),
             save_backups: save_backups::SaveBackupsState::default(),
         };
         // The last scan's games show at once while the fresh scan runs.
@@ -636,6 +721,7 @@ impl GameManager {
         });
         Self::load_view(ctx);
         Self::load_play(ctx);
+        Self::start_installs(ctx);
         Self::read_sgdb_key(ctx);
         // The NVIDIA overrides tab shows only with an NVIDIA driver: read it now.
         this.request_driver(ctx);
@@ -647,6 +733,7 @@ impl GameManager {
 impl GameManager {
     fn start_scan(&mut self, context: &Ctx<Message>) {
         self.scanning = true;
+        self.installs.last_scan = Some(std::time::Instant::now());
         context.spawn_background(|| {
             let report = gm_core::scan_all();
             // The next start shows these games at once. A cache only: failures are ignored.
@@ -687,6 +774,36 @@ impl GameManager {
         };
         if let Some(launch) = launch {
             self.error = gm_core::launch(launch).err().map(|e| e.to_string());
+        }
+    }
+
+    /// Plays the game a desktop shortcut asked for (`pending_play`) once what Play needs is loaded:
+    /// the games (the last scan's will do), the play history (whether it runs, display settings to
+    /// put back) and the display choices. A game no scan finds any more is said in the error bar,
+    /// and the window, opened minimized for the game, comes forward to show it.
+    fn play_when_ready(&mut self, context: &Ctx<Message>) {
+        let Some(id) = self.pending_play.clone() else {
+            return;
+        };
+        if !self.play.ready || !self.play.choices_ready || self.games.is_empty() && self.scanning {
+            return;
+        }
+        let known = self.games.iter().any(|game| game.id == id);
+        if !known && self.scanning {
+            return;
+        }
+        self.pending_play = None;
+        if known {
+            self.handle(Message::Launch { id, option: None }, context);
+        } else {
+            self.error = Some(
+                "The shortcut's game isn't in Game Manager any more: it was uninstalled, or \
+                 removed from the list. Make the shortcut again from its menu if it comes back."
+                    .to_owned(),
+            );
+        }
+        if self.error.is_some() {
+            context.window(WindowCommand::Show);
         }
     }
 
@@ -889,6 +1006,12 @@ impl GameManager {
             Message::Scan => self.start_scan(context),
             Message::Scanned(games, errors) => {
                 self.scanning = false;
+                // A scan the stores' changes started: when it lists the same games, nothing is
+                // loaded again, and an error already shown stays.
+                let auto = std::mem::take(&mut self.installs.auto_scan);
+                if auto && errors.is_empty() && games == self.games {
+                    return;
+                }
                 self.games = games;
                 // A program may have changed (an update, or another one chosen), and a game may
                 // have made its saves folder since.
@@ -896,13 +1019,16 @@ impl GameManager {
                 self.reshade.clear();
                 self.upscalers.found.clear();
                 self.game_folders.clear();
-                self.error = (!errors.is_empty()).then(|| errors.join("\n"));
+                if !auto || !errors.is_empty() {
+                    self.error = (!errors.is_empty()).then(|| errors.join("\n"));
+                }
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.tidy_view();
                 Self::load_icons(self.games.clone(), true, context);
                 self.drop_covers_of_missing_games();
                 self.load_covers(true, true, context);
                 self.rewatch(context);
+                self.measure_sizes(context);
             }
             Message::SnapshotLoaded(games) => {
                 // Only before the first scan has listed anything; the scan then replaces it.
@@ -1189,6 +1315,25 @@ impl GameManager {
             Message::Upscalers(message) => self.handle_upscalers(message, context),
             Message::MyPc(message) => self.handle_my_pc(message, context),
             Message::Play(message) => self.handle_play(message, context),
+            Message::Installs(message) => self.handle_installs(message, context),
+            Message::NearScreen(keys) => {
+                self.handle_cover(
+                    covers::CoverMessage::Near(covers::near_tiles(&keys)),
+                    context,
+                );
+                let rows: HashSet<String> = keys
+                    .into_iter()
+                    .filter(|key| {
+                        key.starts_with(sidebar::ROW_KEY) || key.starts_with(library_page::ROW_KEY)
+                    })
+                    .collect();
+                // Only a long list builds by them: else nothing shown changes.
+                let long = self.shown_games().len() > library::VIRTUAL_FROM;
+                if rows == self.near_rows || !long {
+                    context.quiet();
+                }
+                self.near_rows = rows;
+            }
             Message::SaveBackup(message) => self.handle_save_backups(message, context),
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);
@@ -1379,6 +1524,33 @@ impl GameManager {
             Message::DismissError => self.error = None,
             Message::CrashFound(crash) => self.crash = Some(crash),
             Message::DismissCrash => self.crash = None,
+            Message::DismissNotice => self.notice = None,
+            Message::PlayRequested(id) => self.pending_play = Some(id),
+            Message::CreateShortcut(id) => {
+                let Some(game) = self.games.iter().find(|game| game.id == id).cloned() else {
+                    return;
+                };
+                context.spawn_background(move || {
+                    let made = std::env::current_exe()
+                        .map_err(|e| e.to_string())
+                        .and_then(|app| {
+                            gm_core::create_desktop_shortcut(&game, &app).map_err(|e| e.to_string())
+                        });
+                    Message::ShortcutMade(game.name, made)
+                });
+            }
+            Message::ShortcutMade(name, Ok(link)) => {
+                self.notice = Some((
+                    format!("Shortcut to {name} made"),
+                    format!(
+                        "{} starts it through Game Manager, with its display settings while playing.",
+                        link.display()
+                    ),
+                ));
+            }
+            Message::ShortcutMade(name, Err(error)) => {
+                self.error = Some(format!("The shortcut to {name} wasn't made: {error}"));
+            }
             Message::AddGame => {
                 // Owned by the app's window, which is disabled while the dialog is open.
                 FilePicker::new()

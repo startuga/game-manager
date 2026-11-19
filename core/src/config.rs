@@ -152,6 +152,8 @@ pub enum Sort {
     RecentlyInstalled,
     /// By when it was last played (`play`), the latest first; games never played last.
     RecentlyPlayed,
+    /// By size on disk (`sizes`), the largest first; games not measured last.
+    Size,
 }
 
 /// A Smart Collection: a set of games that fills itself.

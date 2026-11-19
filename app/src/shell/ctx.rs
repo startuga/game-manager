@@ -29,6 +29,8 @@ pub enum WindowCommand {
     Minimize,
     /// Maximize, or restore when maximized.
     Maximize,
+    /// Restore when minimized, and come to the front.
+    Show,
     Close,
     /// A dark or light frame, and Windows' backdrop (Mica) or none.
     Look(super::window::Look),
@@ -170,6 +172,28 @@ impl<M: Send + 'static> Ctx<M> {
                 }
             });
         });
+    }
+
+    /// Runs `work` on a thread of its own, for work that lasts as long as the window (the stores'
+    /// watcher), which would hold a pool thread for good. Every message it sends comes back to
+    /// `update`; sending answers `false` once the window is gone, so the work can end.
+    pub fn spawn_thread<F>(&self, name: &str, work: F)
+    where
+        F: FnOnce(&dyn Fn(M) -> bool) + Send + 'static,
+    {
+        let sender = self.sender.clone();
+        let hwnd = self.hwnd.get();
+        let _ = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                work(&|message| {
+                    let sent = sender.send(message).is_ok();
+                    if sent {
+                        wake(hwnd);
+                    }
+                    sent
+                });
+            });
     }
 
     /// Sends `message` to `update` once `delay` has passed (a window timer, so no thread waits).

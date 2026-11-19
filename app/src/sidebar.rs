@@ -12,6 +12,12 @@
 //! list changes; a right-click, or the Menu key on a focused row, opens the game's menu
 //! (`game_menu.rs`) without leaving the page.
 //!
+//! **A long list** (over `library::VIRTUAL_FROM` games shown) builds only the rows near the
+//! screen (`library::rows_to_build`, from the keys the shell reports, `App::near_screen`): the
+//! others are placeholders of a row's height (`ROW_HEIGHT`) with its key, so the list keeps its
+//! height and scroll position and a placeholder is built once it comes near. UI Automation and
+//! Tab then reach only the built rows.
+//!
 //! **Search** (`widgets::search_box`; matching in `library.rs`): Ctrl+F goes to it, Escape
 //! empties it, Enter opens the first game shown, ✕ clears it. While it has text, a line under it
 //! says how many games match, and every store shows open (its header can't fold until the search
@@ -31,6 +37,16 @@ use crate::{GameManager, Message, Page};
 
 /// The search box's key, which Ctrl+F looks for (`App::search_box`).
 pub(crate) const SEARCH_KEY: &str = "search";
+/// A game's row: its height (a row not built is a placeholder this high) and its key's start.
+const ROW_HEIGHT: f32 = 36.0;
+pub(crate) const ROW_KEY: &str = "game:";
+/// Until the shell says which rows are near the screen, how many a long list builds.
+const FIRST_ROWS: usize = 40;
+
+/// A game's row key (`ROW_KEY` and its id), the same for the row and its placeholder.
+fn row_key(game: &Game) -> String {
+    format!("{ROW_KEY}{}", game.id)
+}
 
 impl GameManager {
     pub(crate) fn sidebar(&self) -> El<Message> {
@@ -116,17 +132,41 @@ impl GameManager {
         if shown.is_empty() {
             return col([hint(library::empty_hint(&self.view, &self.query))]).pad(theme::space::S);
         }
+        // A long list builds only the rows near the screen (`library::rows_to_build`), the others
+        // placeholders of a row's height with its key.
+        let sections: Vec<(Section, (El<Message>, bool))> =
+            library::sections(&self.games, &shown, &self.view, self.facts())
+                .into_iter()
+                .map(|section| {
+                    let header = self.section_header("", &section);
+                    (section, header)
+                })
+                .collect();
+        let keys: Vec<String> = sections
+            .iter()
+            .filter(|(_, (_, folded))| !folded)
+            .flat_map(|(section, _)| section.games.iter())
+            .map(|&index| row_key(&self.games[index]))
+            .collect();
+        let long = shown.len() > library::VIRTUAL_FROM;
+        let mut build =
+            library::rows_to_build(&keys, &self.near_rows, long, FIRST_ROWS).into_iter();
         let mut rows = Vec::new();
-        for section in library::sections(&self.games, &shown, &self.view, self.facts()) {
-            let (header, folded) = self.section_header("", &section);
+        for (section, (header, folded)) in sections {
             rows.push(header);
-            if !folded {
-                rows.extend(
-                    section
-                        .games
-                        .iter()
-                        .map(|&index| self.game_row(&self.games[index])),
-                );
+            if folded {
+                continue;
+            }
+            for &index in &section.games {
+                let game = &self.games[index];
+                rows.push(if build.next().unwrap_or(true) {
+                    self.game_row(game)
+                } else {
+                    col(Vec::new())
+                        .height(ROW_HEIGHT)
+                        .key(row_key(game))
+                        .watch()
+                });
             }
         }
         scroll("games", col(rows).gap(theme::space::XXS))
@@ -159,13 +199,14 @@ impl GameManager {
         ])
         .gap(theme::space::S)
         .pad_xy(theme::space::S, 0.0)
-        .height(36.0)
+        .height(ROW_HEIGHT)
         .radius(theme::RADIUS_CONTROL)
         .hover_bg(theme::subtle_hover())
         .pressed_bg(theme::subtle_pressed())
         .role(crate::ui::el::Role::ListItem)
         .selected(selected)
-        .key(format!("game:{}", game.id))
+        .key(row_key(game))
+        .watch()
         .name(game.name.clone())
         .on_click(Message::Select(Some(game.id.clone())))
         .on_context(move |at| MenuMessage::Open(id.clone(), at).into())

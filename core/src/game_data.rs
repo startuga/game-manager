@@ -32,8 +32,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 use windows::Win32::{
-    CoTaskMemFree, FOLDERID_Documents, FOLDERID_LocalAppDataLow, FOLDERID_SavedGames,
-    KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    CoTaskMemFree, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_LocalAppDataLow,
+    FOLDERID_SavedGames, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 use windows::core::{GUID, PWSTR};
 
@@ -235,6 +235,11 @@ impl Places {
 /// The user's Documents folder, wherever they moved it (OneDrive).
 pub(crate) fn documents() -> Option<PathBuf> {
     known_folder(&FOLDERID_Documents)
+}
+
+/// The user's desktop folder, wherever they moved it (OneDrive).
+pub(crate) fn desktop() -> Option<PathBuf> {
+    known_folder(&FOLDERID_Desktop)
 }
 
 /// A Windows known folder's path (Documents, Saved Games), wherever the user moved it.

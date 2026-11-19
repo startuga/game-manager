@@ -189,6 +189,19 @@ fn launch_program(app: &vdf::Value, install_dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The folders whose files list Steam's games, for `watch`: Steam's own `steamapps`
+/// (`libraryfolders.vdf`) and each library's (`appmanifest_*.acf`).
+pub(crate) fn watched_folders() -> Vec<PathBuf> {
+    let Some(steam) = install_dir() else {
+        return Vec::new();
+    };
+    library_folders(&steam)
+        .unwrap_or_else(|_| vec![steam.clone()])
+        .into_iter()
+        .map(|folder| folder.join("steamapps"))
+        .collect()
+}
+
 fn library_folders(steam: &Path) -> Result<Vec<PathBuf>> {
     let file = steam.join("steamapps").join("libraryfolders.vdf");
     let mut folders = vec![steam.to_path_buf()];

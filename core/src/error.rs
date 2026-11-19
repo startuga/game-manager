@@ -112,6 +112,9 @@ pub enum Error {
         "Windows didn't say where your Documents folder is, so save backups have nowhere to go."
     )]
     NoDocumentsFolder,
+    /// Windows didn't say where the desktop is (shortcuts go there).
+    #[error("Windows didn't say where your desktop is, so the shortcut has nowhere to go.")]
+    NoDesktopFolder,
     /// A folder to back up holds no file.
     #[error("{} is empty: there is nothing to back up.", .0.display())]
     EmptyFolder(PathBuf),

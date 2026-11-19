@@ -219,7 +219,8 @@ pub enum Kind<M> {
         text: String,
         placeholder: String,
         on_change: OnValue<M, String>,
-        on_enter: Option<M>,
+        /// Behind a pointer, as `El::on_click`.
+        on_enter: Option<Box<M>>,
         clear_on_escape: bool,
     },
     /// A vertical scroll view of its one child.
@@ -252,6 +253,9 @@ pub enum Role {
     Button,
     /// A row of a list, a nav item or a tab: selectable.
     ListItem,
+    /// A tile of a grid (the Library's): a list item for UI Automation, but the arrows move focus
+    /// among the tiles around it without picking one (`input::spatial_next`); Enter picks it.
+    GridItem,
     Tab,
     CheckBox,
     ComboBox,
@@ -294,10 +298,14 @@ pub struct El<M> {
     pub key: Option<String>,
     /// The app hears whether this keyed element is near the screen (`El::watch`).
     pub watch: bool,
+    /// The arrows focus it first when nothing is focused and it shows (`El::first_focus`).
+    pub first_focus: bool,
     /// Drawn fading to nothing towards its bottom from this share of its height on, children
     /// and all (`fade_out`).
     pub fade_out: Option<f32>,
-    pub on_click: Option<M>,
+    /// Behind a pointer, as most elements have none and a message is large (312 bytes for the
+    /// app's): every element is that much smaller (`tests::elements_stay_small`).
+    pub on_click: Option<Box<M>>,
     /// A right-click, with the pointer's position in window DIPs.
     pub on_context: Option<OnValue<M, (f32, f32)>>,
     /// Dragging it: the pointer's position in window DIPs while the button is held down (a
@@ -345,6 +353,7 @@ impl<M> El<M> {
             children: Vec::new(),
             key: None,
             watch: false,
+            first_focus: false,
             fade_out: None,
             on_click: None,
             on_context: None,
@@ -488,6 +497,12 @@ impl<M> El<M> {
         self.watch = true;
         self
     }
+    /// The first arrow press with nothing focused focuses this, when it shows (the game page's
+    /// Play, so a gamepad's A then starts the game).
+    pub fn first_focus(mut self) -> Self {
+        self.first_focus = true;
+        self
+    }
     /// Fades the element and its children to nothing towards its bottom, fully drawn down to
     /// `from` (a share of its height): the game page's art melts into whatever is behind it, Mica
     /// included.
@@ -500,7 +515,7 @@ impl<M> El<M> {
         self
     }
     pub fn on_click(mut self, message: M) -> Self {
-        self.on_click = Some(message);
+        self.on_click = Some(Box::new(message));
         self
     }
     pub fn on_drag(mut self, handler: impl Fn((f32, f32)) -> M + 'static) -> Self {
@@ -749,7 +764,7 @@ impl<M> El<M> {
     /// A text box's Enter.
     pub fn on_enter(mut self, message: M) -> Self {
         if let Kind::Edit { on_enter, .. } = &mut self.kind {
-            *on_enter = Some(message);
+            *on_enter = Some(Box::new(message));
         }
         self
     }
@@ -769,5 +784,20 @@ impl<M> El<M> {
     pub fn fill_width_by(mut self, weight: f32) -> Self {
         self.width = Size::Fill(weight);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An element holds no message inline: the app's is 312 bytes, and a page has hundreds of
+    /// elements (15,600 on a 1,900-game Library before only nearby rows were built).
+    #[test]
+    fn elements_stay_small() {
+        // 1,008 bytes when it held its click message inline; 400 since (2026-11-19).
+        let size = size_of::<El<crate::Message>>();
+        assert!(size <= 400, "an element is {size} bytes");
+        assert!(size_of::<Kind<crate::Message>>() <= 80);
     }
 }

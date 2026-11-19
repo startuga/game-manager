@@ -8,15 +8,20 @@
 //!   on its own.
 //! - **Its window**: a top-level window with the app's title whose process runs the same program.
 //!   A first start that hasn't shown its window yet is left as it is.
+//! - **A request for the first** (`--play <id>` from a desktop shortcut): instead of coming to the
+//!   front, the second start hands it over as `WM_COPYDATA` text marked `COPY_DATA_MARK`
+//!   (`hand_over`, waiting at most `HAND_OVER_WAIT` for a busy window), so the game, not Game
+//!   Manager, takes the front. The shell gives the text to the app (`App::command`).
 //! - When the mutex can't be made or the program's path is unknown, the app starts as before.
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use windows::Win32::{
-    CloseHandle, CreateMutexW, FindWindowExW, GetWindowThreadProcessId, HANDLE, HWND, IsIconic,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, SW_RESTORE,
-    SetForegroundWindow, ShowWindow,
+    COPYDATASTRUCT, CloseHandle, CreateMutexW, FindWindowExW, GetWindowThreadProcessId, HANDLE,
+    HWND, IsIconic, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    SMTO_ABORTIFHUNG, SW_RESTORE, SendMessageTimeoutW, SetForegroundWindow, ShowWindow,
+    WM_COPYDATA,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 
@@ -24,6 +29,10 @@ use windows::core::{HSTRING, PCWSTR, PWSTR};
 const ALREADY_EXISTS: i32 = 183;
 /// Longest mutex name Windows takes (`MAX_PATH`), with room for the namespace.
 const LONGEST_NAME: usize = 240;
+/// Marks `WM_COPYDATA` text from another start of Game Manager ("GMCD").
+pub const COPY_DATA_MARK: usize = 0x474D_4344;
+/// How long a second start waits for the first's window to take its request, in milliseconds.
+const HAND_OVER_WAIT: u32 = 5_000;
 
 /// The first start's claim, kept until the app ends.
 pub struct Instance {
@@ -44,8 +53,9 @@ impl Drop for Handle {
 }
 
 /// `Some` for the first start of this program in the session, which keeps it while it runs;
-/// `None` when one is running already: its window (titled `title`) was brought to the front.
-pub fn first(title: &str) -> Option<Instance> {
+/// `None` when one is running already: its window (titled `title`) was given `request`, or
+/// without one brought to the front.
+pub fn first(title: &str, request: Option<&str>) -> Option<Instance> {
     let Ok(program) = std::env::current_exe() else {
         return Some(Instance {
             _mutex: Handle(std::ptr::null_mut()),
@@ -61,7 +71,12 @@ pub fn first(title: &str) -> Option<Instance> {
     if handle.is_null() || !existed {
         return Some(instance);
     }
-    bring_forward(title, &program);
+    if let Some(window) = find_window(title, &program) {
+        match request {
+            Some(text) => hand_over(window, text),
+            None => bring_forward(window),
+        }
+    }
     None
 }
 
@@ -74,28 +89,72 @@ fn mutex_name(program: &Path) -> String {
     format!(r"Local\Game Manager {tail}")
 }
 
-/// Shows the window titled `title` that `program` runs, restored if minimized.
-fn bring_forward(title: &str, program: &Path) {
+/// The window titled `title` that `program` runs.
+fn find_window(title: &str, program: &Path) -> Option<HWND> {
     let title = HSTRING::from(title);
     let mut after: Option<HWND> = None;
     loop {
         // SAFETY: a null-terminated title; top-level windows of any class, after the last one.
         let window = unsafe { FindWindowExW(None, after, PCWSTR::null(), &title) };
         if window.is_null() {
-            return;
+            return None;
         }
         if program_of(window).is_some_and(|other| same_program(&other, program)) {
-            // SAFETY: a plain query of a top-level window.
-            if unsafe { IsIconic(window) }.as_bool() {
-                // SAFETY: restores that window.
-                let _ = unsafe { ShowWindow(window, SW_RESTORE) };
-            }
-            // SAFETY: this start came from the shell, so it may give the foreground away.
-            let _ = unsafe { SetForegroundWindow(window) };
-            return;
+            return Some(window);
         }
         after = Some(window);
     }
+}
+
+/// Shows the window, restored if minimized.
+fn bring_forward(window: HWND) {
+    // SAFETY: a plain query of a top-level window.
+    if unsafe { IsIconic(window) }.as_bool() {
+        // SAFETY: restores that window.
+        let _ = unsafe { ShowWindow(window, SW_RESTORE) };
+    }
+    // SAFETY: this start came from the shell, so it may give the foreground away.
+    let _ = unsafe { SetForegroundWindow(window) };
+}
+
+/// Gives the window `text` as `WM_COPYDATA` (UTF-16, marked `COPY_DATA_MARK`), waiting at most
+/// `HAND_OVER_WAIT` for it.
+fn hand_over(window: HWND, text: &str) {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let data = COPYDATASTRUCT {
+        dwData: COPY_DATA_MARK,
+        cbData: (units.len() * 2) as u32,
+        lpData: units.as_ptr().cast_mut().cast(),
+    };
+    // SAFETY: `data` and `units` outlive the call, which returns once the window has read them
+    // (or the wait is over); Windows copies them into the other process.
+    let _ = unsafe {
+        SendMessageTimeoutW(
+            window,
+            WM_COPYDATA as u32,
+            0,
+            std::ptr::from_ref(&data) as isize,
+            SMTO_ABORTIFHUNG as u32,
+            HAND_OVER_WAIT,
+            None,
+        )
+    };
+}
+
+/// The text another start handed over: `WM_COPYDATA`'s `lparam`, when it is marked as ours.
+///
+/// # Safety
+/// `lparam` must be the `COPYDATASTRUCT` pointer of a `WM_COPYDATA` being handled.
+pub unsafe fn handed_over(lparam: isize) -> Option<String> {
+    // SAFETY: the caller's contract: a live COPYDATASTRUCT while the message is handled.
+    let data = unsafe { &*(lparam as *const COPYDATASTRUCT) };
+    if data.dwData != COPY_DATA_MARK || data.lpData.is_null() {
+        return None;
+    }
+    let len = data.cbData as usize / 2;
+    // SAFETY: Windows copied `cbData` bytes there for this message; UTF-16 units are read.
+    let units = unsafe { std::slice::from_raw_parts(data.lpData.cast::<u16>(), len) };
+    Some(String::from_utf16_lossy(units))
 }
 
 /// The program the window's process runs.
@@ -147,12 +206,38 @@ mod tests {
     #[test]
     fn a_second_start_finds_the_first() {
         // This test's own program: the first claim makes the mutex, a second sees it.
-        let first_claim = first("Game Manager test window that does not exist").unwrap();
+        let first_claim = first("Game Manager test window that does not exist", None).unwrap();
         assert!(!first_claim._mutex.0.is_null());
-        assert!(first("Game Manager test window that does not exist").is_none());
+        assert!(first("Game Manager test window that does not exist", None).is_none());
+        assert!(
+            first(
+                "Game Manager test window that does not exist",
+                Some("play:x")
+            )
+            .is_none()
+        );
         drop(first_claim);
-        let again = first("Game Manager test window that does not exist");
+        let again = first("Game Manager test window that does not exist", None);
         assert!(again.is_some());
+    }
+
+    #[test]
+    fn handed_over_text_is_read_only_when_marked() {
+        let units: Vec<u16> = "play:steam:220".encode_utf16().collect();
+        let mut data = COPYDATASTRUCT {
+            dwData: COPY_DATA_MARK,
+            cbData: (units.len() * 2) as u32,
+            lpData: units.as_ptr().cast_mut().cast(),
+        };
+        let lparam = std::ptr::from_ref(&data) as isize;
+        // SAFETY: a live COPYDATASTRUCT, as a WM_COPYDATA would bring.
+        let text = unsafe { handed_over(lparam) };
+        assert_eq!(text.as_deref(), Some("play:steam:220"));
+        data.dwData = 1;
+        let lparam = std::ptr::from_ref(&data) as isize;
+        // SAFETY: as above.
+        let unmarked = unsafe { handed_over(lparam) };
+        assert_eq!(unmarked, None);
     }
 
     #[test]

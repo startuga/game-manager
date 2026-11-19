@@ -21,8 +21,8 @@ windows-window = { workspace = true }
 # combaseapi, objbase), pictures and clipping (d2d, dcommon; d3d11 to trim GPU memory), the swap
 # chain shown through DirectComposition so Mica shows behind it (dcomp, dxgi), UI Automation
 # (uiautomationcore, uiautomationcoreapi, uiautomationclient, oleauto), efficiency mode
-# (processthreadsapi, memoryapi), one window per copy (synchapi, minwinbase, handleapi) and the
-# start error (winerror). No GDI (wingdi): everything is drawn with Direct2D, and pictures are
+# (processthreadsapi, memoryapi), one window per copy (synchapi, minwinbase, handleapi), the
+# start error (winerror) and a gamepad (xinput). No GDI (wingdi): everything is drawn with Direct2D, and pictures are
 # decoded in pure Rust (`gm_core::picture`).
 windows = { workspace = true, features = [
     "winuser", "dwmapi", "shellapi", "uxtheme",
@@ -32,4 +32,5 @@ windows = { workspace = true, features = [
     "uiautomationcore", "uiautomationcoreapi", "uiautomationclient", "oleauto", "oaidl", "propidl", "shared", "winnt", "wtypes",
     "processthreadsapi", "memoryapi", "winbase", "synchapi", "minwinbase", "handleapi",
     "winerror", "windef", "minwindef",
+    "xinput",
 ] }

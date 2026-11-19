@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 pub(crate) const CLIENT_PROGRAMS: &[&str] = &["GalaxyClient.exe", "GalaxyClientService.exe"];
 
 const GAMES_KEY: &str = r"SOFTWARE\WOW6432Node\GOG.com\Games";
+/// The keys that list GOG's games, for `watch`.
+pub(crate) const WATCHED_KEYS: &[&str] = &[GAMES_KEY];
 const GALAXY_KEY: &str = r"SOFTWARE\WOW6432Node\GOG.com\GalaxyClient";
 
 /// The registry values the scanner uses from `GOG.com\Games\<gameId>`.

@@ -155,6 +155,53 @@ pub(crate) fn child_text<'a>(node: roxmltree::Node<'a, '_>, name: &str) -> Optio
         .filter(|t| !t.is_empty())
 }
 
+/// A file or folder name made from a game's name: without the characters Windows refuses in one,
+/// trailing dots and spaces, or the device names Windows keeps (`CON`, `COM1`…); `fallback` (its
+/// id) when nothing is left. For save backups' folders and desktop shortcuts.
+pub(crate) fn file_name_for(name: &str, fallback: &str) -> String {
+    let clean = |text: &str| -> String {
+        let kept: String = text
+            .chars()
+            .map(|c| {
+                if c < ' ' || r#"<>:"/\|?*"#.contains(c) {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let words = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut short: String = words.chars().take(80).collect();
+        while short.ends_with(['.', ' ']) {
+            short.pop();
+        }
+        short
+    };
+    let mut folder = clean(name);
+    if folder.is_empty() {
+        folder = clean(fallback);
+    }
+    if folder.is_empty() {
+        folder = "Game".to_owned();
+    }
+    let device = folder
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        device
+            .strip_prefix(prefix)
+            .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+    };
+    if ["CON", "PRN", "AUX", "NUL"].contains(&device.as_str()) || numbered("COM") || numbered("LPT")
+    {
+        folder.push_str(" (game)");
+    }
+    folder
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +242,19 @@ mod tests {
         );
         assert_eq!(base64_decode(b"+/8=").as_deref(), Some(&[0xFB, 0xFF][..]));
         assert_eq!(base64_decode(b"TW Fu"), None);
+    }
+
+    #[test]
+    fn file_names_are_ones_windows_takes() {
+        assert_eq!(file_name_for("Half-Life 2", "steam:220"), "Half-Life 2");
+        assert_eq!(
+            file_name_for("Ghostbusters: Spirits Unleashed", "x"),
+            "Ghostbusters Spirits Unleashed"
+        );
+        assert_eq!(file_name_for("What?.. ", "x"), "What");
+        assert_eq!(file_name_for("Con", "x"), "Con (game)");
+        assert_eq!(file_name_for("COM1.exe", "x"), "COM1.exe (game)");
+        assert_eq!(file_name_for("Combat", "x"), "Combat");
+        assert_eq!(file_name_for("???", "steam:220"), "steam 220");
     }
 }

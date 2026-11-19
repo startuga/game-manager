@@ -21,7 +21,11 @@
 //!
 //! Keys: Tab cycles focus within the top modal layer; Enter and Space activate the focused element
 //! unless a dialog or menu covers it; the arrows step a list's rows (`Role::ListItem`) or, while a
-//! menu is open, its items (`Role::MenuItem`, going round). `Key::Menu` sends the focused
+//! menu is open, its items (`Role::MenuItem`, going round). Elsewhere (the Library's tiles,
+//! `Role::GridItem`; buttons; tabs; past a list's end) they move focus to the nearest element
+//! that way (`spatial_next`) without picking it, for a keyboard or a gamepad (`shell::gamepad`);
+//! with nothing focused, the first press focuses what the view named (`El::first_focus`: the game
+//! page's Play), else a tile on screen, else a row, else anything. `Key::Menu` sends the focused
 //! element's `on_context` at its lower-left corner; after the next layout, `follow_menu` gives the
 //! menu's first item focus, and gives it back to that element once the menu has closed.
 //!
@@ -871,7 +875,10 @@ impl UiState {
                 let beneath = frame
                     .hit_beneath(hit.placed.id, x, y)
                     .and_then(|under| under.el.on_context.as_ref().map(|handler| handler((x, y))));
-                (true, beneath.or_else(|| hit.el.on_click.clone()))
+                (
+                    true,
+                    beneath.or_else(|| hit.el.on_click.as_deref().cloned()),
+                )
             }
             Button::Right => (
                 true,
@@ -888,7 +895,7 @@ impl UiState {
             self.dropdown_hover = *selected;
             return None;
         }
-        el.on_click.clone()
+        el.on_click.as_deref().cloned()
     }
 
     /// The wheel turned (`notches` up is positive). Returns whether a view scrolled.
@@ -1010,11 +1017,16 @@ impl UiState {
             // previous row.
             Key::Up | Key::Down | Key::Home | Key::End => match self.step_menu(frame, key) {
                 Some(result) => result,
-                None => self.step_list(frame, key),
+                // Past a list's end, or from what isn't a list's row: to the nearest that way.
+                None => match self.step_list(frame, key) {
+                    KeyResult::Unhandled if matches!(key, Key::Up | Key::Down) => {
+                        self.step_spatial(frame, key)
+                    }
+                    result => result,
+                },
             },
-            Key::Left | Key::Right | Key::PageUp | Key::PageDown | Key::Escape => {
-                KeyResult::Unhandled
-            }
+            Key::Left | Key::Right => self.step_spatial(frame, key),
+            Key::PageUp | Key::PageDown | Key::Escape => KeyResult::Unhandled,
         }
     }
 
@@ -1104,11 +1116,66 @@ impl UiState {
         self.scroll_into_view(frame, rows[next]);
         match frame
             .find(rows[next])
-            .and_then(|hit| hit.el.on_click.clone())
+            .and_then(|hit| hit.el.on_click.as_deref().cloned())
         {
             Some(message) => KeyResult::Message(message),
             None => KeyResult::Changed,
         }
+    }
+
+    /// Moves focus to the nearest focusable element in an arrow's direction, without picking it;
+    /// with nothing focused, to the first on screen: a tile, else a row, else anything.
+    fn step_spatial<M: Clone>(&mut self, frame: &Frame<M>, key: Key) -> KeyResult<M> {
+        let placed: Vec<(u64, Rect, Rect, Role, bool)> = frame
+            .focusables()
+            .into_iter()
+            .filter_map(|id| {
+                let hit = frame.find(id)?;
+                let el = hit.el;
+                Some((
+                    id,
+                    hit.placed.rect,
+                    hit.placed.clip,
+                    el.role,
+                    el.first_focus,
+                ))
+            })
+            .collect();
+        let from = self
+            .focus
+            .and_then(|focus| placed.iter().find(|(id, ..)| *id == focus));
+        let next = match from {
+            Some(&(id, rect, ..)) => {
+                let others: Vec<(u64, Rect)> = placed
+                    .iter()
+                    .filter(|(other, ..)| *other != id)
+                    .map(|&(other, rect, ..)| (other, rect))
+                    .collect();
+                spatial_next(rect, &others, key)
+            }
+            None => {
+                // What the view named first, else a tile, else a row, else anything on screen.
+                let shown = |wanted: &dyn Fn(Role, bool) -> bool| {
+                    placed
+                        .iter()
+                        .find(|(_, _, clip, role, first)| {
+                            clip.w > 0.0 && clip.h > 0.0 && wanted(*role, *first)
+                        })
+                        .map(|(id, ..)| *id)
+                };
+                shown(&|_, first| first)
+                    .or_else(|| shown(&|role, _| role == Role::GridItem))
+                    .or_else(|| shown(&|role, _| role == Role::ListItem))
+                    .or_else(|| shown(&|_, _| true))
+            }
+        };
+        let Some(next) = next else {
+            return KeyResult::Unhandled;
+        };
+        self.focus = Some(next);
+        self.focus_visible = true;
+        self.scroll_into_view(frame, next);
+        KeyResult::Changed
     }
 
     /// Scrolls the views around an element so all of it shows.
@@ -1266,10 +1333,59 @@ pub fn fill_for<M>(el: &El<M>, hover: bool, pressed: bool) -> Option<windows_can
     }
 }
 
+/// The element nearest `from` in an arrow's direction, among `candidates` (id and rectangle): one
+/// beyond `from`'s edge that way (a little overlap allowed), the least far along the arrow plus
+/// twice the least off to the side (so the tile straight below wins over a nearer one beside it),
+/// then the nearest by centres. ← and → keep to elements level with `from` (the middle of one
+/// within the other's height), so the end of a row goes nowhere rather than up a row; ↑ and ↓
+/// reach the next row however short it is. `None` when nothing lies that way.
+pub fn spatial_next(from: Rect, candidates: &[(u64, Rect)], key: Key) -> Option<u64> {
+    const OVERLAP: f32 = 1.0;
+    let gap = |a: (f32, f32), b: (f32, f32)| (b.0 - a.1).max(a.0 - b.1).max(0.0);
+    let centre = |r: &Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    let (fx, fy) = centre(&from);
+    let level = |r: &Rect| {
+        let (_, cy) = centre(r);
+        (r.y..=r.bottom()).contains(&fy) || (from.y..=from.bottom()).contains(&cy)
+    };
+    candidates
+        .iter()
+        .filter(|(_, r)| !matches!(key, Key::Left | Key::Right) || level(r))
+        .filter_map(|&(id, r)| {
+            let (along, across) = match key {
+                Key::Right => (
+                    r.x - from.right(),
+                    gap((from.y, from.bottom()), (r.y, r.bottom())),
+                ),
+                Key::Left => (
+                    from.x - r.right(),
+                    gap((from.y, from.bottom()), (r.y, r.bottom())),
+                ),
+                Key::Down => (
+                    r.y - from.bottom(),
+                    gap((from.x, from.right()), (r.x, r.right())),
+                ),
+                Key::Up => (
+                    from.y - r.bottom(),
+                    gap((from.x, from.right()), (r.x, r.right())),
+                ),
+                _ => return None,
+            };
+            if along < -OVERLAP {
+                return None;
+            }
+            let (cx, cy) = centre(&r);
+            let distance = (cx - fx).hypot(cy - fy);
+            Some((along.max(0.0) + 2.0 * across, distance, id))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)))
+        .map(|(_, _, id)| id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::el::{El, TextSpec, col, dropdown, layers, scroll, text};
+    use crate::ui::el::{El, TextSpec, col, dropdown, layers, row, scroll, text};
     use crate::ui::layout::{Layout, Measure};
 
     struct Fixed;
@@ -1299,6 +1415,73 @@ mod tests {
     ) -> Option<&'static str> {
         ui.pointer_down(frame, x, y, Button::Left);
         ui.pointer_up(frame, x, y, Button::Left).1
+    }
+
+    #[test]
+    fn arrows_go_to_the_nearest_element_that_way() {
+        // Two rows of 100 x 100 tiles, 10 apart, the second one short; a sidebar row at the left.
+        let tile = |column: f32, row: f32| Rect::new(column * 110.0, row * 110.0, 100.0, 100.0);
+        let tiles = [
+            (1, tile(0.0, 0.0)),
+            (2, tile(1.0, 0.0)),
+            (3, tile(2.0, 0.0)),
+            (4, tile(0.0, 1.0)),
+            (5, tile(1.0, 1.0)),
+        ];
+        let next = |from: u64, key| {
+            let rect = tiles.iter().find(|(id, _)| *id == from).unwrap().1;
+            let others: Vec<(u64, Rect)> = tiles
+                .iter()
+                .filter(|(id, _)| *id != from)
+                .copied()
+                .collect();
+            spatial_next(rect, &others, key)
+        };
+        assert_eq!(next(1, Key::Right), Some(2));
+        assert_eq!(next(1, Key::Down), Some(4));
+        assert_eq!(next(4, Key::Up), Some(1));
+        // The last of a row has nothing further right; under it, the short row's nearest.
+        assert_eq!(next(3, Key::Right), None);
+        assert_eq!(next(3, Key::Down), Some(5));
+        assert_eq!(next(4, Key::Left), None);
+        // From a sidebar row into the page: the tile level with it, not the nearer corner one.
+        let sidebar = Rect::new(-200.0, 150.0, 150.0, 30.0);
+        assert_eq!(spatial_next(sidebar, &tiles, Key::Right), Some(4));
+        assert_eq!(spatial_next(sidebar, &tiles, Key::Enter), None);
+    }
+
+    #[test]
+    fn arrows_move_among_tiles_without_picking_them() {
+        let tile = |name: &'static str| {
+            col(Vec::new())
+                .size(40.0, 40.0)
+                .on_click(name)
+                .role(Role::GridItem)
+        };
+        let root = col([
+            row([tile("a"), tile("b"), tile("c")]).gap(10.0),
+            row([tile("d"), tile("e")]).gap(10.0),
+        ])
+        .gap(10.0);
+        let mut ui = ui();
+        let frame = frame(root, &ui);
+        let focused = |ui: &UiState| {
+            frame
+                .find(ui.focus.unwrap())
+                .and_then(|hit| hit.el.on_click.as_deref().copied())
+        };
+        // Nothing focused: the first press focuses the first tile on screen.
+        assert_eq!(ui.key(&frame, Key::Right), KeyResult::Changed);
+        assert_eq!(focused(&ui), Some("a"));
+        assert!(ui.focus_visible);
+        assert_eq!(ui.key(&frame, Key::Right), KeyResult::Changed);
+        assert_eq!(ui.key(&frame, Key::Down), KeyResult::Changed);
+        assert_eq!(focused(&ui), Some("e"));
+        // Nothing further that way: focus stays.
+        assert_eq!(ui.key(&frame, Key::Right), KeyResult::Unhandled);
+        assert_eq!(focused(&ui), Some("e"));
+        // Enter picks it.
+        assert_eq!(ui.key(&frame, Key::Enter), KeyResult::Message("e"));
     }
 
     #[test]
@@ -1605,7 +1788,9 @@ mod tests {
         ui.focus = None;
         ui.key(&open, Key::Up);
         assert_eq!(ui.key(&open, Key::Enter), KeyResult::Message("hide"));
-        // With no menu, the arrows are a list's (none here).
+        // With no menu and nothing of this frame focused, ↓ focuses the first element on screen;
+        // it is the only one, so ↓ again goes nowhere.
+        assert_eq!(ui.key(&closed, Key::Down), KeyResult::Changed);
         assert_eq!(ui.key(&closed, Key::Down), KeyResult::Unhandled);
     }
 

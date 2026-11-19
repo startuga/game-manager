@@ -26,9 +26,10 @@
 //!
 //! The tabs: Overview (Game settings, the draft in `edit.rs`: its text values `field`s, Bitness
 //! and Graphics API `setting_row`s, then Reset to detected, Save and Cancel in the form's row;
-//! under it While playing, a game's display settings while it plays (`play_cards.rs`); beside them
+//! under it While playing (a game's display settings while it plays) and Save backups
+//! (`play_cards.rs`); beside them
 //! the game's details as `facts`: the store, its program and bitness, Last played, "Now" while it
-//! runs, and Play time), ReShade
+//! runs, Play time, and Size on disk), ReShade
 //! with its Shaders and Add-ons views (`mods_view.rs`, `reshade_panel.rs`), DXVK & LAA
 //! (`mods_view.rs`), Upscalers with its Versions section (`upscalers_view.rs`,
 //! `upscaler_versions.rs`), and NVIDIA overrides (`dlss_override_view.rs`), listed only once an
@@ -64,6 +65,20 @@ use crate::{CHOSEN, GameManager, GameTab, Message, Page, api_list, folder_toolti
 pub(crate) const PAGE_MAX_WIDTH: f32 = 1180.0;
 
 impl GameManager {
+    /// The game page's tabs, in the strip's order (a gamepad's LB and RB go round them).
+    pub(crate) fn shown_tabs(&self) -> Vec<GameTab> {
+        let mut tabs = vec![
+            GameTab::Overview,
+            GameTab::Reshade,
+            GameTab::Mods,
+            GameTab::Upscalers,
+        ];
+        if self.nvidia_tab_shown() {
+            tabs.push(GameTab::Nvidia);
+        }
+        tabs
+    }
+
     pub(crate) fn page_view(&self, window: &WindowInfo) -> El<Message> {
         match self.page {
             Page::Library => page("library", self.library_page(window)),
@@ -413,7 +428,8 @@ impl GameManager {
             },
         )
         .name(name.clone())
-        .enabled(!running);
+        .enabled(!running)
+        .first_focus();
         if running {
             play = play.tooltip(name);
         }
@@ -675,6 +691,12 @@ impl GameManager {
                 ),
                 ("Last played", last_played),
                 ("Play time", play_time),
+                (
+                    "Size on disk",
+                    self.sizes
+                        .get(&game.id)
+                        .map_or_default(|&bytes| gm_core::pc::format_bytes(bytes)),
+                ),
             ]),
         ])
     }

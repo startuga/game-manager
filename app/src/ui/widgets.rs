@@ -666,10 +666,36 @@ pub fn toggle<M>(label: impl Into<String>, on: bool, message: M) -> El<M> {
 
 /// A red bar with what went wrong, and ✕ to dismiss it.
 pub fn error_bar<M>(title: &str, message: &str, on_close: M) -> El<M> {
+    message_bar(
+        (theme::glyph::ERROR, theme::critical()),
+        theme::error_fill(),
+        title,
+        message,
+        on_close,
+    )
+}
+
+/// A bar under the title bar saying something went as asked (a shortcut made where it says), with
+/// a close button: the error bar's layout in the accent's tint.
+pub fn notice_bar<M>(title: &str, message: &str, on_close: M) -> El<M> {
+    message_bar(
+        (theme::glyph::INFO, theme::accent()),
+        theme::wash(theme::accent()),
+        title,
+        message,
+        on_close,
+    )
+}
+
+fn message_bar<M>(
+    (icon, tint): (&str, ColorF),
+    fill: ColorF,
+    title: &str,
+    message: &str,
+    on_close: M,
+) -> El<M> {
     row([
-        glyph(theme::glyph::ERROR, 16.0)
-            .color(theme::critical())
-            .valign(Align::Start),
+        glyph(icon, 16.0).color(tint).valign(Align::Start),
         col([
             text(title).bold(),
             text(message).wrap().color(theme::text_secondary()),
@@ -682,7 +708,7 @@ pub fn error_bar<M>(title: &str, message: &str, on_close: M) -> El<M> {
     ])
     .gap(12.0)
     .pad_xy(14.0, 10.0)
-    .bg(theme::error_fill())
+    .bg(fill)
     .radius(6.0)
 }
 

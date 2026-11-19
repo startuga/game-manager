@@ -38,6 +38,7 @@ mod security;
 mod seven_zip;
 mod shortcut;
 mod signature;
+pub mod sizes;
 pub mod snapshot;
 pub mod steam;
 pub mod steamgriddb;
@@ -47,12 +48,14 @@ pub mod uninstall;
 mod unreal;
 pub mod vdf;
 mod version_info;
+pub mod watch;
 mod whole_file;
 pub mod xbox;
 
 pub use elevate::elevated_work;
 pub use error::{Error, Result, ScanError, ScanPart};
 pub use launcher::{launch, open_folder};
+pub use shortcut::{PLAY_ARG, create_desktop_shortcut, play_args};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

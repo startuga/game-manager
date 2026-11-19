@@ -215,6 +215,7 @@ impl GameManager {
             mods: &self.mods,
             played: &self.play.played,
             now: library::now(),
+            sizes: &self.sizes,
         }
     }
 

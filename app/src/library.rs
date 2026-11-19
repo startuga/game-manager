@@ -25,7 +25,7 @@
 use gm_core::mods::ModsFile;
 use gm_core::play::Played;
 use gm_core::{Game, Store};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub use gm_core::config::{Collection, LibraryView, Sort};
 
@@ -40,12 +40,18 @@ pub struct Facts<'a> {
     pub played: &'a HashMap<String, Played>,
     /// Now, in seconds since 1970.
     pub now: u64,
+    /// Each game's size on disk in bytes, once measured (`gm_core::sizes`).
+    pub sizes: &'a HashMap<String, u64>,
 }
 
 impl Facts<'_> {
     /// When the game was last played, if ever.
     fn last_played(&self, game: &Game) -> Option<u64> {
         self.played.get(&game.id).and_then(|play| play.last_played)
+    }
+
+    fn size(&self, game: &Game) -> Option<u64> {
+        self.sizes.get(&game.id).copied()
     }
 }
 
@@ -117,15 +123,47 @@ pub fn sort_label(sort: Sort) -> &'static str {
         Sort::NameDescending => "Name (Z–A)",
         Sort::RecentlyInstalled => "Recently installed",
         Sort::RecentlyPlayed => "Recently played",
+        Sort::Size => "Largest first",
     }
 }
 
+/// From how many games shown the sidebar and the Library build only the rows near the screen.
+pub const VIRTUAL_FROM: usize = 200;
+
+/// Which of a list's rows to build, by their keys in order. A short list (`long` false) builds
+/// them all; a long one those the shell reported near the screen (`near`: on it or within one
+/// window height), or its first `first` while none of its rows is (it has just come into view).
+/// A row not built is a placeholder of its height with its key, so it is reported when it comes
+/// near, and the list's height and scroll position stay as they are.
+pub fn rows_to_build(
+    keys: &[String],
+    near: &HashSet<String>,
+    long: bool,
+    first: usize,
+) -> Vec<bool> {
+    if !long {
+        return vec![true; keys.len()];
+    }
+    let seen = keys.iter().any(|key| near.contains(key));
+    keys.iter()
+        .enumerate()
+        .map(|(index, key)| {
+            if seen {
+                near.contains(key)
+            } else {
+                index < first
+            }
+        })
+        .collect()
+}
+
 /// Every sort, in the flyout's order.
-pub const SORTS: [Sort; 4] = [
+pub const SORTS: [Sort; 5] = [
     Sort::Name,
     Sort::NameDescending,
     Sort::RecentlyInstalled,
     Sort::RecentlyPlayed,
+    Sort::Size,
 ];
 
 /// Whether a filter or a collection narrows the lists (the sort doesn't).
@@ -270,6 +308,12 @@ fn sort(games: &[Game], section: &mut [usize], order: Sort, facts: Facts) {
         Sort::RecentlyPlayed => {
             section.sort_unstable_by_key(|&index| {
                 (std::cmp::Reverse(facts.last_played(&games[index])), index)
+            });
+        }
+        // The largest first; games not measured yet after those, by name.
+        Sort::Size => {
+            section.sort_unstable_by_key(|&index| {
+                (std::cmp::Reverse(facts.size(&games[index])), index)
             });
         }
     }
@@ -554,12 +598,16 @@ mod tests {
     /// No game played.
     static NO_PLAY: std::sync::LazyLock<HashMap<String, Played>> =
         std::sync::LazyLock::new(HashMap::new);
+    /// No game measured.
+    static NO_SIZES: std::sync::LazyLock<HashMap<String, u64>> =
+        std::sync::LazyLock::new(HashMap::new);
 
     fn facts(mods: &ModsFile) -> Facts<'_> {
         Facts {
             mods,
             played: &NO_PLAY,
             now: NOW,
+            sizes: &NO_SIZES,
         }
     }
 
@@ -769,8 +817,10 @@ mod tests {
             (games[0].id.clone(), played(NOW - DAY)),
             (games[4].id.clone(), played(NOW - 5 * DAY)),
         ]);
+        let sizes = HashMap::from([(games[1].id.clone(), 5_000), (games[2].id.clone(), 90_000)]);
         let facts = Facts {
             played: &plays,
+            sizes: &sizes,
             ..facts(&mods)
         };
         let lists = |sort, group_by_store| -> Vec<(SectionKind, Vec<usize>)> {
@@ -796,6 +846,7 @@ mod tests {
             (Sort::NameDescending, vec![4, 0]),
             (Sort::RecentlyInstalled, vec![4, 0]),
             (Sort::RecentlyPlayed, vec![0, 4]),
+            (Sort::Size, vec![0, 4]),
         ] {
             let mut expected = vec![pinned.clone(), steam(steam_games)];
             expected.extend(others.clone());
@@ -811,6 +862,8 @@ mod tests {
         );
         // The latest played first, the games never played after them by name.
         assert_eq!(lists(Sort::RecentlyPlayed, false), flat(vec![0, 4, 1, 2]));
+        // The largest first, the games not measured after them by name.
+        assert_eq!(lists(Sort::Size, false), flat(vec![2, 1, 0, 4]));
         // Only what is shown, and no empty sections.
         let view = LibraryView::default();
         assert_eq!(
@@ -1036,5 +1089,29 @@ mod tests {
             Some("steam:244210")
         );
         assert_eq!(keep_selection(&[], Some("steam:244210")), None);
+    }
+
+    #[test]
+    fn long_lists_build_only_the_rows_near_the_screen() {
+        let keys: Vec<String> = (0..10).map(|n| format!("game:{n}")).collect();
+        let near: HashSet<String> = ["game:4", "game:5", "other:1"]
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect();
+        // A short list: every row.
+        assert!(
+            rows_to_build(&keys, &near, false, 2)
+                .iter()
+                .all(|&built| built)
+        );
+        // A long one: the rows near the screen.
+        let built = rows_to_build(&keys, &near, true, 2);
+        let rows: Vec<usize> = (0..10).filter(|&n| built[n]).collect();
+        assert_eq!(rows, [4, 5]);
+        // None of its rows reported yet (it has just come into view): its first ones.
+        let elsewhere: HashSet<String> = ["other:1".to_owned()].into();
+        let built = rows_to_build(&keys, &elsewhere, true, 3);
+        let rows: Vec<usize> = (0..10).filter(|&n| built[n]).collect();
+        assert_eq!(rows, [0, 1, 2]);
     }
 }

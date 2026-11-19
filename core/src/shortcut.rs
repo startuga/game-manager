@@ -1,8 +1,14 @@
-//! Reads Windows shortcuts (`.lnk`) with the Shell's own `ShellLink` object: the program a
-//! shortcut starts, its arguments and its icon.
+//! Windows shortcuts (`.lnk`), through the Shell's own `ShellLink` object.
+//!
+//! - **Reading** (`read`): the program a shortcut starts, its arguments and its icon, for a game
+//!   added from a shortcut.
+//! - **A game's desktop shortcut** (`create_desktop_shortcut`): `<game name>.lnk` on the user's
+//!   desktop, starting this `app.exe` with `--play "<game id>"` (`PLAY_ARG`), so the game starts
+//!   through Game Manager (its display settings while playing, its play time) and shows the game's
+//!   icon. A file already there is never replaced (`Error::InTheWay`).
 
 use crate::com::ComGuard;
-use crate::{Error, IconRef, Result};
+use crate::{Error, Game, IconRef, Result, game_data, text};
 use std::path::{Path, PathBuf};
 use windows::Win32::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, IShellLinkW, STGM_READ, ShellLink,
@@ -11,6 +17,92 @@ use windows::core::{HSTRING, Interface, PWSTR};
 
 /// Longest path or argument string read from a shortcut, in UTF-16 units.
 const TEXT_UNITS: usize = 32_768;
+
+/// The argument that makes `app.exe` start a game, its id after it, as a desktop shortcut does.
+pub const PLAY_ARG: &str = "--play";
+
+/// Puts a shortcut on the desktop that starts `game` through `app` (`--play "<id>"`), named
+/// after the game and showing its icon; returns where it went. Blocking (COM, the disk).
+pub fn create_desktop_shortcut(game: &Game, app: &Path) -> Result<PathBuf> {
+    let desktop = game_data::desktop().ok_or(Error::NoDesktopFolder)?;
+    let link = desktop.join(format!("{}.lnk", text::file_name_for(&game.name, &game.id)));
+    let icon = game.icon.clone().or_else(|| {
+        game.program.as_ref().map(|program| IconRef {
+            path: program.clone(),
+            index: 0,
+        })
+    });
+    create(&Link {
+        file: &link,
+        target: app,
+        args: &play_args(&game.id),
+        icon: icon.as_ref(),
+        working_dir: app.parent(),
+        description: &format!("Play {} through Game Manager", game.name),
+    })?;
+    Ok(link)
+}
+
+/// The arguments a game's shortcut passes: `--play "<id>"`.
+pub fn play_args(id: &str) -> String {
+    format!("{PLAY_ARG} \"{id}\"")
+}
+
+/// A shortcut to make.
+struct Link<'a> {
+    file: &'a Path,
+    target: &'a Path,
+    args: &'a str,
+    icon: Option<&'a IconRef>,
+    working_dir: Option<&'a Path>,
+    description: &'a str,
+}
+
+/// Makes a `.lnk`; a file already at its place is never replaced.
+fn create(link: &Link) -> Result<()> {
+    if link.file.exists() {
+        return Err(Error::InTheWay(link.file.to_path_buf()));
+    }
+    let error = |source| Error::Windows {
+        context: link.file.display().to_string(),
+        source,
+    };
+    let _com = ComGuard::new();
+    // SAFETY: COM is initialized on this thread while `_com` lives, which outlasts `shell`.
+    let shell: IShellLinkW =
+        unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER as u32) }
+            .map_err(error)?;
+    // SAFETY: a null-terminated wide string that outlives the call.
+    unsafe { shell.SetPath(&HSTRING::from(link.target.as_os_str())) }
+        .ok()
+        .map_err(error)?;
+    // SAFETY: as above.
+    unsafe { shell.SetArguments(&HSTRING::from(link.args)) }
+        .ok()
+        .map_err(error)?;
+    // SAFETY: as above.
+    unsafe { shell.SetDescription(&HSTRING::from(link.description)) }
+        .ok()
+        .map_err(error)?;
+    if let Some(folder) = link.working_dir {
+        // SAFETY: as above.
+        unsafe { shell.SetWorkingDirectory(&HSTRING::from(folder.as_os_str())) }
+            .ok()
+            .map_err(error)?;
+    }
+    if let Some(icon) = link.icon {
+        // SAFETY: as above.
+        unsafe { shell.SetIconLocation(&HSTRING::from(icon.path.as_os_str()), icon.index) }
+            .ok()
+            .map_err(error)?;
+    }
+    let file = HSTRING::from(link.file.as_os_str());
+    let persist = shell.cast::<IPersistFile>().map_err(error)?;
+    // SAFETY: a null-terminated wide string that outlives the call.
+    unsafe { persist.Save(Some(file.as_ptr()), true) }
+        .ok()
+        .map_err(error)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Shortcut {
@@ -192,6 +284,36 @@ pub(crate) mod tests {
         // The target's own first icon is no icon of the shortcut's own.
         write(&lnk, &target, "", Some((&target.to_string_lossy(), 0)));
         assert_eq!(read(&lnk).unwrap().unwrap().icon, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn makes_a_shortcut_that_reads_back_and_never_replaces_one() {
+        let dir = temp_dir("create");
+        let app = dir.join("app.exe");
+        std::fs::write(&app, b"MZ").unwrap();
+        let icon = IconRef {
+            path: dir.join("game.exe"),
+            index: 2,
+        };
+        let file = dir.join("Half-Life 2.lnk");
+        let link = Link {
+            file: &file,
+            target: &app,
+            args: &play_args("steam:220"),
+            icon: Some(&icon),
+            working_dir: Some(&dir),
+            description: "Play Half-Life 2 through Game Manager",
+        };
+        create(&link).unwrap();
+        let shortcut = read(&file).unwrap().unwrap();
+        assert_eq!(shortcut.target, app);
+        assert_eq!(shortcut.args, r#"--play "steam:220""#);
+        assert_eq!(shortcut.icon.as_ref(), Some(&icon));
+        // One there already, the user's or an earlier one: left as it is.
+        let before = std::fs::read(&file).unwrap();
+        assert!(matches!(create(&link), Err(Error::InTheWay(_))));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

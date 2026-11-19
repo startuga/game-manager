@@ -14,8 +14,8 @@ use crate::shell::{CAPTION_CLOSE, CAPTION_DRAG, CAPTION_MAX, CAPTION_MIN, Window
 use crate::ui::el::{Align, El, Font, TextAlign, col, glyph, layers, row, scroll, spacer, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, button, danger_button, error_bar, field, hint, icon_button, resize_grip,
-    text_box, working,
+    accent_button, button, danger_button, error_bar, field, hint, icon_button, notice_bar,
+    resize_grip, text_box, working,
 };
 use crate::{DialogResult, GameManager, Message};
 
@@ -34,6 +34,12 @@ impl GameManager {
                     Message::DismissCrash,
                 )])
                 .pad_xy(theme::space::M, theme::space::S),
+            );
+        }
+        if let Some((title, message)) = &self.notice {
+            page.push(
+                col([notice_bar(title, message, Message::DismissNotice)])
+                    .pad_xy(theme::space::M, theme::space::S),
             );
         }
         if let Some(error) = &self.error {

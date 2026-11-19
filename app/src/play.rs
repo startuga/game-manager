@@ -78,6 +78,8 @@ pub(crate) struct PlayTracking {
     save_failed: bool,
     /// Each game's display settings while it plays, by game id.
     pub display_choices: BTreeMap<String, DisplayChoice>,
+    /// They were read (or couldn't be): a desktop shortcut's game waits for them.
+    pub choices_ready: bool,
     /// The displays the While playing card lists: `None` until read (again).
     pub displays: Option<Result<Vec<Display>, String>>,
     displays_pending: bool,
@@ -298,10 +300,15 @@ impl GameManager {
                 self.play.steam = steam;
                 self.play.remerge();
             }
-            PlayMessage::ChoicesLoaded(Ok(choices)) => self.play.display_choices = choices,
-            PlayMessage::ChoicesLoaded(Err(error)) | PlayMessage::ChoiceSaved(Err(error)) => {
+            PlayMessage::ChoicesLoaded(Ok(choices)) => {
+                self.play.display_choices = choices;
+                self.play.choices_ready = true;
+            }
+            PlayMessage::ChoicesLoaded(Err(error)) => {
+                self.play.choices_ready = true;
                 self.error = Some(error);
             }
+            PlayMessage::ChoiceSaved(Err(error)) => self.error = Some(error),
             PlayMessage::ChoiceSaved(Ok(())) => context.quiet(),
             PlayMessage::DisplaysRead(displays) => {
                 self.play.displays_pending = false;

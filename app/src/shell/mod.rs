@@ -23,6 +23,10 @@
 //! - **No child windows**: text boxes are drawn like everything else, so nothing but Direct2D
 //!   paints the client area.
 //! - **Files dropped** on the window (`WM_DROPFILES`) go to `App::drop_files`.
+//! - **Another start's request** (`WM_COPYDATA` marked by `instance::COPY_DATA_MARK`, a desktop
+//!   shortcut's `play:<game id>`) goes to `App::command`. `Options::minimized` opens the window
+//!   minimized and not in front (a shortcut's game takes the front); `WindowCommand::Show`
+//!   brings it back.
 //! - **Near the screen**: after each layout the shell works out which watched elements
 //!   (`El::watch`) are on the screen or within one window height of it (`input::near_keys`).
 //!   When that set changes it goes to `App::near_screen`, and the app's answer is laid out before
@@ -35,7 +39,9 @@
 //!   (`window::set_look` says when). Windows' own colours and light or dark mode changing
 //!   (`WM_SETTINGCHANGE` naming "ImmersiveColorSet", `WM_DWMCOLORIZATIONCOLORCHANGED`) go to
 //!   `App::look_changed`.
-//! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`).
+//! - **Efficiency mode** follows `WM_ACTIVATEAPP` (`efficiency.rs`), and so does the gamepad
+//!   (`gamepad.rs`): read from `GAMEPAD_TIMER` only while the window is in front, its directions
+//!   and A, B, Y going through `key` as the keyboard's do, its other buttons to `App::gamepad`.
 //! - **Animated pictures** (`ui::animation`) play while the window is in front and Windows shows
 //!   animations (`window::animations_shown`, followed through `WM_SETTINGCHANGE`). The window is
 //!   drawn when a frame is due (`wait_for_frame`): a timer (`ANIMATION_TIMER`) wakes the loop
@@ -49,6 +55,7 @@
 pub mod ctx;
 pub mod dialogs;
 pub mod efficiency;
+pub mod gamepad;
 pub mod instance;
 mod text_input;
 pub mod window;
@@ -66,16 +73,17 @@ use windows::Win32::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DragAcceptFiles, DragFinish, DragQueryFileW,
     DwmFlush, GetDpiForSystem, GetKeyState, HDROP, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON,
     HTMINBUTTON, IDC_IBEAM, IDC_SIZEWE, KillTimer, LoadCursorW, ReleaseCapture, SIZE_MINIMIZED,
-    SPI_SETCLIENTAREAANIMATION, SW_SHOWNORMAL, SetCapture, SetCursor, SetFocus,
+    SPI_SETCLIENTAREAANIMATION, SW_SHOWMINNOACTIVE, SW_SHOWNORMAL, SetCapture, SetCursor, SetFocus,
     SetProcessDpiAwarenessContext, SetTimer, ShowWindow, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT,
     TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR,
     VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, WM_ACTIVATEAPP, WM_CHAR,
-    WM_CONTEXTMENU, WM_DPICHANGED, WM_DROPFILES, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_GETOBJECT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT,
-    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS,
-    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
+    WM_CONTEXTMENU, WM_COPYDATA, WM_DPICHANGED, WM_DROPFILES, WM_DWMCOLORIZATIONCOLORCHANGED,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+    WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER,
+    WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PWSTR;
 use windows_window::{Window, run_with};
@@ -106,6 +114,8 @@ const TRIM_TIMER: usize = 3;
 const TRIM_DELAY_MS: u32 = 2000;
 /// Fires when an animation's next frame is due (`render::Drawn::next_frame`).
 const ANIMATION_TIMER: usize = 4;
+/// Reads the gamepad while the window is in front (`gamepad`).
+const GAMEPAD_TIMER: usize = 5;
 /// Within this of an animation's next frame, the loop waits for the display's refreshes instead
 /// of a timer (a timer is only good to about 16 ms).
 const SOON: Duration = Duration::from_millis(20);
@@ -154,6 +164,16 @@ pub trait App: 'static {
     fn look_changed(&self) -> Option<Self::Message> {
         None
     }
+    /// A gamepad button that is the app's to act on (the previous or next tab, Play, Library);
+    /// the pad's other buttons and its directions arrive as keys (`gamepad`).
+    fn gamepad(&self, _button: gamepad::PadButton) -> Option<Self::Message> {
+        None
+    }
+    /// Text another start of the app handed over (`instance`): `play:<game id>` from a desktop
+    /// shortcut; `None` when it isn't a request the app takes.
+    fn command(&self, _text: &str) -> Option<Self::Message> {
+        None
+    }
 }
 
 pub struct Options {
@@ -163,6 +183,8 @@ pub struct Options {
     pub min_size: (f32, f32),
     /// How the window looks from its first frame (the app sets its palette before `run`).
     pub look: window::Look,
+    /// Opens minimized and not in front (started by a desktop shortcut to play a game).
+    pub minimized: bool,
 }
 
 type State<A> = Rc<RefCell<Option<Shell<A>>>>;
@@ -219,8 +241,13 @@ pub fn run<A: App>(
     let mut shell = Shell::new(app, Rc::clone(&ctx), receiver, handle);
     shell.transparent = transparent;
     *state.borrow_mut() = Some(shell);
+    let show = if options.minimized {
+        SW_SHOWMINNOACTIVE
+    } else {
+        SW_SHOWNORMAL
+    };
     // SAFETY: shows our window.
-    let _ = unsafe { ShowWindow(hwnd(handle), SW_SHOWNORMAL) };
+    let _ = unsafe { ShowWindow(hwnd(handle), show) };
 
     let result = run_with(|| {
         // Effects run with nothing borrowed: a dialog's own loop reaches the window normally.
@@ -307,6 +334,8 @@ struct Shell<A: App> {
     /// The window is in front (`WM_ACTIVATEAPP`), and Windows shows animations: animated
     /// pictures play.
     in_front: bool,
+    /// The gamepad, read while the window is in front.
+    gamepad: gamepad::Gamepad,
     animations_shown: bool,
     /// When an animation's next frame is due.
     frame_due: Option<Instant>,
@@ -373,6 +402,7 @@ impl<A: App> Shell<A> {
             redraw: true,
             minimized: false,
             in_front: true,
+            gamepad: gamepad::Gamepad::default(),
             animations_shown: window::animations_shown(),
             frame_due: None,
             tracking: false,
@@ -385,6 +415,20 @@ impl<A: App> Shell<A> {
             later: HashMap::new(),
             transparent: false,
             next_later: FIRST_LATER_TIMER,
+        }
+    }
+
+    /// Reads the gamepad while the window is in front, as often as `Gamepad::interval` says;
+    /// stops, forgetting what was held, when it isn't.
+    fn follow_gamepad(&mut self) {
+        if self.in_front {
+            let ms = u32::try_from(self.gamepad.interval().as_millis()).unwrap_or(u32::MAX);
+            // SAFETY: our own window's timer, set again with the new interval.
+            let _ = unsafe { SetTimer(Some(hwnd(self.hwnd)), GAMEPAD_TIMER, ms, None) };
+        } else {
+            // SAFETY: stops our own timer.
+            let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), GAMEPAD_TIMER) };
+            self.gamepad.forget();
         }
     }
 
@@ -627,6 +671,7 @@ impl<A: App> Shell<A> {
                 efficiency::set(wparam == 0);
                 self.in_front = wparam != 0;
                 self.follow_play();
+                self.follow_gamepad();
                 None
             }
             WM_SETTINGCHANGE if wparam == SPI_SETCLIENTAREAANIMATION as usize => {
@@ -730,6 +775,23 @@ impl<A: App> Shell<A> {
                 let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), ANIMATION_TIMER) };
                 Some(0)
             }
+            WM_TIMER if wparam == GAMEPAD_TIMER => {
+                let before = self.gamepad.interval();
+                for press in self.gamepad.poll(Instant::now()) {
+                    match press {
+                        gamepad::Press::Key(key) => self.key(key),
+                        gamepad::Press::Button(button) => {
+                            let message = self.app.gamepad(button);
+                            self.dispatch_some(message);
+                        }
+                    }
+                }
+                // Found or lost a pad: polled faster or slower from now on.
+                if self.gamepad.interval() != before {
+                    self.follow_gamepad();
+                }
+                Some(0)
+            }
             WM_TIMER if wparam == TRIM_TIMER => {
                 // SAFETY: stops our own timer.
                 let _ = unsafe { KillTimer(Some(hwnd(self.hwnd)), TRIM_TIMER) };
@@ -784,6 +846,15 @@ impl<A: App> Shell<A> {
             WM_IME_ENDCOMPOSITION => {
                 self.ime_end();
                 Some(0)
+            }
+            // Another start's request (`instance::hand_over`).
+            WM_COPYDATA => {
+                // SAFETY: `lparam` is this WM_COPYDATA's COPYDATASTRUCT, live while it is handled.
+                let text = unsafe { instance::handed_over(lparam) };
+                let message = text.and_then(|text| self.app.command(&text));
+                let taken = message.is_some();
+                self.dispatch_some(message);
+                Some(isize::from(taken))
             }
             WM_DROPFILES => {
                 let paths = dropped_paths(wparam);
@@ -1003,7 +1074,11 @@ impl<A: App> Shell<A> {
         };
         match action {
             Action::Invoke => {
-                let message = hit.el.enabled.then(|| hit.el.on_click.clone()).flatten();
+                let message = hit
+                    .el
+                    .enabled
+                    .then(|| hit.el.on_click.as_deref().cloned())
+                    .flatten();
                 self.dispatch_some(message);
             }
             // Like the keyboard, these scroll the element into view first.

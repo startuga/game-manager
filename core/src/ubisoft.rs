@@ -44,6 +44,8 @@ use windows_registry::LOCAL_MACHINE;
 pub(crate) const CLIENT_PROGRAMS: &[&str] = &["upc.exe", "UbisoftConnect.exe", "UplayWebCore.exe"];
 
 const LAUNCHER_KEY: &str = r"SOFTWARE\WOW6432Node\Ubisoft\Launcher";
+/// The key that lists Ubisoft Connect's games, for `watch`.
+pub(crate) const WATCHED_KEYS: &[&str] = &[r"SOFTWARE\WOW6432Node\Ubisoft\Launcher\Installs"];
 /// The launcher's own files inside a game's folder: never the game's program.
 const INSTALLER_FOLDER: &str = "installer_resources";
 

@@ -96,6 +96,10 @@ these:
   with ReShade" (Deploy in Shaders, Apply in Add-ons) reaches the user's real games too.
 - **The game menu's Uninstall…** hands the game to its store for real: open its dialog and
   Cancel.
+- **Create desktop shortcut** writes to the user's real Desktop: remove only the shortcut the
+  check made (its target is `target\agent\debug\app.exe`).
+- **Two copies share the user's files**: with the user's own window open, both count the same
+  play sessions; keep checks short and take out only the throwaway's entries.
 - **What the user tries**: drag and drop, the UAC prompt (ReShade's Vulkan layer), Shift+F10, and
   DXVK when its cache holds an older layout. There is no input desktop here.
 

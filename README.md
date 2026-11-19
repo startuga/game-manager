@@ -18,8 +18,8 @@ in `%APPDATA%\Game Manager\custom-games.json`.
 - **Sort and filters** (the button beside the search) opens a flyout that the sidebar and
   Library both follow. It stays open while you pick; a click outside or **Escape** closes it.
   - **Sort**: by name A–Z or Z–A, the most recently installed first (the date of the game's
-    folder), or the most recently played first. **Group by store** off shows one list; pinned
-    games stay on top.
+    folder), the most recently played first, or the largest first (size on disk). **Group by
+    store** off shows one list; pinned games stay on top.
   - **Smart filters**: tick one store or several, and **Hidden games** to see the games you
     hid from the list.
   - **Smart Collections** fill themselves: **Pinned**, **Modded** (anything Game Manager set
@@ -61,18 +61,32 @@ in `%APPDATA%\Game Manager\custom-games.json`.
   - **Rename…** (leave it empty for the store's name), **Artwork…**, **Hide from the list**
     (Hidden games in Sort and filters shows it again, with **Show in the list**). The
     names, pins and hidden games are saved in `game-settings.json`.
+  - **Create desktop shortcut**: `<game>.lnk` on your desktop, with the game's icon. It starts
+    the game through Game Manager (`app.exe --play "<game id>"`), so its display settings while
+    playing apply and its play time counts: Game Manager opens minimized, or hands the game to the
+    window already open. A file of that name on the desktop is never replaced.
   - **Uninstall…** hands the game to Steam or Ubisoft Connect, to its own uninstaller (GOG, the
     EA app, others with a Windows Uninstall entry), or to the Epic Games Launcher, GOG Galaxy or
     Windows' Installed apps to uninstall it there. They ask before anything is removed. Game
     Manager deletes nothing itself. Mods it set up outside the game's folder (ReShade's Vulkan
     layer entry, NVIDIA profile settings) stay. **Rescan** afterwards takes the game off the list.
   - **Remove from Game Manager**, for games added by hand (their files stay).
+- **Keyboard and gamepad**, for the couch: the arrow keys move between the Library's tiles, the
+  sidebar's rows (↑↓ there open the game, as before) and the page's buttons and tabs; **Enter**
+  opens or presses what has focus, and on a game's page the first arrow goes to **Play**. An Xbox
+  controller (or one that acts like it) does the same while Game Manager is in front: the d-pad or
+  left stick moves, **A** presses, **B** is Escape, **Y** opens the game's menu, **LB**/**RB**
+  switch a game's tabs, **Start** plays the game whose page shows and **View** goes to Library.
+  A game in front keeps the controller to itself.
 - **Search** (**Ctrl+F** from anywhere): case, accents, ™ and ® and punctuation don't matter, and
   the words can come in any order ("cry far 3"). It also finds a name typed without spaces
   ("halflife"), by its initials ("gta", "tw3"), and by its program's file name ("ffxv").
   - While searching, every store shows open and a line says how many games match.
   - **Enter** opens the first match; **Escape** or ✕ clears the search.
-- **The title bar** has **Rescan** (⟳), which looks for games again.
+- **The title bar** has **Rescan** (⟳), which looks for games again. Games installed or removed
+  in Steam, the Epic Games Launcher, GOG Galaxy, the EA app or Ubisoft Connect show up on their
+  own: Game Manager watches where those stores list their games and looks again about 10 seconds
+  after a change (at most once a minute). Xbox games and games added by hand need Rescan.
 - **A game's page**: a band of the game's art across the top (its wide picture, else its cover or
   icon, blurred) with its logo (or icon and name), install folder and chips for its store,
   bitness and graphics APIs; **Play** (and the store's other launches), **Folder**,
@@ -96,7 +110,8 @@ program (for its bitness, Folder and mods). Its **Bitness** and **Graphics API**
 game's 32 or 64-bit build and the one API it runs on, when detection got them wrong or found
 several APIs: mods such as ReShade and DXVK need exactly these. Edits are saved in
 `%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them. **Details** shows
-the store, the game's program and its bitness, and when it was last played and for how long.
+the store, the game's program and its bitness, when it was last played and for how long, and
+its size on disk (its folder measured in the background, again after a day).
 
 **Play tracking**: while Game Manager is open it notices every game you play, whatever started
 it (Play, the store, a shortcut), from the game's program running; Play then reads **Running**.

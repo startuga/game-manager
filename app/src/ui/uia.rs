@@ -312,7 +312,9 @@ impl Shared {
             }
             .into()
         } else {
-            let id = self.with(|tree| tree.nodes[index].id);
+            // A node the tree no longer has (it was rebuilt meanwhile) gets id 0, which `index`
+            // finds nowhere: its calls then fail as for any element gone.
+            let id = self.with(|tree| tree.nodes.get(index).map_or(0, |node| node.id));
             Node {
                 shared: Arc::clone(self),
                 id,
@@ -418,10 +420,14 @@ impl IRawElementProviderSimple_Impl for Root_Impl {
 
 impl IRawElementProviderFragment_Impl for Root_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> Result<IRawElementProviderFragment> {
-        let child = self.shared.with(|tree| match direction {
-            NavigateDirection_FirstChild => tree.nodes[0].children.first().copied(),
-            NavigateDirection_LastChild => tree.nodes[0].children.last().copied(),
-            _ => None,
+        // No tree before the first layout (a window that opens minimized): no children yet.
+        let child = self.shared.with(|tree| {
+            let root = tree.nodes.first()?;
+            match direction {
+                NavigateDirection_FirstChild => root.children.first().copied(),
+                NavigateDirection_LastChild => root.children.last().copied(),
+                _ => None,
+            }
         });
         child
             .map(|index| self.shared.fragment(index))
@@ -520,7 +526,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
         let node = self.node()?;
         let supported = match node.role {
             Role::Button | Role::MenuItem => pattern == UIA_InvokePatternId,
-            Role::ListItem | Role::Tab => pattern == UIA_SelectionItemPatternId,
+            Role::ListItem | Role::GridItem | Role::Tab => pattern == UIA_SelectionItemPatternId,
             Role::CheckBox => pattern == UIA_TogglePatternId,
             Role::ComboBox => {
                 pattern == UIA_ExpandCollapsePatternId || pattern == UIA_ValuePatternId
@@ -559,7 +565,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
         Ok(match property {
             UIA_ControlTypePropertyId => variant_i32(match node.role {
                 Role::Button => UIA_ButtonControlTypeId,
-                Role::ListItem => UIA_ListItemControlTypeId,
+                Role::ListItem | Role::GridItem => UIA_ListItemControlTypeId,
                 Role::Tab => UIA_TabItemControlTypeId,
                 Role::CheckBox => UIA_CheckBoxControlTypeId,
                 Role::ComboBox => UIA_ComboBoxControlTypeId,

@@ -15,9 +15,17 @@
 //!   says: the first on screen up to a limit and the one under the pointer (Automatic), all on
 //!   screen (Always), only under the pointer, or never. Under the pointer a light tint goes over all of it
 //!   (`hover_overlay`: the picture would hide a fill). A click opens the game's page; a
-//!   right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`).
+//!   right-click (or the Menu key) its menu, as in the sidebar (`game_menu.rs`). Tiles are
+//!   `Role::GridItem`: the arrows move between them without opening one; Enter opens it.
 //! - **The grid**: as many tiles a row as the page's width holds (`library::columns`): 4 at the
-//!   window's first size, more when it is wider.
+//!   window's first size, more when it is wider. A tile's name line has a fixed height
+//!   (`NAME_HEIGHT`), so a row's is known (`ROW_HEIGHT`).
+//! - **A long list** (over `library::VIRTUAL_FROM` games shown) builds only the rows near the
+//!   screen, as the sidebar does (`library::rows_to_build`): the others are placeholders of a
+//!   row's height keyed by their first game (`ROW_KEY`). Measured at 1,900 games (2026-11-19,
+//!   optimized build): about 2,600 elements in the whole window instead of 15,600 on the Library
+//!   alone, a scroll step's rebuild about 1.6 ms instead of 15, and 222 MB of private memory
+//!   instead of about 450.
 
 use crate::covers::{COVER_HEIGHT, COVER_WIDTH};
 use crate::game_menu::MenuMessage;
@@ -32,6 +40,19 @@ use gm_core::appearance::AnimatedCovers;
 
 /// The space between tiles: 4 fit across at the window's first size.
 const TILE_GAP: f32 = theme::space::L;
+/// A tile's name line, its height fixed so a row's height is known before it is laid out.
+const NAME_HEIGHT: f32 = 20.0;
+/// A row of tiles: the cover, the gap and the name; a row not built is a placeholder this high.
+const ROW_HEIGHT: f32 = COVER_HEIGHT + theme::space::S + NAME_HEIGHT;
+/// A row's key: this, then its first game's id.
+pub(crate) const ROW_KEY: &str = "tiles:";
+/// Until the shell says which rows are near the screen, how many a long list builds.
+const FIRST_ROWS: usize = 4;
+
+/// A section's header, and whether it is folded.
+type Header = (El<Message>, bool);
+/// A row's games.
+type Line<'a> = Vec<&'a Game>;
 
 impl GameManager {
     pub(crate) fn library_page(&self, window: &WindowInfo) -> El<Message> {
@@ -63,23 +84,50 @@ impl GameManager {
             return col([header, hint(nothing)]).gap(theme::space::L);
         }
         let columns = library::columns(self.page_width(window), COVER_WIDTH, TILE_GAP);
+        // The sidebar's sections, folded as there, each in rows of `columns` tiles.
+        let sections: Vec<(Header, Vec<Line>)> =
+            library::sections(&self.games, &visible, &self.view, self.facts())
+                .into_iter()
+                .map(|section| {
+                    let header = self.section_header("library-", &section);
+                    let games: Vec<&Game> = section.games.iter().map(|&i| &self.games[i]).collect();
+                    let lines = games.chunks(columns).map(<[&Game]>::to_vec).collect();
+                    (header, lines)
+                })
+                .collect();
+        // A long list builds only the rows near the screen (`library::rows_to_build`), the others
+        // placeholders of a row's height with its key.
+        let line_key = |line: &[&Game]| {
+            format!(
+                "{ROW_KEY}{}",
+                line.first().map_or("", |game| game.id.as_str())
+            )
+        };
+        let keys: Vec<String> = sections
+            .iter()
+            .filter(|((_, folded), _)| !folded)
+            .flat_map(|(_, lines)| lines.iter().map(|line| line_key(line)))
+            .collect();
+        let long = visible.len() > library::VIRTUAL_FROM;
+        let mut build =
+            library::rows_to_build(&keys, &self.near_rows, long, FIRST_ROWS).into_iter();
         let mut rows = vec![header];
-        let grid = |rows: &mut Vec<El<Message>>, games: &[&Game]| {
-            for line in games.chunks(columns) {
-                rows.push(
+        for ((header, folded), lines) in sections {
+            rows.push(header);
+            if folded {
+                continue;
+            }
+            for line in lines {
+                let key = line_key(&line);
+                rows.push(if build.next().unwrap_or(true) {
                     row(line.iter().map(|game| self.tile(game)))
                         .gap(TILE_GAP)
-                        .halign(Align::Start),
-                );
-            }
-        };
-        // The sidebar's sections, folded as there.
-        for section in library::sections(&self.games, &visible, &self.view, self.facts()) {
-            let (header, folded) = self.section_header("library-", &section);
-            rows.push(header);
-            if !folded {
-                let games: Vec<&Game> = section.games.iter().map(|&i| &self.games[i]).collect();
-                grid(&mut rows, &games);
+                        .halign(Align::Start)
+                        .key(key)
+                        .watch()
+                } else {
+                    col(Vec::new()).height(ROW_HEIGHT).key(key).watch()
+                });
             }
         }
         col(rows).gap(theme::space::M)
@@ -133,18 +181,15 @@ impl GameManager {
         col([
             layers(cover).size(COVER_WIDTH, COVER_HEIGHT),
             // One line, cut with "…"; the tooltip has it whole.
-            text(game.name.clone()).padding(Edges::new(
-                theme::space::XS,
-                0.0,
-                theme::space::XS,
-                0.0,
-            )),
+            text(game.name.clone())
+                .padding(Edges::new(theme::space::XS, 0.0, theme::space::XS, 0.0))
+                .height(NAME_HEIGHT),
         ])
         .gap(theme::space::S)
         .width(COVER_WIDTH)
         .radius(theme::RADIUS_CARD)
         .hover_overlay(theme::OVER_PICTURE_HOVER)
-        .role(crate::ui::el::Role::ListItem)
+        .role(crate::ui::el::Role::GridItem)
         .key(format!("{}{}", crate::covers::TILE_KEY, game.id))
         .watch()
         .name(game.name.clone())

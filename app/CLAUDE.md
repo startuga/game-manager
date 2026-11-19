@@ -12,12 +12,15 @@ samples in `crates/samples/`) instead of guessing.
 ## Structure
 - `main.rs` – `Message`, the `GameManager` state, `update` (`handle`, then the `request_*`
   lookups), `go_to` (the pages), the elevated modes (`--file-ops`, `--reshade-ops`,
-  `--nvidia-ops`, `--gpu-scheduling`).
+  `--nvidia-ops`, `--gpu-scheduling`), and `--play <game id>` from a desktop shortcut (a first
+  start opens minimized and plays it once loaded; a second hands it to the first's window through
+  `WM_COPYDATA`, `shell::instance`, `App::command`).
 - **Views**:
   - `app_view.rs` (title bar, error bar, the sidebar's resize grip, layers: the game menu and
     dialogs).
   - `game_menu.rs` (a game's menu from a right-click or the Menu key, which leaves the page as
-    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, Artwork…, and the Rename and
+    it is; `MenuAction`, `MenuMessage`; Pin to quick access, Hide, Artwork…, Create desktop
+    shortcut (the notice bar, `widgets::notice_bar`, says where it went), and the Rename and
     Uninstall dialogs).
   - `artwork.rs` (the Artwork dialog, from Artwork… and the band's button: the game's cover,
     banner, logo and icon in tabs, each from a file of the user's, the store's, or SteamGridDB's
@@ -56,6 +59,9 @@ samples in `crates/samples/`) instead of guessing.
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA
     overrides tab), `my_pc.rs` and `my_pc_page.rs` (My PC: its state and messages, and its view).
+  - `installs.rs` (each game's size on disk, measured after every scan when a day old; the
+    stores' watcher on a thread of its own, `Ctx::spawn_thread`, whose changes start a scan after
+    10 s of quiet, at most once a minute; such a scan listing the same games changes nothing).
   - `play.rs` (play tracking: the history read at start, a watcher every 5 s while the window is
     open, sessions saved as they go; Play reads Running, Details shows Last played and Play time,
     and the lists have the Recently played sort and collection, through `library::Facts::played`;
@@ -167,6 +173,15 @@ samples in `crates/samples/`) instead of guessing.
   `App::escape`. A dialog's body scrolls (`app_view::dialog`), so a tall one fits the window. A
   dialog whose first control is a text box gives it the keyboard as it opens (Rename, Add a
   game).
+- **Arrows and the gamepad**: ↑↓ step a list's rows (`Role::ListItem`, picking each, as
+  Windows' lists do) and a menu's items; elsewhere, past a list's end and always for ←→ they move
+  focus to the nearest focusable that way without picking it (`input::spatial_next`: ←→ keep to
+  elements level with the focus). The Library's tiles are `Role::GridItem` for this (a list item
+  for UI Automation). With nothing focused the first arrow goes to the view's `El::first_focus`
+  (the game page's Play), else a tile, a row, anything on screen. A gamepad
+  (`shell::gamepad`, XInput, polled from a timer only while the window is in front) sends the
+  same keys (A Enter, B Escape, Y Menu) and `App::gamepad` for LB/RB (tabs), Start (Play) and
+  View (Library).
 - **Menus**: a `modal` backdrop with an `on_click` is light-dismiss: a left-click closes the
   menu, and a right-click sends the `on_context` of what is under it (a new menu replaces the
   open one, as Windows' menus do), else closes it. The panel is `opaque`, so clicks on its header
@@ -198,6 +213,14 @@ samples in `crates/samples/`) instead of guessing.
     (`input::near_keys`); the shell lays out the app's answer before the frame is drawn.
     `covers.rs` keeps only each cover's file and decodes the covers of those tiles, dropping the
     others' pixels: off the Library none are held.
+  - **Long lists** (over `library::VIRTUAL_FROM`, 200 games shown): the sidebar and the Library
+    build only the rows near the screen (`library::rows_to_build`, `GameManager::near_rows`),
+    the others placeholders of a row's exact height with the row's key, watched too, so one is
+    built as it comes near and the scroll position never moves. UI Automation and Tab reach only
+    the built rows there.
+  - **Small elements**: an `El` holds its click message (`on_click`) and a text box's Enter
+    message behind a `Box` (the app's `Message` is 312 bytes): 400 bytes an element instead of
+    1,008 (`el::tests::elements_stay_small`).
   - A tile's `hover_overlay` tints over its children (a picture hides a hover fill).
   - **Animated** (`El::animate`, `ui::animation`): an animated WebP (the user's own cover or page
     art) shows its first frame, and plays as Settings ▸ Appearance ▸ Animated covers says:
@@ -221,7 +244,8 @@ samples in `crates/samples/`) instead of guessing.
   due (`Drawn::next_frame`); otherwise nothing draws at idle.
 - **Background work** goes through `Ctx::spawn_background` (the thread pool; the message comes
   back through `WM_WAKE`), or `Ctx::spawn_stream` for work that sends several messages as it goes
-  (covers). A message for later goes through `Ctx::after` (a one-shot window timer, so no pool
+  (covers), or `Ctx::spawn_thread` for work that lasts as long as the window (the stores'
+  watcher). A message for later goes through `Ctx::after` (a one-shot window timer, so no pool
   thread sleeps: "Starting…", My PC's countdown). Modal dialogs (the Open dialog), window commands
   and timers are `Effect`s, run by the loop with no state borrowed. A message that changes nothing
   shown calls `Ctx::quiet`, and the shell doesn't build the view again (play tracking's 5-second
