@@ -634,7 +634,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("GM-GameData-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        // Expand any 8.3 short names in `%TEMP%` (e.g. `RUNNER~1` on CI) so expectations match
+        // `locate`'s `on_disk_case` paths.
+        crate::on_disk_case(&dir)
     }
 
     fn game(store: Store, install_dir: &Path) -> Game {

@@ -252,7 +252,9 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("GM-Lnk-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // Expand any 8.3 short names in `%TEMP%` (e.g. `RUNNER~1` on CI) so expectations match
+        // `IShellLinkW::GetPath`, which returns long paths.
+        crate::on_disk_case(&dir)
     }
 
     #[test]
