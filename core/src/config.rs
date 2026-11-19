@@ -9,13 +9,16 @@
 //!   program chosen with "Choose game .exe" or being hidden from the list, and the games pinned
 //!   to quick access in the order they were pinned. Favorites of older versions are read as pins
 //!   (`GameSettings::migrate`) and saved as pins by the next write. It also keeps how the
-//!   library's lists are sorted and filtered (`LibraryView`, under `library`).
+//!   library's lists are sorted and filtered (`LibraryView`, under `library`), and each game's
+//!   display settings while it plays (`DisplayChoice`, under the game's `display`), which Reset to
+//!   detected keeps, as it keeps pins.
 //!
 //! For a game's program, the user's choice wins, then the shipped configuration, then what the
 //! store scanner found.
 
 use crate::appearance::Appearance;
 use crate::graphics::GraphicsApi;
+use crate::pc::DisplayMode;
 use crate::{Arch, Game, Launch, Result, Store, json_file, with_args};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -147,6 +150,8 @@ pub enum Sort {
     NameDescending,
     /// By `Game::installed`, newest first.
     RecentlyInstalled,
+    /// By when it was last played (`play`), the latest first; games never played last.
+    RecentlyPlayed,
 }
 
 /// A Smart Collection: a set of games that fills itself.
@@ -163,17 +168,20 @@ pub enum Collection {
     Bits32,
     /// Installed in the last 30 days.
     RecentlyInstalled,
+    /// Played in the last 30 days (`play`).
+    RecentlyPlayed,
 }
 
 impl Collection {
     /// Every collection, in display order.
-    pub const ALL: [Collection; 6] = [
+    pub const ALL: [Collection; 7] = [
         Collection::Pinned,
         Collection::Modded,
         Collection::Reshade,
         Collection::Dxvk,
         Collection::Bits32,
         Collection::RecentlyInstalled,
+        Collection::RecentlyPlayed,
     ];
 }
 
@@ -199,8 +207,27 @@ struct GameSetting {
     /// Hidden from the library's lists; kept apart from the edits, like the pins.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hidden: bool,
+    /// The display settings while it plays; kept apart from the edits too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display: Option<DisplayChoice>,
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A game's display settings while it plays (`play::display`): applied when Play starts it, put
+/// back when it ends. `None` leaves that part as it is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayChoice {
+    /// The display's id (`pc::Display::id`).
+    pub display: String,
+    /// Its name when chosen: found by it when the id is gone (another port), and shown while it
+    /// isn't connected.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<DisplayMode>,
 }
 
 /// What the user changed for one game in its settings. `None` means "as detected"; arguments can
@@ -283,7 +310,11 @@ impl GameSetting {
 
     /// Nothing left to save for the game.
     fn is_empty(&self) -> bool {
-        self.edits().is_empty() && !self.favorite && !self.hidden && self.other.is_empty()
+        self.edits().is_empty()
+            && !self.favorite
+            && !self.hidden
+            && self.display.is_none()
+            && self.other.is_empty()
     }
 }
 
@@ -428,6 +459,28 @@ fn save_library_view_in(file: &Path, view: &LibraryView) -> Result<()> {
         .then(|| serde_json::to_value(view).ok())
         .flatten();
     update_settings(file, |settings| settings.library = value)
+}
+
+/// Each game's display settings while it plays, by game id.
+pub fn display_choices() -> Result<BTreeMap<String, DisplayChoice>> {
+    display_choices_from(&json_file::user_file(SETTINGS_FILE)?)
+}
+
+/// Saves a game's display settings while it plays; `None` removes them.
+pub fn set_display_choice(id: &str, choice: Option<&DisplayChoice>) -> Result<()> {
+    set_display_choice_in(&json_file::user_file(SETTINGS_FILE)?, id, choice)
+}
+
+fn display_choices_from(file: &Path) -> Result<BTreeMap<String, DisplayChoice>> {
+    Ok(load_settings_from(file)?
+        .games
+        .into_iter()
+        .filter_map(|(id, setting)| Some((id, setting.display?)))
+        .collect())
+}
+
+fn set_display_choice_in(file: &Path, id: &str, choice: Option<&DisplayChoice>) -> Result<()> {
+    update_setting(file, id, |setting| setting.display = choice.cloned())
 }
 
 fn set_hidden_in(file: &Path, id: &str, hidden: bool) -> Result<()> {
@@ -927,6 +980,59 @@ mod tests {
         assert!(saved()["games"].get("epic:Ginger").is_none());
         assert!(saved()["games"]["gog:1"].get("hidden").is_none());
         assert_eq!(saved()["games"]["gog:1"]["later"], 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn display_choices_are_saved_apart_from_the_edits() {
+        let dir = temp_dir("display");
+        let file = dir.join(SETTINGS_FILE);
+        let saved = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        let tv = DisplayChoice {
+            display: r"\\?\DISPLAY#GSM5B09#1".into(),
+            name: "LG TV".into(),
+            hdr: Some(true),
+            mode: Some(DisplayMode {
+                width: 3840,
+                height: 2160,
+                hz: 120,
+            }),
+        };
+        set_display_choice_in(&file, "steam:1", Some(&tv)).unwrap();
+        assert_eq!(saved()["games"]["steam:1"]["display"]["hdr"], true);
+        assert_eq!(saved()["games"]["steam:1"]["display"]["mode"]["hz"], 120);
+        assert_eq!(
+            display_choices_from(&file).unwrap().get("steam:1"),
+            Some(&tv)
+        );
+
+        // An entry with only a display survives a read (`migrate` drops empty ones), and Reset to
+        // detected keeps it.
+        let edits = GameEdits {
+            name: Some("Half-Life".into()),
+            ..GameEdits::default()
+        };
+        save_edits_in(&file, "steam:1", &edits).unwrap();
+        save_edits_in(&file, "steam:1", &GameEdits::default()).unwrap();
+        assert_eq!(
+            display_choices_from(&file).unwrap().get("steam:1"),
+            Some(&tv)
+        );
+        assert!(saved()["games"]["steam:1"].get("name").is_none());
+
+        // Leaving HDR and the mode as they are writes neither; no choice drops the entry.
+        let leave = DisplayChoice {
+            hdr: None,
+            mode: None,
+            ..tv
+        };
+        set_display_choice_in(&file, "steam:1", Some(&leave)).unwrap();
+        assert!(saved()["games"]["steam:1"]["display"].get("hdr").is_none());
+        set_display_choice_in(&file, "steam:1", None).unwrap();
+        assert!(saved()["games"].get("steam:1").is_none());
+        assert!(display_choices_from(&file).unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 

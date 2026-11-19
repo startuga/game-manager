@@ -12,18 +12,20 @@ in `%APPDATA%\Game Manager\custom-games.json`.
 
 ## The window
 
-- **The sidebar**: search with the **Sort and filters** button beside it, **My PC** and
-  **Library**, then the pinned games under **Pinned**, then the others by store (click a store
-  to fold it), and **Add a game** at the bottom. Drag its edge to make it wider or narrower.
+- **The sidebar**: search with the **Sort and filters** button beside it, **My PC**, **Library**
+  and **Settings**, then the pinned games under **Pinned**, then the others by store (click a
+  store to fold it), and **Add a game** at the bottom. Drag its edge to make it wider or narrower.
 - **Sort and filters** (the button beside the search) opens a flyout that the sidebar and
   Library both follow. It stays open while you pick; a click outside or **Escape** closes it.
-  - **Sort**: by name A–Z or Z–A, or the most recently installed first (the date of the
-    game's folder). **Group by store** off shows one list; pinned games stay on top.
+  - **Sort**: by name A–Z or Z–A, the most recently installed first (the date of the game's
+    folder), or the most recently played first. **Group by store** off shows one list; pinned
+    games stay on top.
   - **Smart filters**: tick one store or several, and **Hidden games** to see the games you
     hid from the list.
   - **Smart Collections** fill themselves: **Pinned**, **Modded** (anything Game Manager set
     up: ReShade, DXVK, Large Address Aware, a swapped upscaler, NVIDIA DLSS overrides), **With
-    ReShade**, **With DXVK**, **32-bit** and **Recently installed** (the last 30 days). One is
+    ReShade**, **With DXVK**, **32-bit**, **Recently installed** and **Recently played** (the
+    last 30 days). One is
     on at most: picking one clears the filters, and ticking a filter turns it off.
   - **Clear all** takes the filters and the collection off. The button shows a dot while one
     is on, and Library's caption names it. Your choices are kept in `game-settings.json` for
@@ -36,12 +38,18 @@ in `%APPDATA%\Game Manager\custom-games.json`.
     Launcher's catalog, GOG, Microsoft's store for Xbox games), else from the Steam store under
     the same name (EA and Ubisoft games and games added by hand). A Ubisoft game the Steam
     store doesn't have under its name keeps the small picture an older Ubisoft Connect saved,
-    when there is one. A game with none shows its icon.
+    when there is one. A game with none gets its icon made into a cover.
   - Covers are kept in `%LOCALAPPDATA%\Game Manager\cache\covers`, so the next start asks the
     network for nothing. A game with no cover anywhere is asked about again a week later.
-  - **Choose cover…** in a game's menu takes any picture of yours (cropped to the tile's 2:3
-    around its middle), kept in `%APPDATA%\Game Manager\covers`; **Reset cover** goes back to
-    the store's.
+  - An animated cover (an animated WebP of your own or from SteamGridDB) plays as **Settings**
+    says.
+- **Artwork…** (in a game's menu, or the button at the top right of its page) changes the game's
+  **Cover**, **Banner** (the wide picture across the top of its page), **Logo** and **Icon**:
+  **Choose a file…** takes any picture of yours, **Use the store's** (the game's, for an icon)
+  goes back. With your own SteamGridDB API key (see **Settings**) each part also lists
+  SteamGridDB's pictures, animated ones first, to pick with a click; another game can be
+  searched for. Your pictures are kept in `%APPDATA%\Game Manager` (`covers`, `page-art`,
+  `icons`).
 - **A game's menu**: right-click a game in the sidebar or on Library, or press the **Menu** key or
   **Shift+F10** on it. The page you are on stays put. **↑↓** move, **Enter** picks, **Escape**
   closes.
@@ -50,9 +58,8 @@ in `%APPDATA%\Game Manager\custom-games.json`.
   - **Play**, and the store's other ways to start it ("Skip launcher", a Ubisoft game's
     "Settings").
   - **Open folder**, **PCGamingWiki**, **Nexus Mods**.
-  - **Rename…** (leave it empty for the store's name), **Choose cover…** (and **Reset cover**),
-    **Hide from the list** (Hidden games in Sort and filters shows it again, with **Show in the
-    list**). The
+  - **Rename…** (leave it empty for the store's name), **Artwork…**, **Hide from the list**
+    (Hidden games in Sort and filters shows it again, with **Show in the list**). The
     names, pins and hidden games are saved in `game-settings.json`.
   - **Uninstall…** hands the game to Steam or Ubisoft Connect, to its own uninstaller (GOG, the
     EA app, others with a Windows Uninstall entry), or to the Epic Games Launcher, GOG Galaxy or
@@ -66,9 +73,11 @@ in `%APPDATA%\Game Manager\custom-games.json`.
   - While searching, every store shows open and a line says how many games match.
   - **Enter** opens the first match; **Escape** or ✕ clears the search.
 - **The title bar** has **Rescan** (⟳), which looks for games again.
-- **A game's page**: its icon, name and install folder, with chips for its store, bitness and
-  graphics APIs; **Play** (and the store's other launches), **Folder**, **PCGamingWiki** and
-  **Nexus Mods**.
+- **A game's page**: a band of the game's art across the top (its wide picture, else its cover or
+  icon, blurred) with its logo (or icon and name), install folder and chips for its store,
+  bitness and graphics APIs; **Play** (and the store's other launches), **Folder**,
+  **PCGamingWiki**, **Nexus Mods**, and **Saves** and **Config**, the game's folders as
+  PCGamingWiki names them, when they are on this PC.
   Below them are the tabs: **Overview**, **ReShade**, **DXVK & LAA**, **Upscalers** and, with an
   NVIDIA graphics driver, **NVIDIA overrides**.
 
@@ -79,7 +88,7 @@ over them to see where they come from. When several are shown, choose the one th
 Game settings. With DXVK in the game's folder (installed by Game Manager or by hand), a Direct3D
 8–11 game shows **Vulkan (DXVK)**: it then runs on Vulkan.
 
-## Overview: Game settings
+## Overview: Game settings, While playing and Save backups
 
 **Game settings** change the name shown, the program Play starts (instead of the store's launch),
 the command-line arguments (also passed to Steam games as launch options) and the game's own
@@ -87,7 +96,35 @@ program (for its bitness, Folder and mods). Its **Bitness** and **Graphics API**
 game's 32 or 64-bit build and the one API it runs on, when detection got them wrong or found
 several APIs: mods such as ReShade and DXVK need exactly these. Edits are saved in
 `%APPDATA%\Game Manager\game-settings.json`; **Reset to detected** removes them. **Details** shows
-the store, the game's program and its bitness.
+the store, the game's program and its bitness, and when it was last played and for how long.
+
+**Play tracking**: while Game Manager is open it notices every game you play, whatever started
+it (Play, the store, a shortcut), from the game's program running; Play then reads **Running**.
+Each game's last played day and play time are kept in `%APPDATA%\Game Manager\play-history.json`.
+For Steam games, Steam's own history counts too (also before Game Manager), from the account last
+signed in on this PC. A game that runs from another program than the one in Game settings isn't
+noticed: choose its program there.
+
+**While playing** changes a display for the game: choose the **Display**, then its **HDR** (On or
+Off) and **Resolution** and **Refresh rate**, or leave each as it is. When Play in Game Manager
+starts the game, the display is switched first; when the game ends, what was changed goes back,
+unless you changed it yourself meanwhile. A game started from its store or a shortcut is left as
+it is. The new mode isn't saved in Windows, so a restart brings your own back whatever happens;
+HDR is, so if Game Manager isn't running when the game ends, it goes back at Game Manager's next
+start. If the game doesn't show up within three minutes (another program runs, it failed to
+start), the display goes back then. One game's display settings at a time. The choices are kept
+in `game-settings.json` (Reset to detected keeps them), and what is to go back in
+`play-history.json`.
+
+**Save backups** keep copies of the game's saves folder (the one the **Saves** button opens, from
+PCGamingWiki) as ZIP files in `Documents\Game Manager\Save backups\<game>`, named by date and
+time. **After each session** (on unless you turn it off for the game), the saves are backed up
+when the game ends, if a file in them changed since the last backup; **Back up now** makes one
+at once. The newest 10 of each game are kept. **Restore** puts a backup in place of the saves
+folder, after asking and after backing up the saves as they are (marked "before restore"), and
+waits while the game runs. A store that keeps the game's saves in the cloud (Steam Cloud and
+others) may bring its own copy back when the game next starts. Saves over 2 GB, or kept in the
+registry, aren't backed up.
 
 ## ReShade
 
@@ -102,6 +139,8 @@ games with DXVK, use ReShade's Vulkan layer instead: the same install for the wh
 ReShade's own setup makes in `C:\ProgramData\ReShade`, so it always asks for administrator rights.
 Direct3D 8 games need DXVK first. Reinstall keeps ReShade's settings; uninstalling (✕) removes
 ReShade with `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log` and the `reshade-shaders` folder.
+When a newer build of the installed variant is out, the card says **Update available** beside the
+version, and Reinstall installs it (the latest build is looked up at most once a day).
 
 **Shaders** and **Add-ons** choose what games with ReShade get:
 
@@ -139,7 +178,8 @@ ones) and the HDR, frame-rate limit and HUD settings written to `dxvk.conf`, and
 On NVIDIA GPUs, DXVK settings also set the game's driver profile for HDR: **Vulkan/OpenGL Present
 Method** (Prefer layered on DXGI Swapchain) and its **flags** (Allow promoting DXVK to
 DXGI/DirectFlip, or Treat DXVK as Native), with **Reset to original** to put back what the
-profile had; they stay when DXVK is uninstalled.
+profile had; they stay when DXVK is uninstalled. As for ReShade, **Update available** shows when a
+newer build of the installed variant is out.
 
 For 32-bit games, the tab also shows **Large Address Aware**: whether the game's program may use
 4 GB of memory instead of 2 GB, and **Enable LAA** to patch it (the original is kept as
@@ -156,7 +196,8 @@ The **Upscalers** tab lists the upscaler DLLs in the game's folder and below:
 - **XeSS** Super Resolution (and its DirectX 11 build), Frame Generation and Xe Low Latency.
 
 Each shows its version. Pick another of its vendor's versions and **Swap** to upgrade or downgrade
-it without a game update; ✕ puts the game's own DLL back. The versions are NVIDIA's, AMD's and
+it without a game update; ✕ puts the game's own DLL back. A swapped DLL says **Update
+available** when a newer version that fits the game is listed. The versions are NVIDIA's, AMD's and
 Intel's own, from their GitHub repositories, and each DLL must carry a valid signature. FSR 2 and
 3.0, and DLSS 1, are built into games and can't be swapped. **Versions**, folded at the bottom of
 the tab, lists every version with Download and Delete. An online game's anti-cheat may object to
@@ -202,6 +243,16 @@ functions (no WMI), each time it opens and on **Refresh**:
     games pick them up when they start.
 
 Links open the matching pages of Windows' Settings.
+
+## Settings
+
+- **Appearance**: **Theme** (as Windows' apps are, Light or Dark), **Background** (Mica, Mica Alt
+  or the theme's solid colour; Mica needs Windows 11 22H2), **Accent colour** (Windows' or Game
+  Manager's red) and **Animated covers** (Automatic: the first ones on screen and the one under
+  the pointer; Always; When hovered; Never). Saved in `game-settings.json`.
+- **SteamGridDB**: your own API key (make one in your SteamGridDB profile, under Preferences ▸
+  API), saved encrypted for your Windows account in Credential Manager, never in a file. It is
+  used only while the Artwork dialog is open.
 
 ## Files
 

@@ -40,6 +40,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use windows_registry::LOCAL_MACHINE;
 
+/// The store's own programs, never a game's: play tracking doesn't count them (`play`).
+pub(crate) const CLIENT_PROGRAMS: &[&str] = &["upc.exe", "UbisoftConnect.exe", "UplayWebCore.exe"];
+
 const LAUNCHER_KEY: &str = r"SOFTWARE\WOW6432Node\Ubisoft\Launcher";
 /// The launcher's own files inside a game's folder: never the game's program.
 const INSTALLER_FOLDER: &str = "installer_resources";

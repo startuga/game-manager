@@ -104,6 +104,23 @@ pub enum Error {
     /// A display did not take a change; `what` names it ("brightness").
     #[error("{display} did not take the new {what}.")]
     DisplayRefused { display: String, what: &'static str },
+    /// A display a game's settings name isn't connected (or is off).
+    #[error("{0} isn't connected.")]
+    DisplayNotConnected(String),
+    /// Windows didn't say where the Documents folder is (save backups go there).
+    #[error(
+        "Windows didn't say where your Documents folder is, so save backups have nowhere to go."
+    )]
+    NoDocumentsFolder,
+    /// A folder to back up holds no file.
+    #[error("{} is empty: there is nothing to back up.", .0.display())]
+    EmptyFolder(PathBuf),
+    /// A folder to back up is larger than the limit.
+    #[error("{} is larger than {limit_gb} GB, too large to back up.", .folder.display())]
+    FolderTooLarge { folder: PathBuf, limit_gb: u64 },
+    /// Something an earlier step left is where Game Manager must put a folder.
+    #[error("{} is in the way: move or delete it, then try again.", .0.display())]
+    InTheWay(PathBuf),
     /// A release list or build list answered with nothing to download.
     #[error("{url} lists no build to download")]
     NoRelease { url: String },

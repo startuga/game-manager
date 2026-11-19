@@ -18,6 +18,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// `appinfo.vdf` versions: 28 writes keys in place, 29 keeps them in a string table.
+/// The store's own programs, never a game's: play tracking doesn't count them (`play`).
+pub(crate) const CLIENT_PROGRAMS: &[&str] = &["steam.exe", "steamwebhelper.exe"];
+
 const APPINFO_V28: u32 = 0x0756_4428;
 const APPINFO_V29: u32 = 0x0756_4429;
 /// Bytes between an app's size and its KeyValues: info state, last update, PICS token, SHA-1 of
@@ -268,6 +271,121 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
     a.to_string_lossy()
         .trim_end_matches('\\')
         .eq_ignore_ascii_case(b.to_string_lossy().trim_end_matches('\\'))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Play history (`play.rs`)
+// ---------------------------------------------------------------------------------------------
+
+/// Steam's own record of a game's play: when it was last played (seconds since 1970) and for how
+/// many minutes in all, every session Steam saw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SteamPlay {
+    pub last_played: u64,
+    pub minutes: u64,
+}
+
+/// The largest `localconfig.vdf` read (it holds every app the account ever touched: a few MB).
+const LOCAL_CONFIG_LIMIT_MB: u64 = 64;
+
+/// Steam's play history for the account last signed in on this PC, from its
+/// `userdata\<account>\config\localconfig.vdf` (`UserLocalConfigStore > Software > Valve > Steam >
+/// apps > <appid>`: `LastPlayed` in seconds since 1970, `Playtime` in minutes), with the file it
+/// came from. `None` without Steam or an account. The account: `config\loginusers.vdf`'s user
+/// marked `MostRecent`, whose SteamID64's low 32 bits name its `userdata` folder; else the account
+/// whose `localconfig.vdf` changed last. Steam writes the file now and then, not after every
+/// session. Blocking.
+pub fn play_times() -> Result<Option<(PathBuf, std::collections::BTreeMap<u32, SteamPlay>)>> {
+    let Some(steam) = install_dir() else {
+        return Ok(None);
+    };
+    let Some(account) = current_account(&steam) else {
+        return Ok(None);
+    };
+    let file = account.join("config").join("localconfig.vdf");
+    let Ok(metadata) = fs::metadata(&file) else {
+        return Ok(None);
+    };
+    if metadata.len() > LOCAL_CONFIG_LIMIT_MB << 20 {
+        return Err(Error::FileTooLarge {
+            path: file,
+            limit_mb: LOCAL_CONFIG_LIMIT_MB,
+        });
+    }
+    let bytes = fs::read(&file).map_err(Error::io(&file))?;
+    // Read lossily: an app's name can hold any bytes.
+    let apps = parse_play_times(&String::from_utf8_lossy(&bytes)).map_err(|source| Error::Vdf {
+        path: file.clone(),
+        source,
+    })?;
+    Ok(Some((file, apps)))
+}
+
+/// The `userdata` folder of the account last signed in.
+fn current_account(steam: &Path) -> Option<PathBuf> {
+    let userdata = steam.join("userdata");
+    if let Ok(text) = fs::read_to_string(steam.join("config").join("loginusers.vdf"))
+        && let Some(id64) = parse_login_users(&text)
+    {
+        let folder = userdata.join((id64 & 0xFFFF_FFFF).to_string());
+        if folder.is_dir() {
+            return Some(folder);
+        }
+    }
+    fs::read_dir(&userdata)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+        })
+        .filter_map(|entry| {
+            let config = entry.path().join("config").join("localconfig.vdf");
+            let changed = fs::metadata(config).and_then(|m| m.modified()).ok()?;
+            Some((changed, entry.path()))
+        })
+        .max_by_key(|(changed, _)| *changed)
+        .map(|(_, folder)| folder)
+}
+
+/// The SteamID64 of `loginusers.vdf`'s user marked `MostRecent`.
+fn parse_login_users(text: &str) -> Option<u64> {
+    let root = vdf::parse(text).ok()?;
+    root.get("users")?
+        .entries()
+        .iter()
+        .find(|(_, user)| user.get_str("MostRecent") == Some("1"))
+        .and_then(|(id, _)| id.parse().ok())
+}
+
+/// Each app's play from `localconfig.vdf`'s text; apps never played are left out.
+fn parse_play_times(
+    text: &str,
+) -> std::result::Result<std::collections::BTreeMap<u32, SteamPlay>, vdf::VdfError> {
+    let root = vdf::parse(text)?;
+    let apps = ["UserLocalConfigStore", "Software", "Valve", "Steam", "apps"]
+        .iter()
+        .try_fold(&root, |node, key| node.get(key));
+    let mut played = std::collections::BTreeMap::new();
+    for (key, app) in apps.map_or(&[][..], vdf::Value::entries) {
+        let Ok(id) = key.parse::<u32>() else {
+            continue;
+        };
+        let number = |name: &str| {
+            app.get_str(name)
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let play = SteamPlay {
+            last_played: number("LastPlayed"),
+            minutes: number("Playtime"),
+        };
+        if play.last_played > 0 || play.minutes > 0 {
+            played.insert(id, play);
+        }
+    }
+    Ok(played)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -721,5 +839,57 @@ mod tests {
         assert_eq!(parse_search(&bundle, "Prey"), None);
         let nothing: serde_json::Value = serde_json::from_str(r#"{"total":0,"items":[]}"#).unwrap();
         assert_eq!(parse_search(&nothing, "UltraPlus Manager"), None);
+    }
+
+    #[test]
+    fn play_times_come_from_localconfig() {
+        // Steam writes "Software" or "software", "apps" or "Apps": the keys' case is ignored.
+        let text = r#"
+            "UserLocalConfigStore"
+            {
+                "software"
+                {
+                    "Valve" { "Steam" { "Apps" {
+                        "220" { "LastPlayed" "1795000000" "Playtime" "754" "cloud" { "last_sync" "1" } }
+                        "570" { "Playtime" "12" }
+                        "730" { "LaunchOptions" "-novid" }
+                        "not a number" { "Playtime" "5" }
+                    } } }
+                }
+            }"#;
+        let played = parse_play_times(text).unwrap();
+        assert_eq!(
+            played.get(&220),
+            Some(&SteamPlay {
+                last_played: 1_795_000_000,
+                minutes: 754
+            })
+        );
+        assert_eq!(played.get(&570).map(|play| play.minutes), Some(12));
+        assert!(!played.contains_key(&730), "never played");
+        assert_eq!(played.len(), 2);
+        assert!(
+            parse_play_times(r#""UserLocalConfigStore" { }"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_most_recent_user_is_picked() {
+        let text = r#"
+            "users"
+            {
+                "76561197960265729" { "AccountName" "first" "MostRecent" "0" }
+                "76561198000000000" { "AccountName" "second" "MostRecent" "1" }
+            }"#;
+        let id = parse_login_users(text).unwrap();
+        assert_eq!(id, 76_561_198_000_000_000);
+        // Its userdata folder is the account id: SteamID64 less 76561197960265728.
+        assert_eq!(id & 0xFFFF_FFFF, id - 76_561_197_960_265_728);
+        assert_eq!(
+            parse_login_users(r#""users" { "1" { "MostRecent" "0" } }"#),
+            None
+        );
     }
 }

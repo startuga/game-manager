@@ -12,9 +12,17 @@ holds the rules and facts that span them.
 - **Game data**:
   - `lib.rs` (`Game`, `Launch`, `Arch`, `scan_all`, `complete_game`).
   - `config.rs` (shipped `games.json`, the user's `game-settings.json`: edits, hidden games,
-    the `pinned` list in pin order, into which older favorites are moved, and `library`, how the
-    lists are sorted and filtered (`LibraryView`); `apply`).
+    the `pinned` list in pin order, into which older favorites are moved, each game's `display`
+    while it plays (`DisplayChoice`), and `library`, how the lists are sorted and filtered
+    (`LibraryView`); `apply`).
   - `snapshot.rs` (last scan, for a fast start).
+  - `play/mod.rs` (play tracking: sessions from what runs, `Tracker`, `play-history.json`,
+    Steam's history merged by the larger of each, `merged`), `play/processes.rs` (which games
+    run: a Toolhelp snapshot matched to the games' programs, `Watchlist`, `running`; the stores'
+    own programs, each scanner's `CLIENT_PROGRAMS`, never count) and `play/display.rs` (a game's
+    display settings while it plays, `config::DisplayChoice`: applied before Play starts it, put
+    back when it ends, kept in the history meanwhile); `local_time.rs` (dates on this PC's clock,
+    no date crate).
   - `pe.rs` (architecture and imports from PE headers).
   - `unreal.rs` (an Unreal Engine game's root launcher names the program the game runs as, where
     mods go: its resource `RCDATA 201`).
@@ -46,7 +54,10 @@ holds the rules and facts that span them.
   - `graphics.rs` + `pcgamingwiki.rs` (graphics APIs, wiki links, a game's page found by id or
     by full-text search and kept ten minutes, its `Game data` paths) and `game_data.rs` (a game's
     saves and config folders on this PC: the wiki's paths cached a month, their `{{p|…}}`
-    placeholders filled in, the first folder on disk in the store's then Windows' order).
+    placeholders filled in, the first folder on disk in the store's then Windows' order) and
+    `save_backups.rs` (ZIP backups of a game's saves folder in
+    `Documents\Game Manager\Save backups\<game>`, the newest 10 kept; after each session if they
+    changed, by hand, and Restore, which backs up the saves it replaces first).
   - `nexus_mods.rs` (a game's Nexus Mods page: its domain from `games.json`'s `nexusMods`, else
     by name in Nexus's public list of games, cached a week; else Nexus's games search).
   - `http.rs` (WinHTTP `get`/`get_with` (request headers, an API key)/`download`/`etag`, on one
@@ -72,8 +83,11 @@ holds the rules and facts that span them.
     `config/reshade-addons.json` and the user's own; the add-on cache).
   - `mods/upscalers.rs` (DLSS, Streamline, FSR 3.1+, XeSS DLLs: the shipped
     `config/upscalers.json`, the vendors' versions, the cache, `scan`, `swap`, `restore`; swaps
-    are recorded in `mods.json` under `upscalers`) and `signature.rs` (`WinVerifyTrust`, and
-    the signer's name, which must be the kind's vendor).
+    are recorded in `mods.json` under `upscalers`; `update_for`, a swapped DLL's newer version)
+    and `signature.rs` (`WinVerifyTrust`, and the signer's name, which must be the kind's vendor).
+  - `mods/updates.rs` (update notices: the installed ReShade or DXVK line, `Line`, its latest
+    build kept a day in `cache\mod-latest.json` (failures an hour), installs `remember` theirs,
+    `newer` by version, HDR-mod's two parts or commit).
   - `seven_zip.rs` (the shipped 7-Zip: names after `--`, stopped after ten minutes).
   - `elevate.rs` (`runas` + `--file-ops` / `--reshade-ops` / `--nvidia-ops` /
     `--gpu-scheduling`; long work in a file checked by its SHA-256; `check_paths`, where work
@@ -87,10 +101,12 @@ holds the rules and facts that span them.
   - `pc/hardware.rs` (processor, graphics cards, memory, Windows, board, drives).
   - `pc/smbios.rs` (memory modules from the SMBIOS table).
   - `pc/displays.rs` (displays, modes, HDR, colour profiles, DDC/CI brightness, and changing them;
-    a new mode is tried unsaved, `try_mode`, and saved only when kept, `keep_mode`).
+    a new mode is tried unsaved, `try_mode`, and saved only when kept, `keep_mode`; each display's
+    `id` is its monitor's device path).
   - `pc/switches.rs` (GPU scheduling, Game Mode, windowed optimizations, Auto HDR).
 - **Shared**:
   - `error.rs` (`Error`, `Result`, `ScanError`).
+  - `crash.rs` (the crash log: a panic hook writes `crash.log`, the next start takes it once).
   - `crypto.rs` (SHA-256 and random bytes from Windows' CNG).
   - `json_file.rs` (where files live, JSON load/save) and `whole_file.rs` (files written whole,
     through a temporary file of their own; leftovers pruned after ten minutes).
@@ -109,7 +125,9 @@ holds the rules and facts that span them.
   - `com.rs` (`ComGuard`).
 - `examples/scan.rs` – headless check: `-v` (with each game's uninstall route and Nexus Mods
   page), `--graphics`, `--icons <dir>`, `--nvidia`, `--pc`, `--covers` (each game's cover source,
-  read only), `--saves` (each game's saves and config folders from PCGamingWiki).
+  read only), `--saves` (each game's saves and config folders from PCGamingWiki), `--play` (last
+  played and play time as the app shows them, open sessions, display changes to put back, what
+  runs now; read only).
 
 ## Scanning
 - `scan_all` runs these steps in order:
@@ -136,10 +154,15 @@ holds the rules and facts that span them.
   `custom-games.json`, `mods.json` and `reshade.json`, their own shaders and add-ons in
   `reshade\custom`, and their own covers in `covers` (`<game id>.jpg`, `:` as `_`), page art in
   `page-art` and icons in `icons` the same way, and `steamgriddb.json` (which SteamGridDB picture
-  each part came from). The SteamGridDB key is in Credential Manager, not in a file.
+  each part came from), `play-history.json` (each game's last played, seconds and sessions,
+  the sessions still open, and display changes still to put back), and `save-backups.json` (each
+  game's backups folder name and its After each session switch). The SteamGridDB key is in
+  Credential Manager, not in a file.
   - They are loaded before saving, so an unreadable file is never overwritten, and unknown fields
     are kept.
 - `json_file::local_file` → `%LOCALAPPDATA%\Game Manager`: caches, safe to delete.
+- `Documents\Game Manager\Save backups\<game>\<YYYY-MM-DD HH-MM-SS>.zip` (`save_backups.rs`):
+  the user's save backups, never a cache.
 - `build.rs` ships every `config/*.json` and `7-Zip\` next to `app.exe` (the parent of the
   `build` folder above `OUT_DIR`, since Cargo gives a build script no other); `config::shipped_file`
   finds them there or one folder up (examples). Unit tests read the repository's own `config\` and
@@ -214,6 +237,12 @@ holds the rules and facts that span them.
   - The EA app's data is encrypted: there is no EA-app launch link.
   - Xbox packaged games start only through `shell:AppsFolder\<family>!<app>`.
   - A GOG primary task can be a launcher (Witcher 3's `REDprelauncher.exe`).
+  - **Steam's play history** (`steam::play_times`): `userdata\<account>\config\localconfig.vdf`,
+    `UserLocalConfigStore > Software > Valve > Steam > apps > <appid>` with `LastPlayed` (seconds
+    since 1970) and `Playtime` (minutes); key case varies (`Software`/`software`, `apps`/`Apps`).
+    The account is `config\loginusers.vdf`'s user with `MostRecent` "1": its SteamID64's low 32
+    bits name the `userdata` folder. On this PC: 111 apps, read in about 0.2 s. Steam writes the
+    file a while after a game ends, not at once.
   - **Ubisoft Connect** (`ubisoft.rs`):
     - The registry has only each game's folder (`Ubisoft\Launcher\Installs\<install id>`,
       forward slashes) and an Uninstall entry `Uplay Install <id>` with its name and icon.

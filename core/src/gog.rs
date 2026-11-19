@@ -17,6 +17,9 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The store's own programs, never a game's: play tracking doesn't count them (`play`).
+pub(crate) const CLIENT_PROGRAMS: &[&str] = &["GalaxyClient.exe", "GalaxyClientService.exe"];
+
 const GAMES_KEY: &str = r"SOFTWARE\WOW6432Node\GOG.com\Games";
 const GALAXY_KEY: &str = r"SOFTWARE\WOW6432Node\GOG.com\GalaxyClient";
 

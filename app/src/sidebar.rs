@@ -117,7 +117,7 @@ impl GameManager {
             return col([hint(library::empty_hint(&self.view, &self.query))]).pad(theme::space::S);
         }
         let mut rows = Vec::new();
-        for section in library::sections(&self.games, &shown, &self.view) {
+        for section in library::sections(&self.games, &shown, &self.view, self.facts()) {
             let (header, folded) = self.section_header("", &section);
             rows.push(header);
             if !folded {

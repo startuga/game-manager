@@ -5,7 +5,8 @@
 //! - `hardware`: processor, graphics cards, memory, Windows and the board, drives.
 //! - `smbios`: memory modules from the firmware's SMBIOS table.
 //! - `displays`: the active displays with their modes, HDR state, colour profiles and DDC/CI
-//!   brightness, and the changes the My PC page makes to them.
+//!   brightness, and the changes the My PC page makes to them (and those a game's display
+//!   settings make while it plays, `play::display`).
 //! - `switches`: GPU scheduling, Game Mode, optimizations for windowed games and Auto HDR.
 //!
 //! `read` takes a snapshot in a few milliseconds; call it off the UI thread all the same, as a
@@ -19,8 +20,8 @@ mod smbios;
 mod switches;
 
 pub use displays::{
-    Display, DisplayMode, brightness, keep_mode, set_brightness, set_color_profile, set_hdr,
-    try_mode,
+    Display, DisplayMode, brightness, displays, keep_mode, set_brightness, set_color_profile,
+    set_hdr, try_mode,
 };
 pub use hardware::{Cpu, Drive, Gpu, GpuVendor, Memory, System};
 pub use smbios::MemoryModule;

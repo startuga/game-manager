@@ -33,7 +33,10 @@ mod mods_view;
 mod my_pc;
 mod my_pc_page;
 mod page_art;
+mod play;
+mod play_cards;
 mod reshade_panel;
+mod save_backups;
 mod settings_page;
 mod shell;
 mod sidebar;
@@ -52,7 +55,7 @@ use gm_core::graphics::{GraphicsApi, GraphicsInfo};
 use gm_core::mods::laa::{self, Laa};
 use gm_core::mods::reshade::{self, DeployTo, ReshadeStatus, ReshadeVariant};
 use gm_core::mods::reshade_settings::ReshadeSettings;
-use gm_core::mods::{ModsFile, dxvk};
+use gm_core::mods::{ModsFile, dxvk, updates};
 use gm_core::nvidia::ProfileState;
 use gm_core::{Game, Launch, Store};
 use library::LibraryView;
@@ -197,6 +200,9 @@ enum Message {
     /// The selected game's edits were saved or reset; a rescan applies them.
     EditsSaved(Result<(), String>),
     DismissError,
+    /// An earlier run's crash log, read at start (`gm_core::crash`), shown once.
+    CrashFound(gm_core::crash::Crash),
+    DismissCrash,
     /// Opens the file dialog to choose a custom game's program.
     AddGame,
     /// The chosen program; `None` when the dialog was cancelled.
@@ -219,6 +225,8 @@ enum Message {
     CustomGameRemoved(Result<String, String>),
     /// `mods.json`, read at start.
     ModsLoaded(Result<ModsFile, String>),
+    /// A mod line's latest build, for its update notice (`None`: not known).
+    ModLatest(updates::Line, Option<updates::Latest>),
     /// Installs DXVK in the selected game, or reinstalls it.
     InstallDxvk,
     UninstallDxvk,
@@ -311,6 +319,8 @@ enum Message {
     Upscalers(UpscalerMessage),
     /// The My PC page (`my_pc.rs`).
     MyPc(MyPcMessage),
+    Play(play::PlayMessage),
+    SaveBackup(save_backups::SaveBackupMessage),
 }
 
 struct GameManager {
@@ -358,6 +368,8 @@ struct GameManager {
     open_after_lookup: Option<(String, FolderKind)>,
     scanning: bool,
     error: Option<String>,
+    /// The crash an earlier run left, until dismissed: its own bar, which a scan doesn't clear.
+    crash: Option<gm_core::crash::Crash>,
     /// The file dialog for a custom game's program is open, or a chosen or dropped file is read.
     picking: bool,
     /// The custom game being set up in the Add a game dialog.
@@ -370,6 +382,9 @@ struct GameManager {
     saving: bool,
     /// `mods.json`: each game's mods, their settings and what is installed.
     mods: ModsFile,
+    /// Each mod line's latest build, once asked for (`mods::updates`), and those being asked.
+    mod_latest: HashMap<updates::Line, Option<updates::Latest>>,
+    mod_latest_pending: HashSet<updates::Line>,
     /// The game and mod being installed, uninstalled or set up; one job at a time
     /// (`begin_mod_job`).
     mod_job: Option<(String, ModKind)>,
@@ -401,12 +416,17 @@ struct GameManager {
     nvidia_profile: Option<Result<Option<ProfileState>, String>>,
     /// The My PC page: the last snapshot and the changes running.
     my_pc: MyPcState,
+    /// Play tracking: running games, last played, play time (`play.rs`).
+    play: play::PlayTracking,
+    save_backups: save_backups::SaveBackupsState,
 }
 
 /// The window's title, by which a second start finds it.
 const TITLE: &str = "Game Manager";
 
 fn main() -> ExitCode {
+    // A panic ends the process at once (`panic = "abort"`): it writes the crash log first.
+    gm_core::crash::install();
     // Started as administrator to change a protected game folder, ReShade's Vulkan layer or
     // NVIDIA driver settings: do that, show no window, and exit with the result (0, or a code
     // saying what failed).
@@ -473,6 +493,12 @@ impl App for GameManager {
         // The Upscalers and NVIDIA overrides tabs' DLLs and the overrides' draft, while open.
         self.request_upscalers(ctx);
         self.request_overrides(ctx);
+        // The latest ReShade or DXVK build, for the update notice of the mod tab showing.
+        self.request_mod_updates(ctx);
+        // The displays the Overview's While playing card lists, whenever they are unknown, and
+        // the selected game's save backups.
+        self.request_displays(ctx);
+        self.request_save_backups(ctx);
         // Shaders or Add-ons showing without its panel (just chosen, or after Deploy, Discard
         // changes or Apply) opens it.
         self.open_reshade_view(ctx);
@@ -567,12 +593,15 @@ impl GameManager {
             open_after_lookup: None,
             scanning: false,
             error: None,
+            crash: None,
             picking: false,
             draft: None,
             removing: None,
             edit: None,
             saving: false,
             mods: ModsFile::default(),
+            mod_latest: HashMap::new(),
+            mod_latest_pending: HashSet::new(),
             mod_job: None,
             queued_deploy: None,
             laa: HashMap::new(),
@@ -590,6 +619,8 @@ impl GameManager {
             hdr_mod_configs_pending: false,
             nvidia_profile: None,
             my_pc: MyPcState::default(),
+            play: play::PlayTracking::default(),
+            save_backups: save_backups::SaveBackupsState::default(),
         };
         // The last scan's games show at once while the fresh scan runs.
         ctx.spawn_background(|| {
@@ -598,7 +629,13 @@ impl GameManager {
         ctx.spawn_background(|| {
             Message::ModsLoaded(gm_core::mods::load().map_err(|e| format!("Mods: {e}")))
         });
+        // A crash the last run left, shown once.
+        ctx.spawn_background(|| match gm_core::crash::take() {
+            Some(crash) => Message::CrashFound(crash),
+            None => Message::DismissCrash,
+        });
         Self::load_view(ctx);
+        Self::load_play(ctx);
         Self::read_sgdb_key(ctx);
         // The NVIDIA overrides tab shows only with an NVIDIA driver: read it now.
         this.request_driver(ctx);
@@ -653,6 +690,23 @@ impl GameManager {
         }
     }
 
+    /// Starts a game and shows "Starting…" until the watcher sees it run (a store's launcher can
+    /// take a while), or a few seconds for a game it can't see. Whether it started.
+    fn start_game(&mut self, id: &str, option: Option<usize>, context: &Ctx<Message>) -> bool {
+        self.launch(id, option);
+        if self.error.is_some() {
+            return false;
+        }
+        let wait = if self.play.watches(id) {
+            play::LAUNCH_WAIT
+        } else {
+            std::time::Duration::from_secs(4)
+        };
+        self.launching = Some(id.to_owned());
+        context.after(wait, Message::LaunchSettled(id.to_owned()));
+        true
+    }
+
     /// Shows another page. Leaving the game page leaves its Shaders or Add-ons view
     /// (`leave_reshade_view`).
     fn go_to(&mut self, page: Page, context: &Ctx<Message>) {
@@ -667,6 +721,10 @@ impl GameManager {
             // Read afresh at each visit, as Settings or a driver may have changed things.
             self.handle_my_pc(MyPcMessage::Refresh, context);
         }
+        // The While playing card's displays too (My PC may have changed them).
+        if page == Page::Game {
+            self.play.forget_displays();
+        }
     }
 
     /// Selects a game and shows its page. Another game first leaves the Shaders or Add-ons view
@@ -679,6 +737,10 @@ impl GameManager {
         if !self.game_folders_pending.contains(&id) {
             self.game_folders.remove(&id);
         }
+        // And its While playing card's displays (one may have been plugged in), and its save
+        // backups.
+        self.play.forget_displays();
+        self.forget_save_backups(&id);
         self.selected = Some(id);
         self.go_to(Page::Game, context);
     }
@@ -840,6 +902,7 @@ impl GameManager {
                 Self::load_icons(self.games.clone(), true, context);
                 self.drop_covers_of_missing_games();
                 self.load_covers(true, true, context);
+                self.rewatch(context);
             }
             Message::SnapshotLoaded(games) => {
                 // Only before the first scan has listed anything; the scan then replaces it.
@@ -849,6 +912,7 @@ impl GameManager {
                     Self::load_icons(self.games.clone(), false, context);
                     // What is on this PC already; the scan asks the network for the rest.
                     self.load_covers(false, false, context);
+                    self.rewatch(context);
                 }
             }
             Message::Icon(message) => self.handle_icon(message, context),
@@ -894,14 +958,21 @@ impl GameManager {
             Message::Select(Some(id)) => self.select(id, context),
             Message::Select(None) => {}
             Message::Launch { id, option } => {
-                self.launch(&id, option);
-                // Started: "Starting…" while the game's own window takes its time.
-                if self.error.is_none() {
-                    self.launching = Some(id.clone());
-                    context.after(
-                        std::time::Duration::from_secs(4),
-                        Message::LaunchSettled(id),
-                    );
+                // Running already, or its display settings going on: a second start isn't sent.
+                if self.play.is_running(&id) || self.play.is_applying(&id) {
+                    return;
+                }
+                // Display settings while playing go on first, then the game starts.
+                match self.apply_display_first(&id, option, context) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.start_game(&id, option, context);
+                    }
+                    Err(why) => {
+                        if self.start_game(&id, option, context) {
+                            self.error = Some(why);
+                        }
+                    }
                 }
             }
             Message::LaunchSettled(id) => {
@@ -960,6 +1031,10 @@ impl GameManager {
                 self.reshade.clear();
                 self.upscalers.found.clear();
             }
+            Message::ModLatest(line, latest) => {
+                self.mod_latest_pending.remove(&line);
+                self.mod_latest.insert(line, latest);
+            }
             Message::ModsLoaded(Err(e)) => {
                 self.filters.mods_ready = true;
                 self.error = Some(e);
@@ -998,6 +1073,8 @@ impl GameManager {
                 self.laa.clear();
                 self.reshade.clear();
                 self.upscaler_job_done(context);
+                // An install remembered the build it got: read the notices again (from the cache).
+                self.mod_latest.clear();
                 match done {
                     Ok(mods) => self.mods = mods,
                     Err(e) => {
@@ -1111,6 +1188,8 @@ impl GameManager {
             }
             Message::Upscalers(message) => self.handle_upscalers(message, context),
             Message::MyPc(message) => self.handle_my_pc(message, context),
+            Message::Play(message) => self.handle_play(message, context),
+            Message::SaveBackup(message) => self.handle_save_backups(message, context),
             Message::ReshadeLoaded(id, status) => {
                 self.reshade_pending.remove(&id);
                 self.reshade.insert(id, status);
@@ -1298,6 +1377,8 @@ impl GameManager {
                 }
             }
             Message::DismissError => self.error = None,
+            Message::CrashFound(crash) => self.crash = Some(crash),
+            Message::DismissCrash => self.crash = None,
             Message::AddGame => {
                 // Owned by the app's window, which is disabled while the dialog is open.
                 FilePicker::new()
@@ -1379,6 +1460,7 @@ impl GameManager {
                 self.games.push(game);
                 gm_core::sort_games(&mut self.games);
                 self.load_covers(true, false, context);
+                self.rewatch(context);
             }
             Message::RemoveGame(id) => self.removing = Some(id),
             Message::RemoveClosed(result) => {
@@ -1412,6 +1494,7 @@ impl GameManager {
                 self.drop_covers_of_missing_games();
                 self.selected = library::keep_selection(&self.games, self.selected.as_deref());
                 self.tidy_view();
+                self.rewatch(context);
             }
             Message::CustomGameAdded(Err(e)) | Message::CustomGameRemoved(Err(e)) => {
                 self.error = Some(e);

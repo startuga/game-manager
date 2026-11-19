@@ -37,6 +37,7 @@ pub mod reshade_addons;
 pub mod reshade_layer;
 pub mod reshade_settings;
 pub mod shader_packs;
+pub mod updates;
 pub mod upscalers;
 
 pub use crate::elevate::FILE_OPS_ARG;

@@ -14,7 +14,9 @@
 //! (`widgets::picture_icon_button`: the Artwork dialog on its Banner tab, `artwork.rs`), with no
 //! chip of its own: a soft shade around it (`theme::ART_BUTTON_SHADE`) lets its white glyph read
 //! on light art too. Then a
-//! launch bar with the Play button, the alternative launches, Folder, PCGamingWiki and Nexus Mods
+//! launch bar with the Play button (Starting… after a click; Running, disabled with the
+//! alternative launches, while the game's program runs, `play.rs`), the alternative launches,
+//! Folder, PCGamingWiki and Nexus Mods
 //! (its page found in the background, `gm_core::nexus_mods`, the button waiting meanwhile), Saves
 //! and Config (the folders PCGamingWiki names, `gm_core::game_data`, looked up in the background
 //! each time the game is selected; disabled, the tooltip saying where the folder would be, that the
@@ -24,7 +26,9 @@
 //!
 //! The tabs: Overview (Game settings, the draft in `edit.rs`: its text values `field`s, Bitness
 //! and Graphics API `setting_row`s, then Reset to detected, Save and Cancel in the form's row;
-//! beside it the game's details as `facts`), ReShade
+//! under it While playing, a game's display settings while it plays (`play_cards.rs`); beside them
+//! the game's details as `facts`: the store, its program and bitness, Last played, "Now" while it
+//! runs, and Play time), ReShade
 //! with its Shaders and Add-ons views (`mods_view.rs`, `reshade_panel.rs`), DXVK & LAA
 //! (`mods_view.rs`), Upscalers with its Versions section (`upscalers_view.rs`,
 //! `upscaler_versions.rs`), and NVIDIA overrides (`dlss_override_view.rs`), listed only once an
@@ -386,26 +390,41 @@ impl GameManager {
     }
 
     fn launch_bar(&self, game: &Game) -> El<Message> {
-        let state = if self.launching.as_deref() == Some(game.id.as_str()) {
+        // Running (`play.rs`) before Starting…: a running game isn't started again.
+        let running = self.play.is_running(&game.id);
+        let state = if running {
+            PlayState::Running
+        } else if self.launching.as_deref() == Some(game.id.as_str()) {
             PlayState::Starting
         } else {
             PlayState::Play
         };
-        let mut items = vec![
-            play_button(
-                state,
-                Message::Launch {
-                    id: game.id.clone(),
-                    option: None,
-                },
-            )
-            .name(format!("Play {}", game.name)),
-        ];
-        items.extend(game.alt_launches.iter().enumerate().map(|(i, alt)| {
-            button(alt.label.clone()).on_click(Message::Launch {
+        // While it runs, a screen reader hears what the button says, not "Play".
+        let name = if running {
+            format!("{} is running", game.name)
+        } else {
+            format!("Play {}", game.name)
+        };
+        let mut play = play_button(
+            state,
+            Message::Launch {
                 id: game.id.clone(),
-                option: Some(i),
-            })
+                option: None,
+            },
+        )
+        .name(name.clone())
+        .enabled(!running);
+        if running {
+            play = play.tooltip(name);
+        }
+        let mut items = vec![play];
+        items.extend(game.alt_launches.iter().enumerate().map(|(i, alt)| {
+            button(alt.label.clone())
+                .enabled(!running)
+                .on_click(Message::Launch {
+                    id: game.id.clone(),
+                    option: Some(i),
+                })
         }));
         if game.install_dir.is_some() {
             items.push(
@@ -453,7 +472,14 @@ impl GameManager {
 
     fn overview(&self, game: &Game) -> El<Message> {
         row([
-            self.game_settings(game).fill_width().valign(Align::Start),
+            col([
+                self.game_settings(game),
+                self.while_playing_card(game),
+                self.save_backups_card(game),
+            ])
+            .gap(theme::space::L)
+            .fill_width()
+            .valign(Align::Start),
             self.details(game).width(320.0).valign(Align::Start),
         ])
         .gap(theme::space::L)
@@ -621,6 +647,22 @@ impl GameManager {
                 shown.display().to_string()
             },
         );
+        // When it was last played and for how long (`play.rs`): left out until it has been.
+        let last_played = if self.play.is_running(&game.id) {
+            "Now".to_owned()
+        } else {
+            self.play
+                .played
+                .get(&game.id)
+                .and_then(|play| play.last_played)
+                .map_or_default(|at| crate::play::last_played_label(at, gm_core::local_time::now()))
+        };
+        let seconds = self.play.seconds(&game.id);
+        let play_time = if seconds > 0 {
+            crate::play::play_time_label(seconds)
+        } else {
+            String::new()
+        };
         card([
             card_header(g::INFO, theme::slate(), "Details", ""),
             facts(vec![
@@ -631,6 +673,8 @@ impl GameManager {
                     game.arch
                         .map_or_else(|| "Unknown".to_owned(), |arch| arch.label().to_owned()),
                 ),
+                ("Last played", last_played),
+                ("Play time", play_time),
             ]),
         ])
     }

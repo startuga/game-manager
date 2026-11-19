@@ -1,0 +1,33 @@
+# Checks every push to master and every pull request on Windows, as CLAUDE.md asks before a change
+# is finished: formatting, Clippy with no warnings, and the tests. The toolchain comes from
+# rust-toolchain.toml; the cache keeps the windows-rs checkout (about 1.4 GB) and the build between
+# runs. Tests that need this PC's hardware or the network are `#[ignore]`d and don't run here.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      # The git command line fetches the windows-rs repository faster than Cargo's own git.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the toolchain in rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked

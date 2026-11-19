@@ -17,6 +17,9 @@
 //! page art's background and logo (read only: nothing is downloaded or cached).
 //! `--saves` prints each game's saves and config folders from PCGamingWiki, as the game page's
 //! buttons open them (the wiki is asked about once a second for games not in its cache).
+//! `--play` prints each game's last played day and play time as the app shows them (Steam's
+//! history merged with Game Manager's), the sessions still open, and the games running now (read
+//! only).
 
 #![allow(
     clippy::expect_used,
@@ -42,6 +45,10 @@ fn main() {
     }
 
     let report = gm_core::scan_all();
+    if args.iter().any(|arg| arg == "--play") {
+        print_play(&report.games);
+        return;
+    }
     let mods = gm_core::mods::load().unwrap_or_default();
     for game in &report.games {
         let arch = game.arch.map_or("?", |arch| arch.label());
@@ -226,6 +233,88 @@ fn main() {
 }
 
 /// My PC, as the page reads it.
+/// `--play`: Steam's play history and Game Manager's own, merged as the app shows them, the
+/// sessions still open, and the watched games running now (read only).
+fn print_play(games: &[gm_core::Game]) {
+    let name = |id: &str| {
+        games
+            .iter()
+            .find(|game| game.id == id)
+            .map_or_else(|| id.to_owned(), |game| game.name.clone())
+    };
+    let day = |unix: u64| {
+        gm_core::local_time::local(unix).map_or_else(
+            || unix.to_string(),
+            |at| {
+                format!(
+                    "{}-{:02}-{:02} {:02}:{:02}",
+                    at.year, at.month, at.day, at.hour, at.minute
+                )
+            },
+        )
+    };
+    match gm_core::steam::play_times() {
+        Ok(Some((file, apps))) => {
+            println!("Steam: {} ({} apps played)", file.display(), apps.len())
+        }
+        Ok(None) => println!("Steam: no account's local config found"),
+        Err(error) => println!("Steam: {error}"),
+    }
+    let steam = gm_core::play::steam_play().unwrap_or_default();
+    let history = gm_core::play::load().unwrap_or_default();
+    println!(
+        "Game Manager's history: {} games, {} sessions open",
+        history.games.len(),
+        history.open.len()
+    );
+    let merged = gm_core::play::merged(&history.games, &steam);
+    let mut played: Vec<_> = games
+        .iter()
+        .filter_map(|game| Some((game, merged.get(&game.id)?)))
+        .collect();
+    played.sort_by_key(|(_, play)| std::cmp::Reverse(play.last_played));
+    for (game, play) in played {
+        println!(
+            "  {:<40} last played {:<16} {:>6} min",
+            game.name,
+            play.last_played.map_or_else(|| "never".to_owned(), day),
+            play.seconds / 60
+        );
+    }
+    for (id, session) in &history.open {
+        println!(
+            "  open: {} since {}, {} s counted",
+            name(id),
+            day(session.started),
+            session.played
+        );
+    }
+    for (id, restore) in &history.displays {
+        println!(
+            "  display settings to put back for {}: {} (HDR {:?}, mode {:?})",
+            name(id),
+            restore.name,
+            restore.hdr_before,
+            restore.mode.map(|change| change.before)
+        );
+    }
+    let watch = gm_core::play::Watchlist::new(games, &history.open);
+    match gm_core::play::running(&watch) {
+        Ok(seen) if seen.is_empty() => println!("Running now: no game"),
+        Ok(seen) => {
+            for process in seen {
+                println!(
+                    "Running now: {} (process {}, {})",
+                    name(&process.game),
+                    process.pid,
+                    process.program.display()
+                );
+            }
+        }
+        Err(error) => println!("Running now: {error}"),
+    }
+}
+
 fn print_pc() {
     use gm_core::pc::{self, format_bytes};
     let started = std::time::Instant::now();
@@ -296,6 +385,9 @@ fn print_pc() {
         Err(error) => println!("drives: {error}"),
     }
     match &pc.displays {
+        Ok(displays) if displays.is_empty() => {
+            println!("displays: none active (a TV in standby or a display switched off)");
+        }
         Ok(displays) => {
             for display in displays {
                 println!(
@@ -314,6 +406,7 @@ fn print_pc() {
                         (false, false) => "not supported",
                     }
                 );
+                println!("  id: {}", display.id);
                 println!(
                     "    {} modes, current {:?}, first {:?}",
                     display.modes.len(),

@@ -8,6 +8,8 @@
 //! - **A message later** (`after`): a window timer sends it once the time has passed ("Starting…"
 //!   for a few seconds, My PC's countdown), so no pool thread waits for it.
 //! - **The window's scaling** (`scale`), for pictures made at the window's own pixel size.
+//! - **A quiet message** (`quiet`): one that changed nothing shown, so the shell doesn't build the
+//!   view again (play tracking's look every 5 seconds).
 //! - **Effects** (the Open dialog, minimize, maximize, close) are queued and run by the message
 //!   loop between messages, with no state borrowed: a modal dialog's own message loop then reaches
 //!   the window normally.
@@ -108,6 +110,8 @@ pub struct Ctx<M> {
     scale: Cell<f32>,
     sender: Sender<M>,
     effects: RefCell<Vec<Effect<M>>>,
+    /// The message being handled changed nothing shown (`quiet`).
+    quiet: Cell<bool>,
 }
 
 impl<M: Send + 'static> Ctx<M> {
@@ -117,6 +121,7 @@ impl<M: Send + 'static> Ctx<M> {
             scale: Cell::new(1.0),
             sender,
             effects: RefCell::new(Vec::new()),
+            quiet: Cell::new(false),
         }
     }
 
@@ -172,6 +177,18 @@ impl<M: Send + 'static> Ctx<M> {
         self.effects
             .borrow_mut()
             .push(Effect::After(delay, message));
+    }
+
+    /// Says the message being handled changed nothing the view shows, so the shell doesn't build
+    /// and lay it out again (a play-tracking tick that saw nothing new, every 5 seconds, would
+    /// otherwise rebuild a large library each time).
+    pub fn quiet(&self) {
+        self.quiet.set(true);
+    }
+
+    /// Whether the message just handled was quiet; the next one starts out loud.
+    pub fn take_quiet(&self) -> bool {
+        self.quiet.replace(false)
     }
 
     /// Minimizes, maximizes or closes the window once the current message is handled.

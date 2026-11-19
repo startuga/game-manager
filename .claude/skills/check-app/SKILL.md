@@ -141,6 +141,22 @@ Never install into the user's real games, whose folders may hold their own DXVK 
 - **Live downloads**: `cargo test -p gm-core live_builds -- --ignored` fetches each ReShade variant
   and the default effects; `live_upscalers` one version of each upscaler DLL.
 
+## Play tracking, display settings and save backups with a throwaway game
+- **The throwaway game**: a copy of `System32\PING.EXE` as `target\agent\check\playtest\PlayTest.exe`,
+  added to `custom-games.json`; `PlayTest.exe -n 25 127.0.0.1` started outside the app runs about
+  25 s, and the watcher sees it within 5 s. Sessions under 10 s don't count.
+- **Its saves folder**: seed `%LOCALAPPDATA%\Game Manager\cache\game-data.json` (the same file in
+  both views) with an entry for its id: `fetched` now, a `page`, and `saves` of
+  `{"platform": "Windows", "path": "{{p|game}}\\Saves"}` (`{{p|game}}` is a custom game's
+  program folder).
+- **What a check writes**: the throwaway's sessions in `play-history.json` (keep the user's own
+  entries: copy the file first), `save-backups.json`, and backups in
+  `Documents\Game Manager\Save backups\<game>`. Remove only what the check made.
+- **Restore's dialog**: its red button is named "Restore", like the window's caption button at
+  the top edge: pick the one inside the dialog by its position.
+- **Display settings while playing**: choosing them only writes `game-settings.json`; Play with a
+  choice switches the user's display, so the user tries it.
+
 ## Icons
 - `cargo run -p gm-core --example scan -- --icons <dir>` saves each game's icon as the app gets it
   (its best image, `.png` or a one-image `.ico`) and prints its size and depth. `-v` prints where

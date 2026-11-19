@@ -21,6 +21,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The store's own programs, never a game's: play tracking doesn't count them (`play`).
+pub(crate) const CLIENT_PROGRAMS: &[&str] = &["EpicGamesLauncher.exe", "EpicWebHelper.exe"];
+
 /// Scans both launcher generations for installed games.
 pub fn scan() -> Result<Vec<Game>> {
     let mut games = Vec::new();

@@ -106,7 +106,8 @@ impl GameManager {
                 g::MONITOR,
                 theme::cyan(),
                 "Displays",
-                "No active display was found.",
+                "No active display was found: a TV in standby or a display switched off shows here \
+                 once it is on again (Refresh).",
             )],
             Err(error) => vec![error_card(
                 g::MONITOR,

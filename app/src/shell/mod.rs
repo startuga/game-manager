@@ -411,7 +411,10 @@ impl<A: App> Shell<A> {
 
     fn dispatch(&mut self, message: A::Message) {
         self.app.update(message, &self.ctx);
-        self.stale = true;
+        // A quiet message (`Ctx::quiet`) changed nothing shown: the view isn't built again.
+        if !self.ctx.take_quiet() {
+            self.stale = true;
+        }
     }
 
     fn dispatch_some(&mut self, message: Option<A::Message>) {

@@ -62,7 +62,7 @@ output for HDR; its authors discourage using it online.
 ⚠ Games with anti-cheat may ban players who use DXVK.
 ⚠ Overlays (Steam, NVIDIA, RTSS) may conflict with it.";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DxvkVariant {
     #[default]
     Stable,
@@ -426,6 +426,8 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     }
     let state = state(game)?;
     let build = latest(state.variant)?;
+    // The latest build, known now for its update notices (`updates`).
+    super::updates::remember(super::updates::Line::Dxvk(state.variant), &build);
     let cache = cached_build(&build)?;
     let mut files = Vec::new();
     for dll in target.dlls {

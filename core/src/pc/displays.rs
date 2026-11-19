@@ -1,9 +1,13 @@
 //! The active displays and the changes the My PC page makes to them: mode (resolution and refresh
 //! rate), HDR, colour profile and brightness. Win32 only, no WMI.
 //!
-//! - **Reading**: `QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS)`, one path per active display.
+//! - **Reading**: `QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS)`, one path per active display; none
+//!   while no display is active (a TV in standby), and asked again briefly while the
+//!   configuration changes (`query`).
 //!   - The target gives the monitor's name, refresh rate and output technology. Internal, LVDS
-//!     and embedded DisplayPort/UDI outputs are built-in panels.
+//!     and embedded DisplayPort/UDI outputs are built-in panels. Its device path (`id`) names the
+//!     monitor on its connector across restarts, for choices kept in a file (a game's display
+//!     while it plays, `play::display`); the same monitor on another port gets another.
 //!   - The source gives the GDI name (`\\.\DISPLAY1`) and, through its mode, size and desktop
 //!     position; the display at 0,0 is the main one.
 //!   - HDR: `GET_ADVANCED_COLOR_INFO_2` (Windows 11 24H2+) tells HDR apart from wide colour.
@@ -32,6 +36,7 @@
 
 use super::hardware::wide;
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::ptr;
 use std::sync::{Mutex, PoisonError};
@@ -63,6 +68,9 @@ use windows::core::{BOOL, HRESULT, HSTRING, PCWSTR, PWSTR, WIN32_ERROR, s, w};
 /// An active display.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Display {
+    /// The monitor's device path (`\\?\DISPLAY#GSM5B09#…`): which monitor on which connector,
+    /// the same after a restart. Empty when Windows did not say.
+    pub id: String,
     /// The monitor's name ("LG ULTRAGEAR"), or "Display".
     pub name: String,
     /// `\\.\DISPLAY1`, empty when Windows did not say: then nothing can be changed.
@@ -88,7 +96,7 @@ pub struct Display {
 }
 
 /// A resolution and refresh rate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DisplayMode {
     pub width: u32,
     pub height: u32,
@@ -115,7 +123,8 @@ impl Target {
     }
 }
 
-pub(super) fn displays() -> Result<Vec<Display>> {
+/// The active displays, the main one first. Blocking (a few milliseconds).
+pub fn displays() -> Result<Vec<Display>> {
     let (paths, modes) = query()?;
     let mscms = Mscms::load();
     let mut displays: Vec<Display> = paths
@@ -126,17 +135,33 @@ pub(super) fn displays() -> Result<Vec<Display>> {
     Ok(displays)
 }
 
-/// The active paths and their modes. The configuration can change between the two calls, which
-/// then answers "insufficient buffer": asked again.
+/// The active paths and their modes.
+///
+/// - **No active path** (the only display a TV that is off): none, not an error. On 2026-11-16,
+///   with the TV off, Windows answered "invalid parameter" and My PC's whole Displays card was an
+///   error; an empty list, or that answer still coming after the retries, now means none.
+/// - **The configuration changing** between the two calls answers "insufficient buffer", and a
+///   display waking up can answer "invalid parameter" for a moment: asked again, a little later.
 fn query() -> Result<(Vec<DISPLAYCONFIG_PATH_INFO>, Vec<DISPLAYCONFIG_MODE_INFO>)> {
+    const INVALID_PARAMETER: i32 = 87;
     const INSUFFICIENT_BUFFER: i32 = 122;
     let flags = QDC_ONLY_ACTIVE_PATHS as u32;
     let mut result = 0;
-    for _ in 0..3 {
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
         let (mut path_count, mut mode_count) = (0u32, 0u32);
         // SAFETY: two valid out-pointers.
         let sized = unsafe { GetDisplayConfigBufferSizes(flags, &mut path_count, &mut mode_count) };
+        if sized == INVALID_PARAMETER {
+            result = sized;
+            continue;
+        }
         check(sized, "The displays")?;
+        if path_count == 0 {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
         let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
         // SAFETY: the arrays hold the counts given; no topology is asked for.
@@ -150,13 +175,18 @@ fn query() -> Result<(Vec<DISPLAYCONFIG_PATH_INFO>, Vec<DISPLAYCONFIG_MODE_INFO>
                 ptr::null_mut(),
             )
         };
-        if result == INSUFFICIENT_BUFFER {
+        if result == INSUFFICIENT_BUFFER || result == INVALID_PARAMETER {
             continue;
         }
         check(result, "The displays")?;
         paths.truncate(path_count as usize);
         modes.truncate(mode_count as usize);
         return Ok((paths, modes));
+    }
+    // Still "invalid parameter" (our flags and arrays are valid): Windows has no display to
+    // report, as with the TV off on 2026-11-16.
+    if result == INVALID_PARAMETER {
+        return Ok((Vec::new(), Vec::new()));
     }
     check(result, "The displays").map(|()| (Vec::new(), Vec::new()))
 }
@@ -168,9 +198,12 @@ fn display(
 ) -> Display {
     let source = &path.sourceInfo;
     let target_info = &path.targetInfo;
-    let name = target_name(target_info)
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Display".to_owned());
+    let (name, id) = target_name(target_info).unwrap_or_default();
+    let name = if name.is_empty() {
+        "Display".to_owned()
+    } else {
+        name
+    };
     let gdi_name = source_name(source).unwrap_or_default();
     // SAFETY: without QDC_VIRTUAL_MODE_AWARE the union holds the source mode's index.
     let index = unsafe { source.Anonymous.modeInfoIdx } as usize;
@@ -206,6 +239,7 @@ fn display(
     let (color_profiles, color_profile) =
         mscms.map_or((Vec::new(), None), |mscms| mscms.profiles(&target, hdr_on));
     Display {
+        id,
         name,
         gdi_name,
         width,
@@ -244,7 +278,10 @@ fn header(
     }
 }
 
-fn target_name(target: &windows::Win32::DISPLAYCONFIG_PATH_TARGET_INFO) -> Option<String> {
+/// The monitor's friendly name and its device path.
+fn target_name(
+    target: &windows::Win32::DISPLAYCONFIG_PATH_TARGET_INFO,
+) -> Option<(String, String)> {
     let mut packet = DISPLAYCONFIG_TARGET_DEVICE_NAME {
         header: header(
             DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
@@ -256,7 +293,12 @@ fn target_name(target: &windows::Win32::DISPLAYCONFIG_PATH_TARGET_INFO) -> Optio
     };
     // SAFETY: the packet starts with a header naming its type and size.
     let result = unsafe { DisplayConfigGetDeviceInfo(ptr::from_mut(&mut packet).cast()) };
-    (result == 0).then(|| wide(&packet.monitorFriendlyDeviceName))
+    (result == 0).then(|| {
+        (
+            wide(&packet.monitorFriendlyDeviceName),
+            wide(&packet.monitorDevicePath),
+        )
+    })
 }
 
 fn source_name(source: &windows::Win32::DISPLAYCONFIG_PATH_SOURCE_INFO) -> Option<String> {

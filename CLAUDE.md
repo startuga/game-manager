@@ -63,13 +63,19 @@ DLSS overrides in their driver profiles.
   - `-- --icons <dir>` saves each icon as the app gets it (its best image, `.png` or `.ico`).
   - `-- --nvidia` prints the driver's version and DLLs, then each game's NVIDIA driver profile
     with its Present Method, flags and DLSS overrides (read only).
-  - `-- --pc` prints My PC instead of the games: hardware, displays with their modes, colour
+  - `-- --pc` prints My PC instead of the games: hardware, displays with their ids, modes, colour
     profiles and brightness, and Windows' game switches (read only).
   - `-- --covers` prints where each game's cover comes from, or would be looked for (read only).
+  - `-- --play` prints each game's last played day and play time as the app shows them (Steam's
+    and Game Manager's merged), the sessions still open, display settings still to put back, and
+    the games running now (read only).
   - To verify bitness, compare a `program` with `GetBinaryTypeW` and `dumpbin /headers`. Parse
     scan lines from the right, as names can be wider than their column.
 - **Before finishing a change**: `cargo fmt`, `cargo clippy --all-targets` (no warnings),
-  `cargo test`.
+  `cargo test`. CI (`.github/workflows/ci.yml`) runs the same on Windows for every push to master
+  and every pull request.
+- **Crashes**: a panic writes `%LOCALAPPDATA%\Game Manager\crash.log` (`gm_core::crash`); the
+  next start shows its first line once and keeps it as `crash-shown.log`.
 
 ## Checking the app from an agent session
 The `check-app` skill (`.claude/skills/check-app/SKILL.md`) builds, starts, drives and captures

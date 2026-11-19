@@ -14,27 +14,39 @@
 //! - **Smart Collections** (`in_collection`): sets that fill themselves, one at most. Picking one
 //!   clears the filters, and a filter turns the collection off (`pick_collection`,
 //!   `toggle_store`, `set_hidden`).
-//! - **Sort**: by name either way, or the most recently installed first (`Game::installed`; a
-//!   game without a date comes last), with the games under their store or in one list.
+//! - **Sort**: by name either way, the most recently installed first (`Game::installed`; a game
+//!   without a date comes last), or the most recently played first (`Facts::played`, from
+//!   `gm_core::play`; games never played last), with the games under their store or in one list.
 //!
 //! **Sections** (`sections`): what the sidebar and the Library page list, in order. **Pinned
 //! games** (the game menu's Pin to quick access) come first, in a section of their own, in the
 //! order they were pinned whatever the sort; their store's group no longer lists them.
 
 use gm_core::mods::ModsFile;
+use gm_core::play::Played;
 use gm_core::{Game, Store};
+use std::collections::HashMap;
 
 pub use gm_core::config::{Collection, LibraryView, Sort};
 
-/// How long a game counts as recently installed (the collection): 30 days.
+/// How long a game counts as recently installed or played (the collections): 30 days.
 const RECENT: u64 = 30 * 24 * 60 * 60;
 
-/// What a view needs to know beyond the games: their mods, and the time.
+/// What a view needs to know beyond the games: their mods, their play, and the time.
 #[derive(Clone, Copy)]
 pub struct Facts<'a> {
     pub mods: &'a ModsFile,
+    /// Each game's play, by id (`play.rs`: Game Manager's history and Steam's merged).
+    pub played: &'a HashMap<String, Played>,
     /// Now, in seconds since 1970.
     pub now: u64,
+}
+
+impl Facts<'_> {
+    /// When the game was last played, if ever.
+    fn last_played(&self, game: &Game) -> Option<u64> {
+        self.played.get(&game.id).and_then(|play| play.last_played)
+    }
 }
 
 /// Now, in seconds since 1970, for `Facts`.
@@ -79,6 +91,9 @@ pub fn in_collection(game: &Game, collection: Collection, facts: Facts) -> bool 
         Collection::RecentlyInstalled => game
             .installed
             .is_some_and(|at| facts.now.saturating_sub(at) <= RECENT),
+        Collection::RecentlyPlayed => facts
+            .last_played(game)
+            .is_some_and(|at| facts.now.saturating_sub(at) <= RECENT),
     }
 }
 
@@ -91,6 +106,7 @@ pub fn collection_label(collection: Collection) -> &'static str {
         Collection::Dxvk => "With DXVK",
         Collection::Bits32 => "32-bit",
         Collection::RecentlyInstalled => "Recently installed",
+        Collection::RecentlyPlayed => "Recently played",
     }
 }
 
@@ -100,11 +116,17 @@ pub fn sort_label(sort: Sort) -> &'static str {
         Sort::Name => "Name (A–Z)",
         Sort::NameDescending => "Name (Z–A)",
         Sort::RecentlyInstalled => "Recently installed",
+        Sort::RecentlyPlayed => "Recently played",
     }
 }
 
 /// Every sort, in the flyout's order.
-pub const SORTS: [Sort; 3] = [Sort::Name, Sort::NameDescending, Sort::RecentlyInstalled];
+pub const SORTS: [Sort; 4] = [
+    Sort::Name,
+    Sort::NameDescending,
+    Sort::RecentlyInstalled,
+    Sort::RecentlyPlayed,
+];
 
 /// Whether a filter or a collection narrows the lists (the sort doesn't).
 pub fn is_filtered(view: &LibraryView) -> bool {
@@ -202,7 +224,7 @@ pub enum SectionKind {
 
 /// The shown games (indices into `games`, as `shown` gives them) as the lists show them: the
 /// pinned ones, then the others under their store or in one list, each in the view's order.
-pub fn sections(games: &[Game], shown: &[usize], view: &LibraryView) -> Vec<Section> {
+pub fn sections(games: &[Game], shown: &[usize], view: &LibraryView, facts: Facts) -> Vec<Section> {
     let (pinned, rest) = split_pinned(games, shown);
     let mut sections = Vec::new();
     if !pinned.is_empty() {
@@ -213,7 +235,7 @@ pub fn sections(games: &[Game], shown: &[usize], view: &LibraryView) -> Vec<Sect
     }
     let mut add = |kind, mut section: Vec<usize>| {
         if !section.is_empty() {
-            sort(games, &mut section, view.sort);
+            sort(games, &mut section, view.sort, facts);
             sections.push(Section {
                 kind,
                 games: section,
@@ -235,7 +257,7 @@ pub fn sections(games: &[Game], shown: &[usize], view: &LibraryView) -> Vec<Sect
 }
 
 /// Orders games (indices in the library's own order, which is by name).
-fn sort(games: &[Game], section: &mut [usize], order: Sort) {
+fn sort(games: &[Game], section: &mut [usize], order: Sort, facts: Facts) {
     match order {
         Sort::Name => section.sort_unstable(),
         Sort::NameDescending => section.sort_unstable_by(|a, b| b.cmp(a)),
@@ -243,6 +265,12 @@ fn sort(games: &[Game], section: &mut [usize], order: Sort) {
         Sort::RecentlyInstalled => {
             section
                 .sort_unstable_by_key(|&index| (std::cmp::Reverse(games[index].installed), index));
+        }
+        // The latest played first; games never played after those, by name.
+        Sort::RecentlyPlayed => {
+            section.sort_unstable_by_key(|&index| {
+                (std::cmp::Reverse(facts.last_played(&games[index])), index)
+            });
         }
     }
 }
@@ -299,7 +327,7 @@ pub fn shown(games: &[Game], query: &str, view: &LibraryView, facts: Facts) -> V
 /// The first game shown for the search and view, in the lists' order (`sections`).
 pub fn first_shown(games: &[Game], query: &str, view: &LibraryView, facts: Facts) -> Option<usize> {
     let shown = shown(games, query, view, facts);
-    let first = sections(games, &shown, view).into_iter().next()?;
+    let first = sections(games, &shown, view, facts).into_iter().next()?;
     first.games.first().copied()
 }
 
@@ -523,8 +551,23 @@ mod tests {
     const NOW: u64 = 1_800_000_000;
     const DAY: u64 = 24 * 60 * 60;
 
+    /// No game played.
+    static NO_PLAY: std::sync::LazyLock<HashMap<String, Played>> =
+        std::sync::LazyLock::new(HashMap::new);
+
     fn facts(mods: &ModsFile) -> Facts<'_> {
-        Facts { mods, now: NOW }
+        Facts {
+            mods,
+            played: &NO_PLAY,
+            now: NOW,
+        }
+    }
+
+    fn played(at: u64) -> Played {
+        Played {
+            last_played: Some(at),
+            seconds: 60,
+        }
     }
 
     /// A view with these stores ticked.
@@ -603,6 +646,23 @@ mod tests {
                 (Collection::Bits32, 1),
                 (Collection::RecentlyInstalled, 1),
             ]
+        );
+        // Played in the last 30 days (Steam's history counted too, `play.rs`).
+        let plays = HashMap::from([
+            (games[1].id.clone(), played(NOW - 2 * DAY)),
+            (games[3].id.clone(), played(NOW - 40 * DAY)),
+        ]);
+        let with_play = Facts {
+            played: &plays,
+            ..facts(&mods)
+        };
+        let recently: Vec<usize> = (0..games.len())
+            .filter(|&index| in_collection(&games[index], Collection::RecentlyPlayed, with_play))
+            .collect();
+        assert_eq!(recently, [1]);
+        assert_eq!(
+            collection_counts(&games, &all, with_play).last(),
+            Some(&(Collection::RecentlyPlayed, 1))
         );
         // NVIDIA's DLSS overrides count as a mod too.
         let mut more = mods.clone();
@@ -704,13 +764,22 @@ mod tests {
         games[1].installed = Some(30);
         games[4].installed = Some(50);
         let all = [0, 1, 2, 3, 4];
+        let mods = ModsFile::default();
+        let plays = HashMap::from([
+            (games[0].id.clone(), played(NOW - DAY)),
+            (games[4].id.clone(), played(NOW - 5 * DAY)),
+        ]);
+        let facts = Facts {
+            played: &plays,
+            ..facts(&mods)
+        };
         let lists = |sort, group_by_store| -> Vec<(SectionKind, Vec<usize>)> {
             let view = LibraryView {
                 sort,
                 group_by_store,
                 ..Default::default()
             };
-            sections(&games, &all, &view)
+            sections(&games, &all, &view, facts)
                 .into_iter()
                 .map(|section| (section.kind, section.games))
                 .collect()
@@ -726,6 +795,7 @@ mod tests {
             (Sort::Name, vec![0, 4]),
             (Sort::NameDescending, vec![4, 0]),
             (Sort::RecentlyInstalled, vec![4, 0]),
+            (Sort::RecentlyPlayed, vec![0, 4]),
         ] {
             let mut expected = vec![pinned.clone(), steam(steam_games)];
             expected.extend(others.clone());
@@ -739,16 +809,18 @@ mod tests {
             lists(Sort::RecentlyInstalled, false),
             flat(vec![4, 1, 0, 2])
         );
+        // The latest played first, the games never played after them by name.
+        assert_eq!(lists(Sort::RecentlyPlayed, false), flat(vec![0, 4, 1, 2]));
         // Only what is shown, and no empty sections.
         let view = LibraryView::default();
         assert_eq!(
-            sections(&games, &[2], &view),
+            sections(&games, &[2], &view, facts),
             [Section {
                 kind: SectionKind::Store(Store::Gog),
                 games: vec![2]
             }]
         );
-        assert!(sections(&games, &[], &view).is_empty());
+        assert!(sections(&games, &[], &view, facts).is_empty());
     }
 
     #[test]

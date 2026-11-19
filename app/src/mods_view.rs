@@ -1,8 +1,9 @@
 //! The game page's mod tabs: ReShade, and DXVK & LAA (LAA for 32-bit games only). Each mod is a
 //! card whose header (`card_header_with`) says its installed version (a link to the page it was
-//! downloaded from, a view's one inline link), with Install or Reinstall, Settings, the red ✕
-//! and Info last at the right; then a line saying what Install does, what is installed, or why it
-//! can't be (`working` while that is looked up). Then the dialogs these open (Info or settings),
+//! downloaded from, a view's one inline link; "Update available: <version>" after it when a newer
+//! build of its line is out, `with_update`, `mods::updates`), with Install or Reinstall, Settings,
+//! the red ✕ and Info last at the right; then a line saying what Install does, what is installed,
+//! or why it can't be (`working` while that is looked up). Then the dialogs these open (Info or settings),
 //! as modal layers: one at a time, and the mod buttons wait while one is open. DXVK settings is
 //! laid out as every form: its choices are `setting_row`s (HDR a `switch`), the frame-rate limit
 //! a `field`, and the NVIDIA part under a `section_label`. Uninstalling ReShade or DXVK, and deleting a
@@ -18,15 +19,16 @@ use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, row, text};
 use crate::ui::theme::{self, glyph as g};
 use crate::ui::widgets::{
-    accent_button, busy_width, button, card, card_header, card_header_with, field, hint,
+    accent_button, busy_width, button, card, card_header, card_header_with, chip, field, hint,
     icon_button, icon_text_button, link, radio_group, remove_button, section_label, segmented,
     setting_row, switch, text_box, working, working_button,
 };
-use crate::{DialogResult, GameManager, Message, ReshadeView};
+use crate::{DialogResult, GameManager, GameTab, Message, Page, ReshadeView};
 use gm_core::graphics::GraphicsApi;
 use gm_core::mods::dxvk::{self, Blocked, DxvkConfig, DxvkVariant, Hud};
 use gm_core::mods::laa::{LAA_INFO, LaaStatus};
 use gm_core::mods::reshade::{self, Mode, ReshadeVariant};
+use gm_core::mods::updates::{self, Line};
 use gm_core::nvidia::{self, NvidiaChoice, PRESENT_FLAG_VALUES, PRESENT_METHODS, SettingState};
 use gm_core::{Arch, Game};
 use std::path::Path;
@@ -297,6 +299,18 @@ pub(crate) fn mod_card(card_spec: ModCard) -> El<Message> {
     ])
 }
 
+/// A card's status with "Update available: <version>" after it when one is out.
+pub(crate) fn with_update(status: El<Message>, update: Option<&str>) -> El<Message> {
+    match update {
+        Some(version) => row([
+            status,
+            chip(format!("Update available: {version}"), theme::green()),
+        ])
+        .gap(theme::space::S),
+        None => status,
+    }
+}
+
 /// The installed version as a link to its download page, or "Not installed".
 fn version_link(mod_name: &str, installed: Option<(&str, &str)>) -> El<Message> {
     match installed {
@@ -310,6 +324,42 @@ fn version_link(mod_name: &str, installed: Option<(&str, &str)>) -> El<Message> 
 }
 
 impl GameManager {
+    /// The selected game's installed ReShade or DXVK line, while its tab shows.
+    fn shown_mod_line(&self) -> Option<Line> {
+        if self.page != Page::Game {
+            return None;
+        }
+        let id = self.selected.as_deref()?;
+        match self.tab {
+            GameTab::Reshade if self.reshade_view == ReshadeView::Install => {
+                Line::of_reshade(self.mods.reshade(id)?)
+            }
+            GameTab::Mods => Line::of_dxvk(self.mods.dxvk(id)?),
+            _ => None,
+        }
+    }
+
+    /// The latest build of the mod tab's installed line, asked for in the background once (the
+    /// core keeps it a day), for its update notice.
+    pub(crate) fn request_mod_updates(&mut self, context: &Ctx<Message>) {
+        let Some(line) = self.shown_mod_line() else {
+            return;
+        };
+        if self.mod_latest.contains_key(&line) || !self.mod_latest_pending.insert(line) {
+            return;
+        }
+        context.spawn_background(move || {
+            Message::ModLatest(line, updates::latest(line).ok().flatten())
+        });
+    }
+
+    /// A newer build of an installed mod's line, when one is known: its version.
+    fn mod_update(&self, line: Option<Line>, installed: &str) -> Option<&str> {
+        let line = line?;
+        let latest = self.mod_latest.get(&line)?.as_ref()?;
+        updates::newer(line, installed, &latest.version).then_some(latest.version.as_str())
+    }
+
     /// Whether a job on this game's `kind` of mod is running.
     fn working_on(&self, game: &Game, kind: ModKind) -> bool {
         self.mod_job
@@ -493,14 +543,29 @@ impl GameManager {
                 || (installed.is_none()
                     && matches!(target, Some(Err(reshade::Blocked::NoApi)))
                     && !self.graphics.contains_key(&game.id)));
+        let update = installed.and_then(|installed| {
+            self.mod_update(state.and_then(Line::of_reshade), &installed.version)
+        });
+        let mut hint = hint;
+        if let Some(version) = update
+            && !working
+        {
+            hint.push_str(&format!(
+                " ReShade {version} is out: Reinstall installs it."
+            ));
+        }
         mod_card(ModCard {
             looking,
             icon: g::BRUSH,
             tint: theme::pink(),
             title: "ReShade",
-            status: version_link(
-                "ReShade",
-                installed.map(|installed| (installed.version.as_str(), installed.page.as_str())),
+            status: with_update(
+                version_link(
+                    "ReShade",
+                    installed
+                        .map(|installed| (installed.version.as_str(), installed.page.as_str())),
+                ),
+                update,
             ),
             actions,
             hint,
@@ -694,14 +759,27 @@ impl GameManager {
             && installed.is_none()
             && matches!(target, Err(Blocked::NoApi))
             && !self.graphics.contains_key(&game.id);
+        let update = installed.and_then(|installed| {
+            self.mod_update(state.and_then(Line::of_dxvk), &installed.version)
+        });
+        let mut hint = hint;
+        if let Some(version) = update
+            && !working
+        {
+            hint.push_str(&format!(" DXVK {version} is out: Reinstall installs it."));
+        }
         mod_card(ModCard {
             looking,
             icon: g::WRENCH,
             tint: theme::orange(),
             title: "DXVK",
-            status: version_link(
-                "DXVK",
-                installed.map(|installed| (installed.version.as_str(), installed.page.as_str())),
+            status: with_update(
+                version_link(
+                    "DXVK",
+                    installed
+                        .map(|installed| (installed.version.as_str(), installed.page.as_str())),
+                ),
+                update,
             ),
             actions,
             hint,

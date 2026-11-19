@@ -6,6 +6,7 @@ pub mod clipboard;
 mod com;
 pub mod config;
 pub mod covers;
+pub mod crash;
 mod credentials;
 mod crypto;
 pub mod custom;
@@ -21,6 +22,7 @@ mod http;
 pub mod icon;
 mod json_file;
 mod launcher;
+pub mod local_time;
 pub mod mods;
 pub mod nexus_mods;
 pub mod nvidia;
@@ -30,6 +32,8 @@ pub mod pcgamingwiki;
 pub mod pe;
 pub mod picture;
 mod picture_cache;
+pub mod play;
+pub mod save_backups;
 mod security;
 mod seven_zip;
 mod shortcut;
@@ -437,6 +441,21 @@ pub(crate) fn on_disk_case(path: &Path) -> PathBuf {
 }
 
 /// Case-insensitive comparison key for a folder path.
+/// The stores' own programs (each scanner's `CLIENT_PROGRAMS`), which play tracking never counts.
+pub(crate) fn store_client_programs() -> impl Iterator<Item = &'static str> {
+    [
+        steam::CLIENT_PROGRAMS,
+        epic::CLIENT_PROGRAMS,
+        gog::CLIENT_PROGRAMS,
+        ea::CLIENT_PROGRAMS,
+        ubisoft::CLIENT_PROGRAMS,
+        xbox::CLIENT_PROGRAMS,
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+}
+
 pub(crate) fn folder_key(dir: &Path) -> String {
     dir.to_string_lossy()
         .trim_end_matches(['\\', '/'])

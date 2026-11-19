@@ -20,6 +20,9 @@ use windows::Management::Deployment::PackageManager;
 use windows::System::ProcessorArchitecture;
 use windows::core::HSTRING;
 
+/// The store's own programs, never a game's: play tracking doesn't count them (`play`).
+pub(crate) const CLIENT_PROGRAMS: &[&str] = &["XboxPcApp.exe", "GamingServices.exe"];
+
 /// What the scanner uses from `MicrosoftGame.config`.
 #[derive(Debug, Default, PartialEq)]
 struct GameConfig {

@@ -1,7 +1,8 @@
 //! The game page's Upscalers tab: the DLSS, FSR, XeSS and Streamline DLLs in the selected game's
 //! folder (`gm_core::mods::upscalers`), one card per place, its header (`card_header_with`)
-//! saying its version, with a drop-down of the vendors' versions, Swap and Restore (✕) at the
-//! right; then the folded Versions section (the versions
+//! saying its version ("Update available" after a swapped one when a newer version that fits is
+//! listed, `upscalers::update_for`), with a drop-down of the vendors' versions, Swap and Restore
+//! (✕) at the right; then the folded Versions section (the versions
 //! downloaded and available, `upscaler_versions.rs`). `UpscalerState` also holds the NVIDIA
 //! overrides tab's driver facts and draft (`dlss_override_view.rs`).
 //!
@@ -17,7 +18,7 @@
 //!   so the cache is read again after each job.
 
 use crate::dlss_override_view::{OverrideDraft, OverrideLibrary};
-use crate::mods_view::{ModDialog, ModKind, shown_path};
+use crate::mods_view::{ModDialog, ModKind, shown_path, with_update};
 use crate::shell::ctx::Ctx;
 use crate::ui::el::{El, col, dropdown, text};
 use crate::ui::theme::{self, glyph as g};
@@ -534,12 +535,24 @@ impl GameManager {
             "Intel" => theme::blue(),
             _ => theme::slate(),
         };
+        // A swapped DLL with a newer version that fits: said beside its state.
+        let update = kind
+            .zip(library.and_then(|library| library.versions.get(&found.kind)))
+            .and_then(|(kind, versions)| upscalers::update_for(kind, found, versions))
+            .map(|available| available.version.to_string());
+        let status = match &update {
+            Some(version) => with_update(
+                text(state).color(theme::text_secondary()),
+                Some(version.as_str()),
+            ),
+            None => text(state).color(theme::text_secondary()).wrap(),
+        };
         card([
             card_header_with(
                 g::CHIP,
                 tint,
                 name,
-                Some(text(state).color(theme::text_secondary()).wrap()),
+                Some(status),
                 vec![picker, swap, restore],
             ),
             hint(place),

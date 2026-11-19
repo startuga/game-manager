@@ -74,7 +74,7 @@ impl GameManager {
             }
         };
         // The sidebar's sections, folded as there.
-        for section in library::sections(&self.games, &visible, &self.view) {
+        for section in library::sections(&self.games, &visible, &self.view, self.facts()) {
             let (header, folded) = self.section_header("library-", &section);
             rows.push(header);
             if !folded {

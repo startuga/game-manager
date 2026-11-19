@@ -27,7 +27,9 @@ zune-jpeg = { workspace = true }
 # who runs it and file permissions (winnt, securitybaseapi, sddl, aclapi, accctrl), the
 # signatures of upscaler DLLs and their signers (wintrust, mscat, mssip, wincrypt, shared), and My PC:
 # hardware, memory modules and drives (sysinfoapi, fileapi), displays (wingdi) and their colour
-# profiles (icm), and the SteamGridDB key in Credential Manager (wincred).
+# profiles (icm), the SteamGridDB key in Credential Manager (wincred), and play tracking: the
+# running games (tlhelp32's process snapshot) and dates on this PC's clock (timezoneapi,
+# minwinbase).
 windows = { workspace = true, features = [
     "shellapi", "winuser",
     "shlobj_core", "combaseapi", "objbase", "objidlbase", "wtypes", "wtypesbase", "ocidl", "windef",
@@ -42,5 +44,6 @@ windows = { workspace = true, features = [
     "wintrust", "mscat", "mssip", "wincrypt", "shared",
     "sysinfoapi", "fileapi", "wingdi", "icm",
     "wincred",
+    "tlhelp32", "timezoneapi", "minwinbase",
 ] }
 windows-registry = { workspace = true }

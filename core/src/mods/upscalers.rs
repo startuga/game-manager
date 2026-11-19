@@ -810,6 +810,24 @@ pub enum State {
     Replaced,
 }
 
+/// For a place Game Manager swapped, the newest version that fits it when it is newer than the one
+/// swapped in: its update (`mods::updates`). The game's own DLL has none: Swap offers the newest
+/// already.
+pub fn update_for<'a>(
+    kind: &Kind,
+    found: &Found,
+    versions: &'a [Available],
+) -> Option<&'a Available> {
+    let State::Swapped { version, .. } = &found.state else {
+        return None;
+    };
+    let swapped = Version::parse(version)?;
+    kind.offered(found, versions)
+        .into_iter()
+        .max_by(|a, b| a.version.cmp(&b.version))
+        .filter(|newest| newest.version > swapped)
+}
+
 /// A swap in `mods.json`: the kind, the game's own version, and what Game Manager copied (its
 /// folder, files and the game's files kept as backups).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1319,6 +1337,47 @@ mod tests {
         // DLSS takes any version.
         let dlss = catalog.kind("dlss").unwrap();
         assert!(dlss.fits(Some("2.2.16"), &versions[0]));
+    }
+
+    #[test]
+    fn a_swapped_dll_has_an_update_when_a_newer_version_fits() {
+        let catalog = shipped();
+        let streamline = catalog.kind("streamline").unwrap();
+        let versions: Vec<Available> = ["v2.14.16", "v2.7.32", "v2.10.3"]
+            .iter()
+            .map(|tag| Available {
+                version: Version::parse(tag).unwrap(),
+                tag: (*tag).to_owned(),
+                asset: None,
+            })
+            .collect();
+        let found = |state: State| Found {
+            kind: "streamline".to_owned(),
+            folder: PathBuf::from(r"C:\Game"),
+            files: vec!["sl.interposer.dll".to_owned()],
+            version: Some("2.7.32".to_owned()),
+            x64: true,
+            state,
+        };
+        let swapped = |version: &str| {
+            found(State::Swapped {
+                version: version.to_owned(),
+                original: Some("2.4.0".to_owned()),
+            })
+        };
+        let update = |found: &Found| {
+            update_for(streamline, found, &versions).map(|available| available.version.to_string())
+        };
+        assert_eq!(update(&swapped("2.7.32")).as_deref(), Some("2.14.16"));
+        assert_eq!(update(&swapped("2.14.16")), None);
+        // The game's own DLL: Swap already offers the newest; no notice.
+        assert_eq!(update(&found(State::Game)), None);
+        // Only versions that fit the game count.
+        let other_major = found(State::Swapped {
+            version: "1.5.0".to_owned(),
+            original: Some("1.0.0".to_owned()),
+        });
+        assert_eq!(update(&other_major), None);
     }
 
     #[test]

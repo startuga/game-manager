@@ -101,7 +101,7 @@ the reshade-shaders folder (back up a preset you want to keep).
 
 ⚠ Add-on builds are for single-player games: anti-cheat may ban players who use them online.";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReshadeVariant {
     #[default]
     Stable,
@@ -974,6 +974,8 @@ pub fn install(game: &Game, api: GraphicsApi) -> Result<ModsFile> {
     let target = target(game, Some(api), dxvk_present(game, &mods))
         .map_err(|blocked| Error::NotInstallable(blocked.to_string()))?;
     let build = latest(state.variant)?;
+    // The latest build, known now for its update notices (`updates`).
+    super::updates::remember(super::updates::Line::Reshade(state.variant), &build);
     let cache = cached_build(state.variant, &build)?;
     let staging = fresh_staging("reshade")?;
     let effects = staging.join("effects");

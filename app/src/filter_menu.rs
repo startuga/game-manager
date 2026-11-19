@@ -213,6 +213,7 @@ impl GameManager {
     pub(crate) fn facts(&self) -> library::Facts<'_> {
         library::Facts {
             mods: &self.mods,
+            played: &self.play.played,
             now: library::now(),
         }
     }
@@ -379,7 +380,9 @@ impl GameManager {
     /// filter the flyout no longer offers.
     pub(crate) fn tidy_view(&mut self) {
         let mut kept = library::keep_view(&self.games, &self.view, self.facts());
-        if !self.filters.mods_ready {
+        // Until the mods and the play history are read, a collection isn't dropped for having no
+        // games yet.
+        if !self.filters.mods_ready || !self.play.ready {
             kept.collection = self.view.collection;
         }
         self.view = kept;

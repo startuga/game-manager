@@ -22,6 +22,20 @@ use crate::{DialogResult, GameManager, Message};
 impl GameManager {
     pub(crate) fn root_view(&self, window: &WindowInfo) -> El<Message> {
         let mut page = vec![self.title_bar(window)];
+        if let Some(crash) = &self.crash {
+            page.push(
+                col([error_bar(
+                    "Game Manager stopped unexpectedly last time",
+                    &format!(
+                        "{}. The details are in {}.",
+                        crash.summary,
+                        crash.file.display()
+                    ),
+                    Message::DismissCrash,
+                )])
+                .pad_xy(theme::space::M, theme::space::S),
+            );
+        }
         if let Some(error) = &self.error {
             page.push(
                 col([error_bar(

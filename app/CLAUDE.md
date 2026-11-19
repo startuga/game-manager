@@ -56,6 +56,14 @@ samples in `crates/samples/`) instead of guessing.
     ReShade tab's Shaders and Add-ons views), `upscalers_view.rs` (the Upscalers tab and its
     state), `upscaler_versions.rs` (its Versions section), `dlss_override_view.rs` (the NVIDIA
     overrides tab), `my_pc.rs` and `my_pc_page.rs` (My PC: its state and messages, and its view).
+  - `play.rs` (play tracking: the history read at start, a watcher every 5 s while the window is
+    open, sessions saved as they go; Play reads Running, Details shows Last played and Play time,
+    and the lists have the Recently played sort and collection, through `library::Facts::played`;
+    display settings while playing: applied before Play starts the game (`apply_display_first`,
+    then `start_game`), put back when its session ends), `save_backups.rs` (each game's save
+    backups: listed while its Overview shows, Back up now, Restore after `AskFirst`, a backup
+    after each counted session) and `play_cards.rs` (Overview's While playing and Save backups
+    cards).
 - **Pages, tabs and views**: `Page` (Library, Game, My PC, Settings) is the sidebar's choice; `GameTab` the
   game page's (NVIDIA overrides only with an NVIDIA driver, read at start); `ReshadeView` (ReShade,
   Shaders, Add-ons) the ReShade tab's, as `widgets::segmented` pills.
@@ -215,7 +223,9 @@ samples in `crates/samples/`) instead of guessing.
   back through `WM_WAKE`), or `Ctx::spawn_stream` for work that sends several messages as it goes
   (covers). A message for later goes through `Ctx::after` (a one-shot window timer, so no pool
   thread sleeps: "Starting…", My PC's countdown). Modal dialogs (the Open dialog), window commands
-  and timers are `Effect`s, run by the loop with no state borrowed.
+  and timers are `Effect`s, run by the loop with no state borrowed. A message that changes nothing
+  shown calls `Ctx::quiet`, and the shell doesn't build the view again (play tracking's 5-second
+  ticks).
 - **Re-entrancy**: the shell's state is borrowed with `try_borrow_mut`; a message sent while it
   is busy gets default handling. Never send our own window a message from inside `update` and
   expect it handled; `WM_NCCALCSIZE` and `WM_GETMINMAXINFO` need no state.
@@ -251,6 +261,11 @@ lists what can't be checked here and the rules (My PC's registry, the clipboard,
     there is no NVIDIA driver). The Present Method and flags start with "Original: …" (the
     recorded original, else what the profile holds now); Reset to original sets both back; Save
     applies them through `dxvk::save_settings`; uninstalling DXVK leaves them.
+  - **Update notices**: while the ReShade or DXVK & LAA tab shows, the latest build of the
+    selected game's installed line is asked for once (`request_mod_updates`, `mod_latest`; the
+    core keeps it a day); the card says "Update available" (`mods_view::with_update`) when it is
+    newer. A mod job clears `mod_latest`, read again from the core's cache. A swapped upscaler
+    DLL says it from the versions already listed (`upscalers::update_for`).
   - ReShade's install mode (DLL or Vulkan layer) depends on DXVK in the game's folder, which
     `request_reshade` reads in the background with the layer's list. DXVK's Install is disabled
     while ReShade is installed as one of DXVK's DLLs (`dxvk::reshade_dll`).

@@ -822,6 +822,8 @@ pub enum PlayState {
     Play,
     /// Just launched: a spinner in place of the icon.
     Starting,
+    /// The game is running (`play.rs`): a dot in place of the icon; the button is off.
+    Running,
 }
 
 /// The game page's big launch button.
@@ -829,6 +831,7 @@ pub fn play_button<M>(state: PlayState, message: M) -> El<M> {
     let label = match state {
         PlayState::Play => "PLAY",
         PlayState::Starting => "STARTING…",
+        PlayState::Running => "RUNNING",
     };
     paint(
         move |painter: &mut Painter<'_>, rect: Rect, interaction: Interaction| {
@@ -923,6 +926,14 @@ fn draw_play(
                     theme::with_alpha(theme::text(), 0x99 + i as u8 * 0x20),
                 );
             }
+        }
+        PlayState::Running => {
+            // A steady dot: the game is on.
+            painter.fill_rounded(
+                Rect::new(x + 5.0, face.y + face.h / 2.0 - 5.0, 10.0, 10.0),
+                5.0,
+                theme::text(),
+            );
         }
     }
     painter.text(

@@ -232,6 +232,11 @@ impl Places {
     }
 }
 
+/// The user's Documents folder, wherever they moved it (OneDrive).
+pub(crate) fn documents() -> Option<PathBuf> {
+    known_folder(&FOLDERID_Documents)
+}
+
 /// A Windows known folder's path (Documents, Saved Games), wherever the user moved it.
 fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut path = PWSTR::null();

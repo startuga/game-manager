@@ -20,6 +20,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use windows::core::w;
 
+/// The store's own programs, never a game's: play tracking doesn't count them (`play`).
+pub(crate) const CLIENT_PROGRAMS: &[&str] = &[
+    "EADesktop.exe",
+    "EABackgroundService.exe",
+    "EALauncher.exe",
+    "Origin.exe",
+];
+
 const PUBLISHER_KEYS: [&str; 4] = [
     r"SOFTWARE\Electronic Arts",
     r"SOFTWARE\WOW6432Node\Electronic Arts",

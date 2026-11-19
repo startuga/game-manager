@@ -6,7 +6,8 @@
 //!
 //! - **What it holds**: a header with the game's
 //!   icon, name and store; Pin to quick access (or Unpin), Play and its alternative launches
-//!   ("Skip launcher"); Open folder, PCGamingWiki, Nexus Mods, Saves folder and Config folder (as
+//!   ("Skip launcher"; while the game runs or starts, one disabled Running or Starting… instead);
+//!   Open folder, PCGamingWiki, Nexus Mods, Saves folder and Config folder (as
 //!   the game page's buttons; a folder not looked up yet is looked up, then opened or the error
 //!   bar says why not);
 //!   Rename…, Artwork… (its cover, banner, logo and icon, `artwork.rs`), Hide from the list (or
@@ -243,16 +244,17 @@ impl GameManager {
             format!("{pin_label}: {}", game.name),
             MenuAction::Pin,
         );
-        if self.launching.as_deref() == Some(game.id.as_str()) {
-            let starting = item(
-                g::PLAY,
-                "Starting…",
-                format!("{} is starting", game.name),
-                MenuAction::Play(None),
-                false,
-            )
-            .enabled(false);
-            rows.push(starting, ITEM_HEIGHT);
+        // Running (`play.rs`) or starting: no second start.
+        let busy = if self.play.is_running(&game.id) {
+            Some(("Running", format!("{} is running", game.name)))
+        } else if self.launching.as_deref() == Some(game.id.as_str()) {
+            Some(("Starting…", format!("{} is starting", game.name)))
+        } else {
+            None
+        };
+        if let Some((label, name)) = busy {
+            let state = item(g::PLAY, label, name, MenuAction::Play(None), false).enabled(false);
+            rows.push(state, ITEM_HEIGHT);
         } else {
             rows.item(
                 g::PLAY,

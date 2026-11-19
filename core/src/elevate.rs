@@ -233,14 +233,15 @@ pub(crate) fn check_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Resu
     Ok(())
 }
 
-/// A process or token handle, closed when dropped.
+/// A handle Windows gave (a process: from `ShellExecuteExW` or `OpenProcess`; a token; a process
+/// snapshot), closed when dropped.
 pub(crate) struct OwnedHandle(pub(crate) HANDLE);
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            // SAFETY: the handle came from ShellExecuteExW, only this value owns it, and it is
-            // closed once.
+            // SAFETY: the handle came from the call that opened it, only this value owns it, and
+            // it is closed once.
             let _ = unsafe { CloseHandle(self.0) };
         }
     }
